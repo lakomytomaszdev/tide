@@ -76,6 +76,8 @@ COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordi
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
 LIMITS_PATH, LIMITS_IFACE = "/Limits", "org.tide.Daemon.Limits"
+WORKTREES_PATH, WORKTREES_IFACE = "/Worktrees", "org.tide.Daemon.Worktrees"
+NO_LAUNCHERS = '{"terminal": false, "rider": false, "window": false}'
 MODELS_VIEW = "models"
 PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
 START_TIMEOUT_MS = 10 * 60 * 1000  # jak w oknie „Nowe zadanie”: worktree dużego repozytorium zakłada się długo
@@ -209,6 +211,7 @@ class Backend(QObject):
     flowSettingsChanged = pyqtSignal()
     cardOpenChanged = pyqtSignal()
     diffModeChanged = pyqtSignal()
+    launchersChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
                  spectacle: str | None = None):
@@ -221,6 +224,7 @@ class Backend(QObject):
         self._tasks = "{}"
         self._limits = "{}"
         self._flow_settings = "{}"
+        self._launchers = NO_LAUNCHERS   # Worktrees Launchers(): które programy ma „Otwórz w edytorze” (PT-361)
         # Ustawienie okna (PT-133): na żywo z window.json; podgląd trzyma je tylko w pamięci i nie rusza plików.
         self._diff_mode = windowconfig.DIFF_MODE_DEFAULT
         self._diff_unsaved = False   # zapis się nie udał: do końca sesji obowiązuje wybór z pamięci
@@ -259,6 +263,7 @@ class Backend(QObject):
             self._tasks = json.dumps(data.pop("tasks", None) or {}, ensure_ascii=False)
             self._limits = json.dumps(data.pop("limits", None) or {}, ensure_ascii=False)
             self._flow_settings = json.dumps(data.pop("flowSettings", None) or {}, ensure_ascii=False)
+            self._launchers = '{"terminal": true, "rider": true, "window": false}'  # podgląd z „Otwórz w edytorze”
             preview_open = data.pop("cardOpen", None)
             if preview_open in windowconfig.CARD_OPEN_VALUES:
                 self._card_open = preview_open
@@ -272,7 +277,8 @@ class Backend(QObject):
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: (self.reload(), self._refresh_tasks(),
-                                                                 self._refresh_limits(), self._refresh_flow_settings()))
+                                                                 self._refresh_limits(), self._refresh_flow_settings(),
+                                                                 self._refresh_launchers()))
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
         self._models = PENDING_MODELS
         bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
@@ -281,6 +287,7 @@ class Backend(QObject):
         self._refresh_tasks()
         self._refresh_limits()
         self._refresh_flow_settings()
+        self._refresh_launchers()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -339,6 +346,10 @@ class Backend(QObject):
     @pyqtProperty(str, notify=flowSettingsChanged)
     def flowSettingsJson(self) -> str:
         return self._flow_settings
+
+    @pyqtProperty(str, notify=launchersChanged)
+    def launchersJson(self) -> str:
+        return self._launchers
 
     # Co otwiera kafelek z „Czeka na mnie” i powiadomienie: "decision" (okno decyzji) albo "full" (pełna karta).
     @pyqtProperty(str, notify=cardOpenChanged)
@@ -682,6 +693,61 @@ class Backend(QObject):
         except (ValueError, TypeError, AttributeError):
             pass
         return False
+
+    @pyqtSlot(str, str)
+    def open(self, path: str, app: str) -> None:
+        """„Otwórz w edytorze” z widoku diffa (PT-361): istniejąca wyrzutnia Worktrees (`Open`). Usługa sama
+        sprawdza, że ścieżka leży w wylistowanym worktree; bez usługi nic się nie dzieje."""
+        if self._preview or self.bus is None:
+            self._record("open", path, app)
+            return
+        self._call("Open", [path, app], None, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    @pyqtSlot(str, str)
+    def cardWorktree(self, tag: str, card_id: str) -> None:
+        """Katalog worktree gałęzi karty (PT-361): gałąź z migawki karty, katalog z listy Worktrees. Odpowiedź
+        `replied(tag, {"ok", "path"})`; `ok` fałszywe, gdy karta nie ma gałęzi albo worktree nie istnieje."""
+        branch = ""
+        for card in self._parsed_snapshot().get("cards") or []:
+            if card.get("id") == card_id:
+                branch = (((card.get("derived") or {}).get("flow") or {}).get("cardBranch") or "")
+                break
+
+        def reply(path: str) -> None:
+            self.replied.emit(tag, json.dumps({"ok": bool(path), "path": path}, ensure_ascii=False))
+
+        if not branch or self._preview or self.bus is None:
+            reply("")
+            return
+
+        def done(ok: bool, value) -> None:
+            path = ""
+            try:
+                for row in json.loads(value) if ok and isinstance(value, str) else []:
+                    if row.get("branch") == branch and not row.get("missing") and isinstance(row.get("path"), str):
+                        path = row["path"]
+                        break
+            except (ValueError, TypeError, AttributeError):
+                pass
+            reply(path)
+
+        self._call("List", [], done, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    def _refresh_launchers(self) -> None:
+        if self.bus is not None:
+            self._call("Launchers", [], self._got_launchers, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    def _got_launchers(self, ok: bool, value) -> None:
+        text = NO_LAUNCHERS
+        if ok and isinstance(value, str):
+            try:
+                if isinstance(json.loads(value), dict):
+                    text = value
+            except ValueError:
+                pass
+        if text != self._launchers:
+            self._launchers = text
+            self.launchersChanged.emit()
 
     @pyqtSlot(str, result=bool)
     def showInFolder(self, path: str) -> bool:

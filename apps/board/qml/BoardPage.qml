@@ -29,6 +29,7 @@ Rectangle {
     property var diffBackend: null       // backend widoku diffa (gitDiff, listCardBranches, replied) — ustawia BoardView
     property bool diffOpen: false        // nakładka widoku diffa nad panelem albo pełną kartą (Esc wraca tam, skąd otwarto)
     property string diffCardId: ""
+    property string diffWorkDir: ""      // worktree gałęzi karty (z listy Worktrees) dla „Otwórz w edytorze”; pusty — brak
     property var markdownRenderer: null  // backend.renderMarkdown: plan i specyfikacja w panelu karty jako bezpieczny HTML
     // Filtry i układ.
     property string tagFilter: ""
@@ -401,7 +402,10 @@ Rectangle {
     function openDiff(cardId) {
         if (!cardId) return
         diffCardId = cardId
+        diffWorkDir = ""
         diffOpen = true
+        if (diffBackend && typeof diffBackend.cardWorktree === "function")
+            diffBackend.cardWorktree("diffWorkDir:" + cardId, cardId)
     }
 
     function closeDiff() {
@@ -2206,6 +2210,19 @@ Rectangle {
         }
     }
 
+    // Odpowiedź na „katalog worktree karty” (PT-361); spóźniona odpowiedź dla innej karty jest pomijana.
+    Connections {
+        target: page.diffBackend
+        ignoreUnknownSignals: true
+        function onReplied(tag, text) {
+            if (tag !== "diffWorkDir:" + page.diffCardId) return
+            try {
+                const reply = JSON.parse(text)
+                page.diffWorkDir = reply && reply.ok && typeof reply.path === "string" ? reply.path : ""
+            } catch (e) { page.diffWorkDir = "" }
+        }
+    }
+
     // Widok diffa (K-36): nad panelem i pełną kartą, na całe okno Tide.
     Loader {
         id: diffLoader
@@ -2218,6 +2235,7 @@ Rectangle {
                 objectName: "branchDiffView"
                 request: ({source: "card", card: page.diffCardId})
                 backend: page.diffBackend
+                workDir: page.diffWorkDir
                 onCloseRequested: page.closeDiff()
                 Component.onCompleted: forceActiveFocus()
             }

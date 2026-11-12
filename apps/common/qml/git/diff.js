@@ -130,6 +130,24 @@ function expandedContext(current, hidden) {
     return Math.min(MAX_CONTEXT, (current || DEFAULT_CONTEXT) + hidden)
 }
 
+// Ściągawka klawiszy (`?`): wszystkie klawisze widoku — #13 (pliki, fragmenty, odświeżanie), #3 (tryb, kontekst)
+// i #30 (linie, zaznaczanie, kopiowanie, menu pliku).
+var KEY_HELP = [
+    {keys: "] / [  ·  Alt+↓ / Alt+↑", text: "następny / poprzedni plik"},
+    {keys: "n / p", text: "następny / poprzedni fragment (hunk)"},
+    {keys: "r", text: "odśwież zmiany"},
+    {keys: "u", text: "tryb jednolity / obok siebie"},
+    {keys: "e", text: "rozwiń zwinięte niezmienione fragmenty pliku"},
+    {keys: "↓ / ↑  ·  j / k", text: "bieżąca linia w dół / w górę"},
+    {keys: "PgDn / PgUp", text: "przewiń o stronę"},
+    {keys: "Shift+↓ / Shift+↑", text: "rozszerz zaznaczenie (także Shift+klik)"},
+    {keys: "← / →  (obok siebie)", text: "kopiowana strona: stara / nowa (albo klik w połowę)"},
+    {keys: "Ctrl+C", text: "kopiuj zaznaczone linie (bez numerów i znaczników +/−)"},
+    {keys: "Menu  ·  prawy przycisk", text: "menu pliku: Kopiuj ścieżkę, Otwórz w edytorze"},
+    {keys: "?", text: "ta ściągawka"},
+    {keys: "Esc", text: "zamknij ściągawkę, potem widok"}
+]
+
 // Indeksy wierszy, od których zaczynają się hunki.
 function hunkStarts(rowList) {
     const starts = []
