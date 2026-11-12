@@ -27,7 +27,8 @@ PROFILES = {
     "domyslny": {
         "fixture.tick": (0.5, 0.3),           # FlowInProcess: przed `engine.tick()` w wątku monitora
         "fixture.callback": (0.5, 0.3),       # FlowInProcess: po ticku, przed callbackiem monitora (commit, publikacja)
-        "fixture.observe": (0.7, 1.2),        # FlowInProcess: wątek testu po `wait_column` (opóźniona obserwacja)
+        "fixture.observe": (0.7, 1.2),        # FlowInProcess: po `wait_column` tick monitora, a wątek testu śpi
+                                              # bez pętli zdarzeń (silnik wyprzedza test, PT-366)
         "claude.start": (0.5, 0.8),           # atrapa `claude`/`codex`: start procesu kroku
         "claude.result": (0.7, 1.5),          # atrapa `claude`/`codex`: zapis `result.json`
         "systemd-run.start": (0.5, 0.5),      # atrapa `systemd-run`: przed `exec` programu jednostki
