@@ -34,7 +34,7 @@ function startLabel(from) {
 // --- Start karty (K-99, PT-389) -------------------------------------------------------------------------
 // Zdanie „master (3.11, 58a3f26)” na tych samych pomocnikach (`shortRef`, `shortDate`, 7 znaków SHA).
 // Dane są z migawki `derived.flow`: baza z `flow.base`, data z ostatniego `card.started` w `flow.timeline`
-// (nie data commita). Skuteczna korekta bazy (`flow.baseVersion > 0`) zmienia bazę, a `timeline` nie niesie
+// (nie data commita). Skuteczna korekta bazy (patrz `_corrected`) zmienia bazę, a `timeline` nie niesie
 // czasu korekty — wtedy zdanie jest bez daty, a pierwotną bazę (`flow.initialBase`) pokazuje `cardStartHint`.
 // Follow-up (osobna zmiana silnika): `card.base-changed` w `timeline` pozwoli pokazać datę po korekcie.
 
@@ -59,8 +59,14 @@ function _phrase(base, date) {
     return inner.length ? ref + " (" + inner.join(", ") + ")" : ref
 }
 
+// Silnik zapisuje `card.started` z `baseVersion=1`, więc skuteczna korekta to wersja > 1 (1→2) albo baza
+// różna od pierwotnej (`flow.initialBase`).
 function _corrected(flow) {
-    return !!flow && typeof flow.baseVersion === "number" && flow.baseVersion > 0
+    if (!flow) return false
+    if (typeof flow.baseVersion === "number" && flow.baseVersion > 1) return true
+    const a = flow.base, b = flow.initialBase
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false
+    return a.baseRef !== b.baseRef || a.baseCommit !== b.baseCommit
 }
 
 // „master (3.11, 58a3f26)”, „origin/develop (5.11, abc1234)”, „master (58a3f26)” bez daty, „nieznany”.
@@ -88,7 +94,7 @@ function canChangeStart(derived) {
     const flow = derived && derived.flow
     if (!flow || !hasStarted(flow) || flow.closed || flow.merged || flow.mainMerged) return false
     const tickets = Array.isArray(derived.tickets) ? derived.tickets : []
-    if (tickets.some(t => t.state !== "todo")) return false
+    if (tickets.some(t => t && t.state !== "todo")) return false
     if (tickets.length > 0) return true
     return !(Array.isArray(flow.steps) ? flow.steps : []).some(s => !s.historical)
 }

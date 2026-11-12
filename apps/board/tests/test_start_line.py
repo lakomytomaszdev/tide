@@ -17,7 +17,7 @@ NEW = "b" * 40
 def started(**extra) -> dict:
     return {"v": 1, "seq": 1, "ts": "2026-11-03T12:00:00+01:00", "card": CARD, "type": "card.started", "entry": "now",
             "executor": "Sonnet", "program": "claude", "provider": "anthropic",
-            "baseRef": "refs/heads/master", "baseBranch": "master", "baseCommit": OLD, **extra}
+            "baseRef": "refs/heads/master", "baseBranch": "master", "baseCommit": OLD, "baseVersion": 1, **extra}
 
 
 def event(events: list[dict], event_type: str, **data) -> list[dict]:
@@ -26,7 +26,7 @@ def event(events: list[dict], event_type: str, **data) -> list[dict]:
 
 
 def corrected() -> list[dict]:
-    return event([started()], "card.base-changed", ok=True, previousBaseVersion=0, baseVersion=1,
+    return event([started()], "card.base-changed", ok=True, previousBaseVersion=1, baseVersion=2,
                  base={"baseRef": "refs/heads/topic", "baseBranch": "topic", "baseCommit": NEW})
 
 

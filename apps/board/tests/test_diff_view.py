@@ -244,9 +244,14 @@ out["line"] = [js("cardLine(" + json.dumps(flow(known("refs/heads/master"))) + "
 out["lastStart"] = label({"base": known("refs/heads/master"), "timeline": [
     {"type": "card.started", "ts": "2026-11-01T12:00:00Z"}, {"type": "card.started", "ts": "2026-11-07T12:00:00Z"}]})
 # Po skutecznej korekcie bazy: nowa baza bez daty, pierwotna w podpowiedzi (z datą startu).
-fixed = flow(known("refs/heads/topic", "%(new)s"), baseVersion=1, initialBase=known("refs/heads/master"))
+fixed = flow(known("refs/heads/topic", "%(new)s"), baseVersion=2, initialBase=known("refs/heads/master"))
 out["corrected"] = [label(fixed), js("cardLine(" + json.dumps(fixed) + ")"), js("cardHint(" + json.dumps(fixed) + ")")]
 out["hint"] = [js("cardHint(" + json.dumps(flow(known("refs/heads/master"), baseVersion=0)) + ")"), js("cardHint(null)")]
+# Świeży start z baseVersion=1 (jak w silniku): data jest, podpowiedzi nie ma.
+fresh = flow(known("refs/heads/master"), baseVersion=1, initialBase=known("refs/heads/master"))
+out["fresh"] = [label(fresh), js("cardHint(" + json.dumps(fresh) + ")")]
+# Baza różna od pierwotnej to korekta także przy baseVersion=1.
+out["byBase"] = label(flow(known("refs/heads/topic", "%(new)s"), baseVersion=1, initialBase=known("refs/heads/master")))
 ''' % {"iso": ISO, "sha": SHA, "new": "1234567" + "0" * 33})
         self.assertEqual(out["local"], "master (5.11, abcdef0)")
         self.assertEqual(out["remote"], "origin/develop (5.11, abcdef0)")
@@ -259,6 +264,8 @@ out["hint"] = [js("cardHint(" + json.dumps(flow(known("refs/heads/master"), base
         self.assertEqual(out["corrected"], ["topic (1234567)", "Start od: topic (1234567)",
                                             "Pierwotna baza: master (5.11, abcdef0)"])
         self.assertEqual(out["hint"], ["", ""])
+        self.assertEqual(out["fresh"], ["master (5.11, abcdef0)", ""])
+        self.assertEqual(out["byBase"], "topic (1234567)")
 
     def test_change_start_only_on_card_without_work(self):
         out = self.probe('''
