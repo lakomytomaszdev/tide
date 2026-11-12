@@ -3184,9 +3184,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         należą do kroku — zapisane w `wrote` przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do
         wzięcia stanu na nowo po działaniu."""
         names = self._guard_watched(st)
+        runs = guard.runs(self.journal.read(card)) if names else []
         for name in names:
             base = st.caretaker_guards[name]
-            found = guard.changes(base, guard.again(self.git, base))
+            fresh = guard.again(self.git, base)
+            base = self._guard_outside(card, name, base, fresh, runs)
+            found = guard.changes(base, fresh)
             if found:
                 self.journal.append(card, guard.EVENT, step=name, cause="check", wrote=found,
                                     **{k: base.get(k) for k in guard.FIELDS})
@@ -3200,6 +3203,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         try:
             st = self.journal.state(card)
+            runs = guard.runs(self.journal.read(card))
             for name in names:
                 base = st.caretaker_guards.get(name)
                 if base is None or name in st.finished:
@@ -3207,9 +3211,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 fresh = guard.again(self.git, base)
                 if guard.same(base, fresh):
                     continue
-                wrote = [] if frozen.get(name) else [
-                    f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
-                    + "; ".join(guard.changes(base, fresh))]
+                # Niezamrożony krok: zmiana drzewa worktree z poleceniem Tide nie jest zapisem kroku (PT-372).
+                found = [] if frozen.get(name) else guard.changes(self._guard_outside(card, name, base, fresh, runs),
+                                                                  fresh)
+                wrote = [f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
+                         + "; ".join(found)] if found else []
                 self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
         finally:
             self._guard_thaw(self.journal.state(card), frozen)
@@ -3221,8 +3227,22 @@ class FlowEngine(CaretakerChat, PlanEditing):
         base = st.caretaker_guards.get(name)
         if base is None:
             return "brak stanu worktree sprzed kroku opiekuna — nie da się sprawdzić, czy krok nie pisał"
-        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, guard.again(self.git, base))]
+        runs = guard.runs(self.journal.read(card))
+        fresh = guard.again(self.git, base)
+        base = self._guard_outside(card, name, base, fresh, runs)
+        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, fresh)]
         return guard.reason(found)[:caretaker.REASON_MAX] if found else ""
+
+    def _guard_outside(self, card: str, name: str, base: dict, fresh: dict, runs: list) -> dict:
+        """Wyjątek strażnika (PT-372): zmiany drzewa worktree, w którym od stanu bazowego działało polecenie Tide
+        poza piaskownicą albo próba testów po scaleniu, nie należą do kroku. Zapisuje `caretaker.guard` z `cause:
+        outside` i `skipped` (stan bazowy z drzewem tego worktree wziętym na nowo) i zwraca stan do dalszego
+        porównania. `runs` — z dziennika przeczytanego przed migawką `fresh`."""
+        rebased, skipped = guard.excuse(base, fresh, guard.active(base, runs, name))
+        if not skipped:
+            return base
+        self.journal.append(card, guard.EVENT, step=name, cause=guard.OUTSIDE, wrote=[], skipped=skipped, **rebased)
+        return rebased
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 

@@ -3544,6 +3544,32 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   przesunięta gałąź ticket/pt-1”. Dalej jak każde nieudane działanie: `caretaker.escalated` z `failed: true`,
   akcja nie jest wykonana, działanie liczy się w `owned()`, a historia karty ma wpis „Opiekun: wynik odrzucony,
   akcja nie wykonana — <powód>”.
+- Wyjątek: polecenie Tide w worktree pod strażą (K-39, PT-372). W trakcie kroku opiekuna w worktree może biec
+  uruchomienie poza piaskownicą na zgodę kroku ticketu (`make test-changed`, skrypt pomiaru) albo próba testów po
+  scaleniu (`merge-check-*` w worktree gałęzi karty, K-88). Jego `build/`, `__pycache__` i wyniki testów nie są
+  zapisem opiekuna (wcześniej fałszywe `caretaker-wrote`, np. K-98-care-10 i K-98-care-13 z 11.11). Logika jest
+  czysta w `cardflow/guard` (`runs`, `active`, `excuse`); silnik podaje tylko zdarzenia dziennika
+  (`_guard_outside`):
+  - uruchomienie to `outside.started` → `outside.finished` tego samego kroku; worktree z pola `worktree` startu,
+    dla próby testów po scaleniu z jej pseudokroku `merge.check-step`. Start bez `worktree` niczego nie wyłącza;
+  - liczy się, gdy start jest w dzienniku przed sprawdzeniem (dziennik czytany przed migawką), a koniec jest po
+    stanie bazowym (`seq` ostatniego `caretaker.guard`) albo go nie ma — także polecenie, które ruszyło i skończyło
+    się w trakcie kroku opiekuna;
+  - worktree porównywane po `os.path.normpath(os.path.abspath(…))`, bez podążania za dowiązaniami (końcowy `/`
+    i `./` pasują, dowiązanie do worktree — nie);
+  - wyłączone są tylko zmiany drzewa (`tree`) tego worktree: zamiast `wrote` Tide zapisuje `caretaker.guard`
+    z `cause: outside`, `wrote: []` i `skipped: [{run, worktree, entries}]` (nazwa uruchomienia, worktree,
+    zmienione wpisy najwyższego poziomu) i bierze drzewo tego worktree na nowo. `HEAD` worktree, refy gałęzi,
+    zniknięcie worktree oraz zapis w innym worktree pod strażą albo w worktree bez polecenia są wykrywane jak
+    dotąd;
+  - ta sama reguła działa w `_guard_check`, w `_guard_rebase` (krok niezamrożony; przy zamrożonym całe okno
+    działania i tak należy do Tide, `_guard_freeze` bez zmian) i w `_guard_verdict`, więc zmiana pominięta
+    w jednym miejscu nie wraca jako `wrote` w drugim. Stare dzienniki bez `skipped` czytają się bez zmian;
+  - granice: opiekun nie ma kontraktu `outside`, więc sam nie otworzy wyjątku — polecenia w worktree uruchamia
+    wyłącznie Tide (zgoda kroku ticketu, bramka testów po scaleniu). Zapis opiekuna w drzewie worktree
+    z trwającym poleceniem jest w tym oknie nieodróżnialny od zapisu polecenia i przechodzi. Uruchomienie bez
+    `outside.finished` (np. utracone po awarii usługi) wyłącza drzewo tego worktree do końca kroku opiekuna.
+    Polecenia uruchomione ręcznie przez koordynatora (Tide ich nie zna) nadal dają `caretaker-wrote`.
 - Ograniczenie: gałąź karty przesunięta w trakcie kroku opiekuna przez inny krok (np. rozwiązanie konfliktu
   innego ticketu w worktree karty) nie jest działaniem Tide, więc odrzuca wynik opiekuna (bezpieczna pomyłka —
   problem wraca do użytkownika z powodem). Tak samo działanie Tide przy kroku, którego nie dało się zamrozić
