@@ -93,7 +93,9 @@ class HostCardsMatchMasterTest(CardsCase):
         for project, spec in hostcards.PROJECTS.items():
             for step_dir in ("", os.path.join(self.root, "wt", project) + ".step"):
                 with self.subTest(project=project, step_dir=step_dir):
-                    want = master.command_policy(spec["allowed"], spec["denied"], step_dir=step_dir)
+                    # Jedyna zatwierdzona różnica polityki: zdanie o `exclusive` (PT-376, hostcards.POLICY_APPROVED).
+                    want = hostcards.expected_policy(
+                        master.command_policy(spec["allowed"], spec["denied"], step_dir=step_dir))
                     self.assertEqual(handoff.command_policy(spec["allowed"], spec["denied"], step_dir=step_dir), want)
                     # Host także przy profilu pudełka (enabled=true, projekt z profilem, krok na hoście).
                     self.assertEqual(handoff.runner_policy(handoff.HOST_RUNNER, spec["allowed"], spec["denied"],

@@ -69,10 +69,17 @@ def merge_check_events(ticket, *, run=False, since=TS_RUN, ask_ts=TS_ASK):
 NOW = _epoch(TS_LATER) + 60     # stały zegar: testy nie zależą od daty uruchomienia
 
 
-def build(states, settings=None, limits=(6, 7), now=NOW):
+CALM = heavyqueue.Load(1.0, 12)     # stały odczyt obciążenia: testy nie zależą od `/proc/loadavg` maszyny
+
+
+def build(states, settings=None, limits=(6, 7), now=NOW, load=CALM, quiet_of=None):
     return queueview.build(states, settings or {},
                            heavy_of=lambda card, name, step, command: command.startswith("make test"),
-                           outside_limits=limits, now=now)
+                           outside_limits=limits, now=now, load=lambda: load, quiet_of=quiet_of)
+
+
+def exclusive_asks(step, ticket, command):
+    return {**asks(step, ticket, command), "exclusive": True}
 
 
 def two_cards():
@@ -161,10 +168,51 @@ class QueueViewTest(unittest.TestCase):
 
     def test_empty_states_give_an_empty_queue(self):
         queue = build({})
-        self.assertEqual(queue["heavy"], {"limit": heavyqueue.DEFAULT_LIMIT, "running": [], "waiting": []})
+        self.assertEqual(queue["heavy"], {"limit": heavyqueue.DEFAULT_LIMIT, "running": [], "waiting": [],
+                                          "load": {"avg1": 1.0, "cores": 12, "threshold": 6.0, "error": ""}})
         self.assertEqual(queue["outside"]["occupied"], {"total": 0, "projects": {}})
-        self.assertNotIn("load", queue["heavy"], "obciążenie maszyny dochodzi w #6")
         self.assertNotIn("steps", queue, "część steps dochodzi w #10")
+
+    # --- cisza (K-39 #6, PT-376) ---
+
+    def test_load_and_exclusive_entries_with_quiet_reason(self):
+        perf = "bash daemon/tests/perf_gate_k98.sh build/x"
+        events = journal("K-36", [started("K-36-PT-7", "PT-7"), exclusive_asks("K-36-PT-7", "PT-7", perf),
+                                  approved("K-36-PT-7", "PT-7")])
+        queue = build({"K-36": fold(events)}, {"heavyLimit": 2}, load=heavyqueue.Load(7.1, 12))
+        self.assertEqual(queue["heavy"]["load"], {"avg1": 7.1, "cores": 12, "threshold": 6.0, "error": ""})
+        [waiting] = queue["heavy"]["waiting"]
+        self.assertTrue(waiting["exclusive"])       # wymaga ciszy, więc ciężkie mimo lekkiej klasy polecenia
+        self.assertEqual(waiting["reason"], "czeka na ciszę: obciążenie 7,1 przy progu 6,0")
+        self.assertEqual(queue["outside"]["waiting"], [])
+
+    def test_running_heavy_and_drained_newer_heavy_reasons(self):
+        first = journal("K-1", [*outside_events("K-1-PT-1", "PT-1", HEAVY, run=True)])
+        quiet = journal("K-36", [started("K-36-PT-7", "PT-7"), exclusive_asks("K-36-PT-7", "PT-7", "bash perf.sh"),
+                                 approved("K-36-PT-7", "PT-7", TS_ASK)])
+        newer = journal("K-2", outside_events("K-2-PT-4", "PT-4", "make test-changed BASE=3", ask_ts=TS_LATER))
+        queue = build({"K-1": fold(first), "K-36": fold(quiet), "K-2": fold(newer)}, {"heavyLimit": 3})
+        running = queue["heavy"]["running"]
+        self.assertEqual([(e["step"], e["exclusive"]) for e in running], [("K-1-PT-1", False)])
+        reasons = {e["step"]: e["reason"] for e in queue["heavy"]["waiting"]}
+        self.assertEqual(reasons, {
+            "K-36-PT-7": "czeka na ciszę: biegnie make test-changed BASE=1 (K-1)",
+            "K-2-PT-4": "wstrzymane: na czele kolejki czeka polecenie wymagające ciszy (K-36)"})
+
+    def test_quiet_of_from_the_engine_marks_entries_and_load_error_is_reported(self):
+        events = journal("K-1", outside_events("K-1-PT-1", "PT-1", "bash perf.sh"))
+        queue = build({"K-1": fold(events)}, quiet_of=lambda card, name, step, command: "perf" in command,
+                      load=heavyqueue.Load(error="nie da się odczytać obciążenia maszyny (OSError)"))
+        [waiting] = queue["heavy"]["waiting"]
+        self.assertTrue(waiting["exclusive"])
+        self.assertEqual(waiting["reason"], "czeka na ciszę: nie da się odczytać obciążenia maszyny (OSError)")
+        self.assertEqual(queue["heavy"]["load"]["error"], "nie da się odczytać obciążenia maszyny (OSError)")
+
+    def test_old_results_without_exclusive_keep_previous_reasons(self):
+        _, states = two_cards()
+        heavy = build(states, {"heavyLimit": 2}, load=heavyqueue.Load(error="x"))["heavy"]
+        self.assertEqual([e["exclusive"] for e in heavy["running"]], [False, False])
+        self.assertEqual(heavy["waiting"][0]["reason"], "czeka na wolne miejsce: ciężkie polecenia 2 z 2 zajęte")
 
 
 if __name__ == "__main__":

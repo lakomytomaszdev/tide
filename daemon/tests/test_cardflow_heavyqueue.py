@@ -18,6 +18,7 @@ from tide_daemon.cardflow.state import fold
 PLASMA = {"changed": "make test-changed BASE={base}", "full": "make test"}
 SHA = "2906ad3bbb3635048fd006f1114e34aa643e03ed"
 HEAVY = f"make test-changed BASE={SHA}"
+PERF_RUN = "bash daemon/tests/perf_gate_k98.sh build/x"
 
 
 class ClassifyTest(unittest.TestCase):
@@ -84,6 +85,135 @@ class AdmitTest(unittest.TestCase):
         self.assertEqual(heavyqueue.limit_problem(1), "")
 
 
+def fixed(avg1=None, cores=12, error=""):
+    """Wstrzykiwany odczyt obciążenia (testy nie zależą od `/proc/loadavg`); liczy odczyty."""
+    calls = []
+
+    def load():
+        calls.append(1)
+        return heavyqueue.Load(avg1, cores, error)
+    load.calls = calls
+    return load
+
+
+def describe(name):
+    return {"run": "make test (K-36)", "perf": "bash perf.sh (K-36)"}.get(name, name)
+
+
+class QuietAdmitTest(unittest.TestCase):
+    """K-39 #6 (PT-376): polecenie wymagające ciszy w `heavyqueue.quiet` i `heavyqueue.admit`."""
+
+    def admit(self, waiting, running=(), limit=2, load=None, exclusive_running=()):
+        return heavyqueue.admit(waiting, running, limit, exclusive_running=exclusive_running, describe=describe,
+                                load=load or fixed(1.0))
+
+    def test_high_load_waits_with_both_numbers_and_low_load_starts(self):
+        perf = heavyqueue.Waiting("perf", 1.0, exclusive=True, card="K-36")
+        result = self.admit([perf], load=fixed(7.1, 12))
+        self.assertEqual(result.admitted, ())
+        self.assertEqual(result.held, {"perf": "czeka na ciszę: obciążenie 7,1 przy progu 6,0"})
+        self.assertEqual(result.load, heavyqueue.Load(7.1, 12))
+        self.assertEqual(self.admit([perf], load=fixed(5.0, 12)).admitted, ("perf",))
+        # Próg ostry: obciążenie równe połowie rdzeni to jeszcze nie cisza.
+        self.assertEqual(self.admit([perf], load=fixed(6.0, 12)).admitted, ())
+
+    def test_running_heavy_command_blocks_quiet_despite_low_load(self):
+        perf = heavyqueue.Waiting("perf", 1.0, exclusive=True, card="K-36")
+        result = self.admit([perf], running={"run"}, limit=3, load=fixed(0.5))
+        self.assertEqual(result.admitted, ())
+        self.assertEqual(result.held, {"perf": "czeka na ciszę: biegnie make test (K-36)"})
+
+    def test_running_quiet_command_holds_every_new_heavy(self):
+        waiting = [heavyqueue.Waiting("a", 1.0), heavyqueue.Waiting("b", 2.0, exclusive=True)]
+        result = self.admit(waiting, running={"perf"}, limit=6, exclusive_running={"perf"})
+        self.assertEqual(result.admitted, ())
+        self.assertEqual(result.held["a"], "wstrzymane: biegnie polecenie wymagające ciszy: bash perf.sh (K-36)")
+        self.assertEqual(result.held["b"], "czeka na ciszę: biegnie bash perf.sh (K-36)")
+        self.assertTrue(all(heavyqueue.quiet_hold(r) for r in result.held.values()))
+
+    def test_quiet_command_starting_now_holds_the_rest_of_this_decision(self):
+        waiting = [heavyqueue.Waiting("perf", 1.0, exclusive=True), heavyqueue.Waiting("a", 2.0)]
+        result = self.admit(waiting, limit=6)
+        self.assertEqual(result.admitted, ("perf",))
+        self.assertEqual(result.held, {"a": "wstrzymane: biegnie polecenie wymagające ciszy: bash perf.sh (K-36)"})
+
+    def test_quiet_command_at_the_head_drains_newer_heavy_until_it_finishes(self):
+        perf = heavyqueue.Waiting("perf", 1.0, exclusive=True, card="K-36")
+        newer = heavyqueue.Waiting("new", 2.0, card="K-1")
+        # 1) na czele czeka na ciszę (trwa `run`): nowsze ciężkie nie rusza mimo wolnego miejsca.
+        first = self.admit([perf, newer], running={"run"}, limit=2)
+        self.assertEqual(first.admitted, ())
+        self.assertEqual(first.held["new"], "wstrzymane: na czele kolejki czeka polecenie wymagające ciszy (K-36)")
+        # 2) `run` się skończył: rusza tylko polecenie wymagające ciszy.
+        self.assertEqual(self.admit([perf, newer]).admitted, ("perf",))
+        # 3) trwa polecenie wymagające ciszy: nowsze dalej czeka.
+        self.assertEqual(self.admit([newer], running={"perf"}, exclusive_running={"perf"}).admitted, ())
+        # 4) po jego zakończeniu kolejka rusza dalej.
+        self.assertEqual(self.admit([newer]).admitted, ("new",))
+
+    def test_draining_applies_only_to_the_head_of_the_queue(self):
+        older = heavyqueue.Waiting("old", 1.0)
+        perf = heavyqueue.Waiting("perf", 2.0, exclusive=True, card="K-36")
+        newer = heavyqueue.Waiting("new", 3.0)
+        # `old` rusza; `perf` jest teraz pierwszym czekającym (czeka na `old`), więc wstrzymuje `new`.
+        result = self.admit([older, perf, newer], limit=3)
+        self.assertEqual(result.admitted, ("old",))
+        self.assertEqual(result.held["perf"], "czeka na ciszę: biegnie old")
+        self.assertEqual(result.held["new"], "wstrzymane: na czele kolejki czeka polecenie wymagające ciszy (K-36)")
+        # Za wpisem wstrzymanym limitem polecenie wymagające ciszy nie jest czołem: powód limitu zostaje.
+        full = self.admit([older, perf, newer], running={"x", "y"}, limit=2)
+        self.assertEqual(full.held, {"old": heavyqueue.HELD_LIMIT, "perf": "czeka na ciszę: biegnie x, y",
+                                     "new": heavyqueue.HELD_LIMIT})
+
+    def test_load_read_error_waits_with_reason_and_never_starts(self):
+        perf = heavyqueue.Waiting("perf", 1.0, exclusive=True, card="K-36")
+        for load in (fixed(error="nie da się odczytać obciążenia maszyny (OSError)"), fixed(None, 12),
+                     fixed(1.0, None), lambda: (_ for _ in ()).throw(OSError("brak")), lambda: "7.1"):
+            result = self.admit([perf], load=load)
+            self.assertEqual(result.admitted, (), load)
+            self.assertTrue(result.held["perf"].startswith("czeka na ciszę: nie da się odczytać"), result.held)
+
+    def test_read_load_from_file_and_its_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "loadavg")
+            with open(path, "w", encoding="ascii") as fh:
+                fh.write("7.10 6.00 5.00 3/900 12345\n")
+            self.assertEqual(heavyqueue.read_load(path, lambda: 12), heavyqueue.Load(7.1, 12))
+            self.assertEqual(heavyqueue.read_load(path, lambda: 12).as_dict(),
+                             {"avg1": 7.1, "cores": 12, "threshold": 6.0, "error": ""})
+            self.assertTrue(heavyqueue.read_load(path, lambda: None).error)
+            self.assertTrue(heavyqueue.read_load(os.path.join(tmp, "brak")).error)
+            with open(path, "w", encoding="ascii") as fh:
+                fh.write("nan 1 1\n")
+            self.assertTrue(heavyqueue.read_load(path, lambda: 12).error)
+            with open(path, "w", encoding="ascii") as fh:
+                fh.write("")
+            self.assertTrue(heavyqueue.read_load(path, lambda: 12).error)
+
+    def test_queue_without_quiet_entries_does_not_read_load_and_keeps_old_result(self):
+        load = fixed(99.0)
+        result = self.admit([heavyqueue.Waiting("a", 1.0), heavyqueue.Waiting("b", 2.0), heavyqueue.Waiting("c", 3.0)],
+                            running={"r"}, limit=3, load=load)
+        self.assertEqual((result.admitted, result.held, result.load), (("a", "b"), {"c": heavyqueue.HELD_LIMIT}, None))
+        self.assertEqual(load.calls, [])
+
+    def test_quiet_reads_load_once_per_decision(self):
+        load = fixed(9.0)
+        self.admit([heavyqueue.Waiting("p", 1.0, True), heavyqueue.Waiting("q", 2.0, True)], load=load)
+        self.assertEqual(len(load.calls), 1)
+
+    def test_exclusive_field_and_quiet_patterns_settings(self):
+        self.assertTrue(heavyqueue.exclusive_of(True))
+        for bad in ("true", 1, None, [], {"a": 1}):
+            self.assertFalse(heavyqueue.exclusive_of(bad), bad)
+        self.assertEqual(heavyqueue.quiet_patterns_of(None), [])
+        self.assertEqual(heavyqueue.quiet_patterns_of("x"), [])
+        self.assertEqual(heavyqueue.quiet_patterns_of([" bash a.sh * "]), ["bash a.sh *"])
+        for bad in ("x", [1], [""], ["*"]):
+            self.assertTrue(heavyqueue.quiet_patterns_problem(bad), bad)
+        self.assertEqual(heavyqueue.quiet_patterns_problem([]), "")
+
+
 class MemoryJournal:
     def __init__(self):
         self.events = {}
@@ -136,6 +266,8 @@ class HeavyQueueEngineTest(unittest.TestCase):
             slug=self.projects[card], repo=self.worktree, denied_commands=[], tests=None, tests_error=""))
         eng._settings_data = lambda: dict(self.settings)
         eng._start_outside = self.fake_start
+        self.load = heavyqueue.Load(1.0, 12)        # testy nie zależą od prawdziwego `/proc/loadavg`
+        eng._read_load = lambda: self.load
         self.eng = eng
 
     def card(self, card, project="plasma-tide"):
@@ -143,14 +275,15 @@ class HeavyQueueEngineTest(unittest.TestCase):
         self.journal.append(card, "card.started", project=project, entry="now", repo=self.worktree, baseVersion=1)
         return card
 
-    def request(self, card, ticket, command=HEAVY, *, choice="run", minutes=5, auto=False):
+    def request(self, card, ticket, command=HEAVY, *, choice="run", minutes=5, auto=False, exclusive=None):
         name = f"{card}-{ticket}-1"
         folder = os.path.join(self.tmp.name, name)
         os.makedirs(os.path.join(folder, "out"), exist_ok=True)
         step = self.journal.append(card, "step.started", step=name, ticket=ticket, kind="ticket", stepDir=folder,
                                    worktree=self.worktree, baseVersion=1)
         self.journal.append(card, "step.finished", step=name, ticket=ticket, result="denied", outside=True,
-                            command=command, canAllow=True)
+                            command=command, canAllow=True,
+                            **({"exclusive": exclusive} if exclusive is not None else {}))
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind="ticket", choice=choice,
                             command=command, executor="", ts=ago(minutes), **({"auto": True} if auto else {}))
         return step
@@ -178,7 +311,7 @@ class HeavyQueueEngineTest(unittest.TestCase):
         for card, step in pairs:
             self.ready(card, step)
 
-    def status(self, card):
+    def tickets(self, card):
         out = {"tickets": [{"id": t, "state": "w-toku"} for t in
                            dict.fromkeys(s.get("ticket") for s in self.journal.state(card).steps.values())],
                "note": ""}
@@ -186,7 +319,10 @@ class HeavyQueueEngineTest(unittest.TestCase):
         for ticket in out["tickets"]:
             ticket.update(fullcard.ticket_status(st, ticket))
         fullcard.heavy_queued(st, out, self.eng._heavy_view(card))
-        return {t["id"]: t["statusLabel"] for t in out["tickets"]}
+        return {t["id"]: t for t in out["tickets"]}
+
+    def status(self, card):
+        return {ident: t["statusLabel"] for ident, t in self.tickets(card).items()}
 
     def test_two_cards_in_one_tick_with_limit_one_start_exactly_one(self):
         self.settings["heavyLimit"] = 1
@@ -396,6 +532,119 @@ class HeavyQueueEngineTest(unittest.TestCase):
         self.tick((c, other))
         self.assertIn(other["step"], self.started)
 
+    # --- polecenia wymagające ciszy (K-39 #6, PT-376) ---
+
+    def test_step_marked_exclusive_waits_for_quiet_with_ticket_status_then_starts(self):
+        self.load = heavyqueue.Load(7.1, 12)
+        a = self.card("K-36")
+        step = self.request(a, "PT-7", PERF_RUN, exclusive=True)
+        self.tick((a, step))
+        self.assertEqual(self.started, [])
+        self.assertTrue(self.eng._outside_waiting[step["step"]][4])      # wymaga ciszy, więc ciężkie
+        ticket = self.tickets(a)["PT-7"]
+        self.assertEqual((ticket["statusLabel"], ticket.get("cause")),
+                         ("czeka na ciszę: obciążenie 7,1 przy progu 6,0", "quiet"))
+        # Kafelek: zdanie w nawiasie po napisie kolejki.
+        out = {"tickets": [], "note": f"PT-7 · w kolejce poza piaskownicą: {PERF_RUN}"}
+        fullcard.heavy_queued(self.journal.state(a), out, self.eng._heavy_view(a))
+        self.assertEqual(out["note"], f"PT-7 · w kolejce poza piaskownicą: {PERF_RUN} "
+                                      "(czeka na ciszę: obciążenie 7,1 przy progu 6,0)")
+        self.load = heavyqueue.Load(5.0, 12)
+        self.tick((a, step))
+        self.assertEqual(self.started, [step["step"]])
+
+    def test_quiet_commands_pattern_needs_quiet_without_the_step_flag(self):
+        self.settings["quietCommands"] = ["bash daemon/tests/perf_gate_k98.sh *"]
+        self.load = heavyqueue.Load(9.0, 12)
+        a = self.card("K-36")
+        step = self.request(a, "PT-7", "sh ./daemon/tests/perf_gate_k98.sh build/x")
+        self.tick((a, step))
+        self.assertEqual(self.started, [])
+        self.assertTrue(self.eng._outside_quiet[step["step"]])
+        self.assertTrue(self.eng._outside_waiting[step["step"]][4])
+
+    def test_bad_exclusive_type_is_ignored(self):
+        a = self.card("K-36")
+        self.load = heavyqueue.Load(9.0, 12)
+        step = self.request(a, "PT-7", "ss -ltnp", exclusive="true")
+        self.tick((a, step))
+        self.assertEqual(self.started, [step["step"]])       # lekkie, bez czekania na ciszę
+        self.assertFalse(self.eng._outside_quiet.get(step["step"]))
+
+    def test_running_quiet_command_holds_heavy_but_light_and_younger_light_start(self):
+        a, b = self.card("K-36"), self.card("K-1")
+        perf = self.request(a, "PT-7", PERF_RUN, exclusive=True, minutes=30)
+        self.tick((a, perf))
+        self.assertEqual(self.started, [perf["step"]])
+        heavy = self.request(b, "PT-1", minutes=20)
+        light = self.request(b, "PT-2", "ss -ltnp", minutes=10)     # młodsza od czekającej ciężkiej w tym projekcie
+        self.tick((b, heavy), (b, light))
+        self.assertEqual(self.started, [perf["step"], light["step"]])
+        label = self.status(b)["PT-1"]
+        self.assertTrue(label.startswith("wstrzymane: biegnie polecenie wymagające ciszy: bash daemon/tests/"), label)
+        self.assertTrue(label.endswith("(K-36)"), label)
+        self.finish(perf)
+        self.tick((a, perf), (b, heavy))
+        self.assertEqual(self.started[-1], heavy["step"])
+
+    def test_running_heavy_holds_quiet_and_quiet_at_head_drains_newer_heavy(self):
+        a, b, c = self.card("K-1"), self.card("K-36"), self.card("K-2", "streamer")
+        self.settings["heavyLimit"] = 3
+        busy = self.request(a, "PT-1", "make test", minutes=40)
+        self.tick((a, busy))
+        perf = self.request(b, "PT-7", PERF_RUN, exclusive=True, minutes=30)
+        newer = self.request(c, "KAMP-1", "make test-cardflow", minutes=10)
+        self.tick((b, perf), (c, newer))
+        self.assertEqual(self.started, [busy["step"]])
+        self.assertEqual(self.status(b)["PT-7"], "czeka na ciszę: biegnie make test (K-1)")
+        self.assertEqual(self.status(c)["KAMP-1"],
+                         "wstrzymane: na czele kolejki czeka polecenie wymagające ciszy (K-36)")
+        self.finish(busy)
+        self.tick((a, busy), (c, newer), (b, perf))
+        self.assertEqual(self.started, [busy["step"], perf["step"]])
+        self.finish(perf)
+        self.tick((b, perf), (c, newer))
+        self.assertEqual(self.started[-1], newer["step"])
+
+    def test_load_read_error_never_starts_a_quiet_command(self):
+        self.eng._read_load = lambda: heavyqueue.read_load(os.path.join(self.tmp.name, "brak-loadavg"))
+        a = self.card("K-36")
+        step = self.request(a, "PT-7", PERF_RUN, exclusive=True)
+        self.tick((a, step))
+        self.assertEqual(self.started, [])
+        self.assertTrue(self.status(a)["PT-7"].startswith("czeka na ciszę: nie da się odczytać obciążenia maszyny"))
+
+    def test_restart_restores_quiet_marker_from_journal_and_settings(self):
+        self.settings["quietCommands"] = ["bash daemon/tests/perf_gate_k98.sh *"]
+        a, b, c = self.card("K-36"), self.card("K-37"), self.card("K-1")
+        running = self.request(a, "PT-7", "ss -ltnp", exclusive=True, minutes=50)
+        waiting = self.request(b, "PT-8", PERF_RUN, minutes=40)        # tylko wzorzec, bez znacznika
+        self.fake_start(a, running, "ss -ltnp")
+        self.started.clear()
+        # Restart usługi: pusta pamięć, klasy z dzienników i ustawień.
+        self.eng._outside_active = None
+        self.eng._outside_heavy = {}
+        self.eng._outside_quiet = {}
+        self.eng._outside_waiting = {}
+        self.eng._outside_seeded = False
+        heavy = self.request(c, "PT-1", minutes=5)
+        self.tick((c, heavy))
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.eng._quiet_running(self.eng._heavy_running()), {running["step"]})
+        self.assertTrue(self.eng._outside_quiet[waiting["step"]])
+        self.assertTrue(self.eng._outside_waiting[waiting["step"]][4])
+
+    def test_queue_view_from_the_engine_has_load_and_exclusive(self):
+        self.load = heavyqueue.Load(7.1, 12)
+        a = self.card("K-36")
+        self.request(a, "PT-7", PERF_RUN, exclusive=True)
+        self.eng._queue = None
+        view = self.eng._queue_view()
+        self.assertEqual(view["heavy"]["load"], {"avg1": 7.1, "cores": 12, "threshold": 6.0, "error": ""})
+        [entry] = view["heavy"]["waiting"]
+        self.assertEqual((entry["exclusive"], entry["reason"]),
+                         (True, "czeka na ciszę: obciążenie 7,1 przy progu 6,0"))
+
 
 class HeavySettingsTest(unittest.TestCase):
     def engine(self):
@@ -431,6 +680,70 @@ class HeavySettingsTest(unittest.TestCase):
         self.assertEqual(eng._settings_data()["nieznany"], {"a": 1})
         self.assertEqual(eng.set_flow_settings({"heavyLimit": 3})["heavyCommands"], saved["heavyCommands"])
         self.assertEqual(eng.set_flow_settings({"heavyCommands": []})["heavyCommands"], [])
+
+    def test_quiet_commands_default_validation_and_unknown_keys(self):
+        eng = self.engine()
+        self.assertEqual(eng.get_flow_settings()["quietCommands"], [])
+        for bad in ("bash x.sh *", [1], ["bash x.sh *", ""], ["*"], None, True):
+            with self.assertRaises(flow_engine.FlowError, msg=repr(bad)) as raised:
+                eng.set_flow_settings({"quietCommands": bad})
+            self.assertEqual(raised.exception.code, "bad-settings")
+        self.assertNotIn("quietCommands", eng._settings_data())
+        saved = eng.set_flow_settings({"quietCommands": [" bash daemon/tests/perf_gate_k98.sh * "]})
+        self.assertEqual(saved["quietCommands"], ["bash daemon/tests/perf_gate_k98.sh *"])
+        self.assertEqual(eng._settings_data()["nieznany"], {"a": 1})
+        self.assertEqual(eng.set_flow_settings({"heavyLimit": 3})["quietCommands"], saved["quietCommands"])
+
+
+class StepResultExclusiveTest(unittest.TestCase):
+    """K-39 #6 (PT-376): pole `exclusive` wyniku kroku — tylko rozszerzenie kontraktu."""
+
+    def read(self, payload):
+        import json
+        path = os.path.join(self.tmp, "result.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        return flow_engine.FlowEngine._result(path)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+
+    def test_outside_and_denied_carry_exclusive(self):
+        for result in ("outside", "denied"):
+            data = self.read({"result": result, "command": PERF_RUN, "exclusive": True})
+            self.assertEqual((data["result"], data["exclusive"]), ("denied", True), result)
+
+    def test_bad_type_is_false_not_a_step_error_and_old_results_work(self):
+        for value in ("true", 1, None, {"a": 1}):
+            data = self.read({"result": "outside", "command": PERF_RUN, "exclusive": value})
+            self.assertEqual((data["result"], data.get("outside"), data["exclusive"]), ("denied", True, False))
+        old = self.read({"result": "outside", "command": "make test", "reason": "pełne testy"})
+        self.assertEqual((old["result"], old["outside"], old["exclusive"], old["command"]),
+                         ("denied", True, False, "make test"))
+        self.assertFalse(self.read({"result": "done", "notes": ["note.md"], "exclusive": True})["exclusive"])
+
+
+class StepCardExclusiveTest(unittest.TestCase):
+    def test_outside_contract_tells_to_mark_measurements_exclusive(self):
+        from tide_daemon.cardflow import handoff
+        text = handoff.command_policy(["make test"], [], step_dir="/s")
+        self.assertIn('{"result":"outside"', text)
+        self.assertIn("Do każdego pomiaru wydajności i innego polecenia, którego wynik zależy od obciążenia maszyny, "
+                      "dopisz w wyniku\n`\"exclusive\": true`", text)
+        box = handoff.runner_policy(handoff.BOX_RUNNER, ["npm test"], [], step_dir="/s", profile={"verify": []})
+        self.assertNotIn('"exclusive"', box)     # pudełko nie ma wyniku `outside`
+
+    def test_plan_standard_has_version_with_change_note_and_contract_sentence(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                            "docs", "agent-plan-standard.md")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertTrue(text.split("\n")[2].startswith("Wersja 1.5,"))
+        self.assertIn("**Zmiana 1.5 (K-39, PT-376):**", text)
+        contract = text.split("**Kontrakt kroku.**", 1)[1].split("**Testy ticketu i review.**", 1)[0]
+        self.assertIn('`"exclusive": true`', contract)
 
 
 DEFAULTS = heavyqueue.default_patterns()
@@ -495,6 +808,20 @@ class PatternClassifyTest(unittest.TestCase):
     def test_compound_commands_and_bad_patterns_do_not_match(self):
         self.assertFalse(self.heavy("make test && rm -rf x", ["make test *"], None))
         self.assertFalse(self.heavy("make lint", ["", "   ", "*", "make lint; rm x"], None))
+
+    def test_script_is_light_then_heavy_then_needs_quiet(self):
+        # `roots` = worktree ticketu i repozytorium projektu (K-39 #6, PT-376).
+        roots = (WORKTREE, REPO)
+        command = "bash daemon/tests/perf_gate_k98.sh build/x"
+        self.assertFalse(self.heavy(command, [], None, roots))
+        self.assertFalse(heavyqueue.needs_quiet(command, roots, []))
+        self.assertTrue(self.heavy(command, [PERF], None, roots))
+        self.assertFalse(heavyqueue.needs_quiet(command, roots, []))
+        self.assertTrue(heavyqueue.needs_quiet(command, roots, [PERF]))
+        for spelling in ("bash ./daemon/tests/perf_gate_k98.sh build/x", f"sh {WORKTREE}/daemon/tests/perf_gate_k98.sh y"):
+            self.assertTrue(heavyqueue.needs_quiet(spelling, roots, [PERF]), spelling)
+        self.assertFalse(heavyqueue.needs_quiet("bash /tmp/daemon/tests/perf_gate_k98.sh x", roots, [PERF]))
+        self.assertTrue(heavyqueue.needs_quiet("ss -ltnp", roots, [], marked=True))
 
     def test_pattern_matches_is_one_shared_function(self):
         argv = heavyqueue.command_argv("sh ./daemon/tests/perf_gate_k98.sh a", ROOTS)

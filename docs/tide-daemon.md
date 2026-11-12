@@ -1682,7 +1682,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
-| `queue` | stan kolejki poleceń poza piaskownicą (K-39 #4, PT-374; tylko usługa z przepływem karty, po pierwszym ticku — stara usługa nie ma pola): `heavy` `{limit, running: [{step, card, ticket, command, since, kind}], waiting: [{…, reason}]}` (`kind`: `outside` albo `merge-check`; `waiting` w kolejności startu, `reason` to zdanie usługi), `outside` (lekkie) `{perProject, total, occupied: {total, projects: {slug: n}}, running: […], waiting: […]}` (`occupied` liczy trwające razem z ciężkimi, bo liczą się do limitów; wpisy lekkich mają `project`), `limits` `{heavyLimit, providerSlots, providerSlotsDefault}`. Obciążenie maszyny (`heavy.load`) dochodzi w #6, część `steps` w #10 |
+| `queue` | stan kolejki poleceń poza piaskownicą (K-39 #4, PT-374; tylko usługa z przepływem karty, po pierwszym ticku — stara usługa nie ma pola): `heavy` `{limit, running: [{step, card, ticket, command, since, kind, exclusive}], waiting: [{…, reason}], load: {avg1, cores, threshold, error}}` (`kind`: `outside` albo `merge-check`; `exclusive` — polecenie wymagające ciszy, K-39 #6; `waiting` w kolejności startu, `reason` to zdanie usługi, także o ciszy; `load` — jeden odczyt obciążenia maszyny na tick, `error` niepusty przy błędzie odczytu), `outside` (lekkie) `{perProject, total, occupied: {total, projects: {slug: n}}, running: […], waiting: […]}` (`occupied` liczy trwające razem z ciężkimi, bo liczą się do limitów; wpisy lekkich mają `project`), `limits` `{heavyLimit, providerSlots, providerSlotsDefault}`. Część `steps` dochodzi w #10 |
 | `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
 
 Karta ma też `youtrackSync` (PT-7): `null` bez pola `youtrack`, inaczej `{status, text, issue, issueState, url,
@@ -2615,6 +2615,35 @@ Ticket, którego ciężkie polecenie czeka na miejsce, ma w pełnej karcie (`tic
 polecenie zachowuje napis `w kolejce: <polecenie>`. Dziennik usługi zapisuje powód czekania raz na zmianę
 („ciężkie polecenia: 2 z 2 zajęte (…)”).
 
+**Polecenia wymagające ciszy (K-39 #6, PT-376).** Pomiar wydajności zgłoszony przez krok jako wymagający ciszy rusza
+sam dopiero na spokojnej maszynie, a w trakcie nie startuje nic ciężkiego (wcześniej koordynator ręcznie wstrzymywał
+karty przez `SetCardPaused`).
+
+- *Znacznik*: wynik kroku `outside` albo `denied` z poleceniem może mieć `"exclusive": true` (standard planu 1.5,
+  „Kontrakt kroku”); pole trafia do `step.finished` jako `exclusive` (każdy wynik `denied`; zły typ — `false`, nie błąd
+  kroku). Kartka kroku przy kontrakcie `outside` każe je dopisać do każdego pomiaru wydajności i innego polecenia,
+  którego wynik zależy od obciążenia maszyny.
+- *Wzorce* `quietCommands` (ustawienie przepływu, domyślnie pusta lista): polecenie pasujące do wzorca wymaga ciszy
+  także bez znacznika. Dopasowanie to ta sama funkcja co `heavyCommands` (`heavyqueue.pattern_matches`, argumenty
+  z `roots` i normalizacją), więc `bash daemon/tests/perf_gate_k98.sh *` rozpoznaje skrypt pomiaru w worktree.
+  Polecenie wymagające ciszy jest zawsze ciężkie. Próba testów po scaleniu nie wymaga ciszy.
+- *Warunek ciszy* (`heavyqueue.quiet`): brak trwających ciężkich i 1-minutowe obciążenie (`loadavg1`) mniejsze niż
+  liczba rdzeni / 2. Odczyt jest wstrzykiwany (`heavyqueue.read_load`: `/proc/loadavg`, `os.cpu_count()`); błąd
+  odczytu oznacza warunek niespełniony z powodem — nigdy start.
+- *Start* (`heavyqueue.admit`): polecenie wymagające ciszy rusza tylko przy spełnionym warunku; gdy trwa (albo
+  właśnie rusza), żadne inne ciężkie nie startuje; gdy czeka na czele kolejki ciężkich (pierwszy wpis w kolejności,
+  który nie ruszył), nowsze ciężkie też nie startują (opróżnianie), żeby nie czekało w nieskończoność. Wpis wymagający
+  ciszy dalej w kolejce niczego nie wstrzymuje. Lekkie polecenia i kroki agentów nie są wstrzymywane: nie przechodzą
+  przez `admit`, a starsza zgoda ciężka wstrzymana ciszą nie trzyma w kolejce lekkich ani innych projektów.
+- *Powody* (zdania usługi): „czeka na ciszę: obciążenie 7,1 przy progu 6,0”, „czeka na ciszę: biegnie make test
+  (K-36)”, „czeka na ciszę: nie da się odczytać obciążenia maszyny (…)”, „wstrzymane: na czele kolejki czeka polecenie
+  wymagające ciszy (K-36)”, „wstrzymane: biegnie polecenie wymagające ciszy: <polecenie> (K-36)”. Ticket dostaje
+  zdanie jako `statusLabel` z `cause: quiet`, kafelek — w nawiasie po napisie kolejki, a migawka — w
+  `queue.heavy.waiting[].reason`. `queue.heavy.load` podaje `avg1`, `cores`, `threshold` i `error`, a wpisy
+  `running`/`waiting` mają `exclusive`.
+- *Restart*: znacznik ciszy odtwarza się z `step.finished.exclusive` i bieżących `quietCommands` (dla trwających
+  i czekających); klasa jest pamiętana do końca uruchomienia polecenia, więc zmiana wzorców dotyczy nowych zgłoszeń.
+
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
 (`journal.state`), a `snapshot_json` tylko je dołącza — bez odczytów dziennika i plików kroków w ścieżce migawki.
@@ -3508,6 +3537,11 @@ poleceń poza piaskownicą i kolejka ciężkich poleceń”). `GetCardFlowSettin
 niepoprawna wartość w pliku) — lista domyślna; zapisana pusta lista `[]` oznacza brak wzorców (ciężkie zostają
 polecenia kontraktu i próby po scaleniu). `SetCardFlowSettings` odrzuca wartość, która nie jest listą napisów,
 oraz pusty wzorzec (`""`, same spacje, `*`) kodem `bad-settings` przed zapisem; zapis zachowuje nieznane klucze.
+
+`quietCommands` (PT-376) — lista napisów-wzorców poleceń wymagających ciszy (składnia jak `heavyCommands`; sekcja
+„Polecenia wymagające ciszy”). `GetCardFlowSettings` zwraca ją zawsze: brak klucza albo niepoprawna wartość w pliku —
+lista pusta. `SetCardFlowSettings` odrzuca wartość, która nie jest listą napisów, oraz pusty wzorzec kodem
+`bad-settings` przed zapisem; zapis zachowuje nieznane klucze.
 
 **Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
 `caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,

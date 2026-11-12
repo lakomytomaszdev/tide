@@ -725,6 +725,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "heavyLimit": heavyqueue.limit_of(data.get("heavyLimit")),
                 "ticketsPerCard": ticketlimit.default_of(data.get("ticketsPerCard")),
                 "heavyCommands": heavyqueue.patterns_of(data.get("heavyCommands")),
+                "quietCommands": heavyqueue.quiet_patterns_of(data.get("quietCommands")),
                 **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
                 "version": version, "readState": "ready"}
 
@@ -753,7 +754,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def set_flow_settings(self, request: dict) -> dict:
         allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
-                   "heavyLimit", "heavyCommands", "ticketsPerCard", *caretaker.SETTINGS_DEFAULTS}
+                   "heavyLimit", "heavyCommands", "ticketsPerCard", "quietCommands", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -795,6 +796,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Wzorce ciężkich poleceń (PT-382): niepoprawna lista nie trafia do pliku.
         if "heavyCommands" in request and heavyqueue.patterns_problem(request["heavyCommands"]):
             raise FlowError("bad-settings", heavyqueue.patterns_problem(request["heavyCommands"]))
+        # Wzorce poleceń wymagających ciszy (PT-376): składnia jak `heavyCommands`, domyślnie lista pusta.
+        if "quietCommands" in request and heavyqueue.quiet_patterns_problem(request["quietCommands"]):
+            raise FlowError("bad-settings", heavyqueue.quiet_patterns_problem(request["quietCommands"]))
         data = self._settings_data()
         box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
@@ -807,6 +811,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             data["ticketsPerCard"] = request["ticketsPerCard"]
         if "heavyCommands" in request:
             data["heavyCommands"] = heavyqueue.patterns_of(request["heavyCommands"])
+        if "quietCommands" in request:
+            data["quietCommands"] = heavyqueue.quiet_patterns_of(request["quietCommands"])
         if box is not None:
             data["box"] = box
         self._write_settings(data)
@@ -1045,7 +1051,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     states[card] = st
             return queueview.build(
                 states, self._settings_data(),
-                heavy_of=self._heavy_of,
+                heavy_of=self._heavy_of, quiet_of=self._quiet_of, load=self._load_reader(),
                 outside_limits=(OUTSIDE_PER_PROJECT, OUTSIDE_TOTAL), provider_slots_default=DEFAULT_PROVIDER_SLOTS)
         except Exception as exc:
             print(f"tide-daemon: przepływ karty: stan kolejki: {exc!r}", flush=True)
@@ -1060,6 +1066,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _heavy_of(self, card: str, name: str, step: dict, command: str) -> bool:
         """`heavy_of` dla `queueview`: klasa polecenia kroku (`_outside_heavy_of`, pamiętana do końca uruchomienia)."""
         return self._outside_heavy_of(card, {**step, "step": name}, command)
+
+    def _quiet_of(self, card: str, name: str, step: dict, command: str) -> bool:
+        """`quiet_of` dla `queueview`: czy polecenie wymaga ciszy (#6; znacznik kroku i `quietCommands`)."""
+        return self._outside_quiet_of(card, {**step, "step": name}, command)
 
     def warnings(self) -> list[dict]:
         return [{"path": self.journal.path(card), "message": text} for card, text in sorted(self._warnings.items())]
@@ -6281,6 +6291,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
         if data.get("waitFor"):
             extra["waitFor"] = data["waitFor"]
+        if data.get("result") == "denied":
+            # Polecenie wymagające ciszy (K-39 #6, PT-376); stare wyniki bez pola mają `false`.
+            extra["exclusive"] = heavyqueue.exclusive_of(data.get("exclusive"))
         remembered = False
         auto_allow = False
         broken_mcp = self._codex_broken_mcp(step, data)
@@ -6824,10 +6837,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if data["result"] == "outside":
             # Prośba o uruchomienie poza piaskownicą idzie ścieżką zgody na polecenie (dziennik, decyzja,
             # wznowienie, restart), z flagą `outside` — wynik polecenia dostaje wznowiony krok (03.11).
+            # `exclusive` (K-39 #6, PT-376): polecenie wymaga ciszy; zły typ to `false`, nie błąd wyniku.
             return {"result": "denied", "outside": True, "reason": str(data.get("reason") or "")[:600],
                     "question": "", "command": data["command"].strip(),
+                    "exclusive": heavyqueue.exclusive_of(data.get("exclusive")),
                     "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
+                "exclusive": heavyqueue.exclusive_of(data.get("exclusive")) if data["result"] == "denied" else False,
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
                 "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
@@ -7446,7 +7462,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return None
             if not consent.before_start(self, card, step, done, decision):
                 return None
-            heavy = self._outside_heavy_of(card, step, done.get("command") or "")
+            # Polecenie wymagające ciszy (#6: `exclusive` wyniku kroku albo `quietCommands`) jest zawsze ciężkie.
+            heavy = self._outside_heavy_of(card, step, done.get("command") or "",
+                                           heavyqueue.exclusive_of(done.get("exclusive")))
             if self._outside_busy(card):
                 # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
                 # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
@@ -7498,6 +7516,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             tail = "(brak wyniku)"
         self._outside_active.pop(name, None)
         self._outside_heavy_state().pop(name, None)
+        self._outside_quiet_state().pop(name, None)
         # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
         stepstop._systemctl("stop", started["unit"] + ".scope")
         return code, tail
@@ -7872,75 +7891,163 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 approved = False
         return testpolicy.effective_tests(tests, worktree, approved, "", error=error)
 
-    def _outside_heavy_of(self, card: str, step: dict, command: str) -> bool:
+    def _outside_quiet_state(self) -> dict:
+        return self.__dict__.setdefault("_outside_quiet", {})
+
+    def _quiet_patterns(self) -> list:
+        return heavyqueue.quiet_patterns_of(self._settings_data().get("quietCommands"))
+
+    def _outside_heavy_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
         """Klasa polecenia procesu `step` (raz na proces, pamiętana do końca uruchomienia). Błąd odczytu kontraktu
-        albo projektu — lekkie (dotychczasowe limity)."""
+        albo projektu — lekkie (dotychczasowe limity). Polecenie wymagające ciszy (#6) jest zawsze ciężkie."""
+        return self._outside_class(card, step, command, marked)[0]
+
+    def _outside_quiet_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
+        """Czy polecenie procesu `step` wymaga ciszy (K-39 #6, PT-376): pole `exclusive` w `step.finished` albo wzorzec
+        `quietCommands`. Pamiętane razem z klasą ciężkości do końca uruchomienia."""
+        return self._outside_class(card, step, command, marked)[1]
+
+    def _outside_class(self, card: str, step: dict, command: str, marked: bool | None = None) -> tuple[bool, bool]:
+        """(ciężkie, wymaga ciszy) procesu `step`. `marked` — pole `exclusive` wyniku kroku; None — odczyt
+        ze stanu karty (`journal.state`, także po restarcie: znacznik odtwarza się z `step.finished` i ustawień).
+        Próba testów po scaleniu jest ciężka i nie wymaga ciszy."""
         name = step.get("step") or ""
-        known = self._outside_heavy_state()
-        if name in known:
-            return known[name]
-        if mergecheck.is_step(name):
-            heavy = True
-        else:
-            try:
-                _, project = self._project(card)
-                worktree = step.get("worktree") or ""
-                roots = (worktree, project.repo, step.get("stepDir") or "")
-                heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree),
-                                           self._heavy_patterns()).heavy
-            except Exception:
-                heavy = False
-        known[name] = heavy
-        return heavy
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
+        if name not in quiet:
+            exclusive = False
+            if not mergecheck.is_step(name):
+                try:
+                    if marked is None:
+                        marked = heavyqueue.exclusive_of(
+                            (self.journal.state(card).finished.get(name) or {}).get("exclusive"))
+                    exclusive = bool(marked)
+                    _, project = self._project(card)
+                    roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+                    exclusive = heavyqueue.needs_quiet(command, roots, self._quiet_patterns(), marked=exclusive)
+                except Exception:
+                    pass        # błąd projektu albo ustawień: zostaje sam znacznik kroku
+            quiet[name] = exclusive
+        if name not in known:
+            if quiet[name] or mergecheck.is_step(name):
+                heavy = True
+            else:
+                try:
+                    _, project = self._project(card)
+                    worktree = step.get("worktree") or ""
+                    roots = (worktree, project.repo, step.get("stepDir") or "")
+                    heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree),
+                                               self._heavy_patterns()).heavy
+                except Exception:
+                    heavy = False
+            known[name] = heavy
+        return bool(known[name] or quiet[name]), bool(quiet[name])
 
     def _heavy_running(self) -> set:
         """Trwające ciężkie z żywego `_outside_active` (po `_outside_busy` i po każdym starcie w tym ticku, także
         próby po scaleniu) — nie z migawki stanu kart. Po restarcie klasa z dziennika: polecenie prośby kroku,
         ponowienie padniętych modułów (`rerunOf`) jest ciężkie jak jego pełny przebieg, próba po scaleniu zawsze."""
-        known = self._outside_heavy_state()
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
         found = set()
         for name, (card, _unit) in list((getattr(self, "_outside_active", None) or {}).items()):
-            if name not in known:
-                known[name] = self._started_heavy(card, name)
-            if known[name]:
+            if name not in known or name not in quiet:
+                self._started_heavy(card, name)
+            if known.get(name) or quiet.get(name):
                 found.add(name)
         return found
 
+    def _quiet_running(self, running: set) -> set:
+        """Trwające wymagające ciszy (podzbiór `running`, klasa z `_heavy_running`)."""
+        quiet = self._outside_quiet_state()
+        return {name for name in running if quiet.get(name)}
+
     def _started_heavy(self, card: str, name: str) -> bool:
+        """Klasa trwającego polecenia z dziennika (po restarcie); wypełnia pamięć ciężkości i ciszy."""
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
         if mergecheck.is_step(name):
+            known[name] = True
+            quiet.setdefault(name, False)
             return True
         try:
             events = self.journal.read(card)
             started = processidentity.outside_runs(events).get(name) or \
                 processidentity.outside_run(events, name)[1] or {}
-            if started.get("rerunOf"):
-                return True
             current = fold(events)
             step = current.steps.get(name) or {}
-            command = (current.finished.get(name) or {}).get("command") or started.get("command") or ""
+            done = current.finished.get(name) or {}
+            command = done.get("command") or started.get("command") or ""
         except Exception:
-            return False
-        return self._outside_heavy_of(card, {**step, "step": name}, command)
+            known.setdefault(name, False)
+            quiet.setdefault(name, False)
+            return known[name]
+        heavy, _ = self._outside_class(card, {**step, "step": name}, command,
+                                       heavyqueue.exclusive_of(done.get("exclusive")))
+        if started.get("rerunOf") and not heavy:
+            known[name] = heavy = True
+        return heavy
+
+    def _load_reader(self):
+        """Odczyt obciążenia maszyny dla warunku ciszy (#6); testy podmieniają `_read_load`."""
+        return getattr(self, "_read_load", None) or heavyqueue.read_load
+
+    def _outside_describe(self, name: str) -> str:
+        """Opis polecenia do zdań o ciszy: „make test (K-36)” — polecenie z `outside.started` albo prośby kroku."""
+        found = (getattr(self, "_outside_active", None) or {}).get(name) or \
+            (getattr(self, "_outside_waiting", None) or {}).get(name)
+        card = found[0] if found else ""
+        command = ""
+        if card:
+            try:
+                st = self.journal.state(card)
+                command = (st.outside_started.get(name) or {}).get("command") or \
+                    (st.finished.get(name) or st.merge_check_steps.get(name) or {}).get("command") or ""
+            except Exception:
+                command = ""
+        text = " ".join(str(command or name).split())
+        text = text if len(text) <= 40 else text[:39] + "…"
+        return f"{text} ({card})" if card else text
+
+    def _heavy_decision(self, name: str = "") -> "heavyqueue.Admission":
+        """`heavyqueue.admit` z czekającymi ciężkimi, które mogą ruszyć (ich karta nie ma zajętego miejsca projektu
+        ani łącznego; `name` liczy się zawsze), żywym zbiorem trwających i ich znacznikami ciszy."""
+        running = self._heavy_running()
+        quiet = self._outside_quiet_state()
+        waiting = [heavyqueue.Waiting(other, entry[2], bool(quiet.get(other)), entry[0])
+                   for other, entry in list(self._outside_waiting.items())
+                   if _queue_heavy(entry) and (other == name or not self._outside_busy(entry[0]))]
+        return heavyqueue.admit(waiting, running, self._heavy_limit(),
+                                exclusive_running=self._quiet_running(running), describe=self._outside_describe,
+                                load=self._load_reader())
+
+    def _quiet_held(self) -> set:
+        """Czekające ciężkie wstrzymane teraz ciszą (#6). Bez wpisów wymagających ciszy (czekających ani trwających)
+        pusty zbiór bez liczenia decyzji i bez odczytu obciążenia."""
+        quiet = self._outside_quiet_state()
+        if not any(quiet.get(n) for n in self._outside_waiting) and not self._quiet_running(self._heavy_running()):
+            return set()
+        return {n for n, reason in self._heavy_decision().held.items() if heavyqueue.quiet_hold(reason)}
 
     def _heavy_admitted(self, card: str, name: str) -> bool:
-        """Decyzja startu ciężkiego polecenia `name` (już zgłoszonego w kolejce): `heavyqueue.admit` z czekającymi
-        ciężkimi, które mogą ruszyć (ich karta nie ma zajętego miejsca projektu ani łącznego), i żywym zbiorem
-        trwających. Wstrzymane zapamiętuje (zajęte, limit) do statusu ticketu."""
-        running = self._heavy_running()
-        waiting = [heavyqueue.Waiting(other, entry[2]) for other, entry in list(self._outside_waiting.items())
-                   if _queue_heavy(entry) and (other == name or not self._outside_busy(entry[0]))]
-        decision = heavyqueue.admit(waiting, running, self._heavy_limit())
+        """Decyzja startu ciężkiego polecenia `name` (już zgłoszonego w kolejce): `_heavy_decision`. Wstrzymane
+        zapamiętuje do statusu ticketu: (zajęte, limit) przy limicie albo zdanie o ciszy (#6)."""
+        decision = self._heavy_decision(name)
         held = self._heavy_held_state()
         if name in decision.admitted:
             held.pop(name, None)
             return True
+        reason = decision.held.get(name)
+        if heavyqueue.quiet_hold(reason):
+            held[name] = reason
+            self._outside_log(name, reason)
+            return False
         held[name] = (decision.busy, decision.limit)
+        running = self._heavy_running()
         self._outside_log(name, f"ciężkie polecenia: {decision.busy} z {decision.limit} zajęte"
                                 + (f" ({', '.join(sorted(running))})" if running else ""))
         return False
 
     def _heavy_view(self, card: str) -> dict:
-        """Ciężkie polecenia tej karty wstrzymane limitem: krok → (zajęte, limit) — tylko wpisy nadal w kolejce."""
+        """Ciężkie polecenia tej karty wstrzymane w kolejce: krok → (zajęte, limit) przy limicie albo zdanie o ciszy
+        (#6) — tylko wpisy nadal w kolejce."""
         waiting = dict(getattr(self, "_outside_waiting", None) or {})
         return {name: value for name, value in dict(self._heavy_held_state()).items()
                 if (waiting.get(name) or ("",))[0] == card and _queue_heavy(waiting[name])}
@@ -7961,7 +8068,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._outside_waiting[name] = (card, slug, queued, now, heavy)
         self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
         heavy_load = None
-        for other, entry in self._outside_waiting.items():
+        quiet_held = None
+        for other, entry in list(self._outside_waiting.items()):
             other_card, other_slug, other_queued = entry[:3]
             if other == name or (other_queued, other) >= (queued, name):
                 continue
@@ -7970,6 +8078,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     heavy_load = (len(self._heavy_running()), self._heavy_limit())
                 if not heavyqueue.holds_queue(True, *heavy_load):
                     continue    # czeka na miejsce ciężkich — ruszy dopiero po zwolnieniu, nie trzyma innych
+                if quiet_held is None:
+                    # Cisza (#6): starsze ciężkie wstrzymane ciszą (czeka na spokojną maszynę albo za poleceniem
+                    # wymagającym ciszy) nie ruszy teraz, więc nie trzyma lekkich ani innych projektów.
+                    quiet_held = self._quiet_held()
+                if other in quiet_held:
+                    continue
             if other_slug == slug or not self._outside_busy(other_card):
                 if not quiet:
                     self._outside_log(name, f"czeka za starszą zgodą {other}")
@@ -8015,9 +8129,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         name in outside and name not in started and name not in resumed and \
                         approval_live(current, name, now):
                     # Pole `heavy` z tej samej klasyfikacji co przy zgłoszeniu (PT-373): kolejność czekających
-                    # ciężkich po restarcie to dalej czas zgody.
+                    # ciężkich po restarcie to dalej czas zgody. Znacznik ciszy (#6) z `step.finished` i ustawień.
+                    done = current.finished.get(name) or {}
                     heavy = self._outside_heavy_of(other, {**(current.steps.get(name) or {}), "step": name},
-                                                   (current.finished.get(name) or {}).get("command") or "")
+                                                   done.get("command") or "",
+                                                   heavyqueue.exclusive_of(done.get("exclusive")))
                     self._outside_waiting.setdefault(name, (other, slug, queued, now, heavy))
 
     def _outside_exit(self, card: str, name: str) -> str:
