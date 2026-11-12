@@ -26,7 +26,7 @@ class ReviewGateTest(_FixJournal):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         engine = self.engine
-        engine._process_check = lambda *args: engine.journal.state(CARD)
+        engine._process_check = lambda *args, **_: engine.journal.state(CARD)
         engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
         # Testy PT-312 sprawdzają dotychczasową regułę: projekt z polityką `other-model` (PT-330).
         self.project = SimpleNamespace(repo="/r", review_independence="other-model")
@@ -310,7 +310,7 @@ class ReviewGateTest(_FixJournal):
         engine = self.engine
         item = SimpleNamespace(id=CARD, title="T", description="D", projects=[])
         engine._project = lambda card: (item, self.project)
-        engine._process_state = lambda card: engine.journal.state(card)
+        engine._process_state = lambda card, **_: engine.journal.state(card)
         engine._next_step_id = lambda *args: next_step
         engine._step_base_context = lambda *args: ("", {})
         engine._configured_reads = lambda *args, **kw: []

@@ -25,7 +25,14 @@ UNKNOWN_IDENTITY = "nieznana lub niespójna tożsamość procesu w historii kart
 def _checked_state(events):
     """Stan procesu karty: `fold` historii ścisłej z kontrolą tożsamości procesów (ten sam model
     `process_identities`, liczony raz w `fold`). Nieznana albo niespójna tożsamość — ValueError."""
-    st = fold(events)
+    try:
+        st = fold(events)
+    except (TypeError, KeyError, AttributeError):
+        # Historia, na której `fold` się wywraca, rozstrzyga najpierw model tożsamości (jak przed PT-415): nieznana
+        # tożsamość to ValueError (unknown), a inny błąd złożenia przechodzi dalej.
+        if any(identity.state != "ok" for identity in process_identities(events).values()):
+            raise ValueError(UNKNOWN_IDENTITY) from None
+        raise
     if any(identity.state != "ok" for identity in st.process_identities.values()):
         raise ValueError(UNKNOWN_IDENTITY)
     return st
