@@ -650,6 +650,9 @@ DELEGATIONS = {
     # PT-373: kolejka ciężkich poleceń — zajętość z żywego zbioru i klasa trwających po restarcie.
     ("cardflow/engine.py", "FlowEngine._heavy_admitted"): "outside",
     ("cardflow/engine.py", "FlowEngine._heavy_running"): "outside",
+    # PT-376: decyzja kolejki ciężkich z ciszą i wpisy wstrzymane ciszą (`_outside_behind`).
+    ("cardflow/engine.py", "FlowEngine._heavy_decision"): "outside",
+    ("cardflow/engine.py", "FlowEngine._quiet_held"): "outside",
     ("cardflow/engine.py", "FlowEngine.resolve_merge_check"): "process-check",
     # PT-313: udany start zdejmuje kartę z Backlogu przez moved(), jak wznowienie w set_paused.
     ("cardflow/engine.py", "FlowEngine._lift_from_backlog"): "advance-resume",

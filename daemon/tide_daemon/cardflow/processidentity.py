@@ -208,7 +208,7 @@ EVENTS = MappingProxyType({
                                note="run/run-always/run-ticket to zgoda outside; inna wartość to zwykły ślad")})),
     "step.finished": Event("step-trace", _trace(
         writer=("ticket",),
-        neutral=("baseProposal", "canAllow", "command", "commands", "exit", "fault", "faultCause", "kept",
+        neutral=("baseProposal", "canAllow", "command", "commands", "exclusive", "exit", "fault", "faultCause", "kept",
                  "messages", "mode", "network", "notes", "options", "outcome", "pattern", "question", "reason",
                  "result", "snapshotDir", "stalledSince", "waitFor", "wip"),
         extra={"outside": Field("discriminator", "bool", domain="outside",
