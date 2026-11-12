@@ -1340,7 +1340,7 @@ Rectangle {
                         }
                         Tide.TextButton {
                             objectName: "settingMaxTicketsButton"
-                            text: "Zapisz tickety naraz"
+                            text: "Ustaw tickety naraz"
                             variant: "outline"
                             onClicked: view.applyMaxTickets()
                         }

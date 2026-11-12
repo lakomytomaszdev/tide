@@ -685,7 +685,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """(ustawienia, wersja): jeden odczyt pliku (zapis jest atomowy) i skrót tych samych bajtów jako wersja
         odpowiedzi GetCardFlowSettings (K-98 #2) — treść i wersja zawsze pochodzą z tej samej wersji pliku."""
         try:
-            with open(self.settings, "rb") as fh:
+            with open(getattr(self, "settings", None) or os.devnull, "rb") as fh:
                 raw = fh.read()
         except OSError:
             return {}, "missing"

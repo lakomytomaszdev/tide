@@ -63,8 +63,7 @@ class TicketLimitBase(flow_tests.FlowInProcess):
         time.sleep(seconds)
 
     def start_plan(self, modes, *, ticket_limit=None, card_max=None):
-        if ticket_limit is not None:
-            self.settings_set(ticketsPerCard=ticket_limit)
+        self.settings_set(ticketsPerCard=ticket_limit if ticket_limit is not None else 2)
         card = self.card()
         if card_max is not None:
             self.assertTrue(json.loads(self.board.update_card(card, json.dumps({"maxTickets": card_max})))["ok"])
@@ -154,7 +153,12 @@ class TicketLimitTest(TicketLimitBase):
 class TicketLimitSettingsTest(TicketLimitBase):
     def test_settings_default_and_validation(self):
         engine = self.flow.engine
-        self.assertEqual(engine.get_flow_settings()["ticketsPerCard"], 2)
+        with open(self.settings, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop("ticketsPerCard")
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        self.assertEqual(engine.get_flow_settings()["ticketsPerCard"], 2, "brak klucza — domyślne 2")
         self.assertEqual(engine.set_flow_settings({"ticketsPerCard": 4})["ticketsPerCard"], 4)
         from tide_daemon.cardflow.engine import FlowError
         for bad in (0, 7, True, 2.5, "3", None):
