@@ -346,6 +346,7 @@ Odczyty gita jako dane (K-36): „co zmieniła ta karta” bez UI. Obiekt `/Git`
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Diff(s request)` | `→ s` | Diff jako dane. `request` to obiekt JSON ze źródłem (niżej). Odpowiedź `{ok: true, …DiffData}` albo `{ok: false, error, message}`; opóźniona — git działa w puli wątków runnera odczytu (`GitReader.submit`), pętla usługi w tym czasie obsługuje inne wywołania |
+| `BranchMap(s request)` | `→ s` | Mapa gałęzi kart i ticketów projektu jako dane (K-99, PT-387; opis niżej, „Mapa gałęzi”). Odpowiedź opóźniona: projekcja dzienników kart biegnie w tej samej puli wątków runnera odczytu, nie w wątku głównym |
 
 **Źródło `card`** (PT-357): `{"source": "card", "card": "K-N", "targetRef": "refs/heads/master"}` (`targetRef`
 opcjonalny; pusty napis = brak). Działa w każdym stanie karty, która ma gałąź (także po domknięciu i scaleniu,
@@ -427,7 +428,7 @@ i działają bez zmian; widok diffa traktuje brak `groups[]` jak dotąd (sama li
 
 **Walidacja wejścia `commit`, `range` i `worktree`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`
 — `known_repo` — którą `path` źródła `worktree` (PT-360) wywołuje tak samo jak `repo`, bez drugiej kopii; użyje jej
-też K-99 dla `Git.Commits` i `Git.BranchMap`):
+też K-99 dla `Git.Commits`; `Git.BranchMap` nie przyjmuje ścieżek — repozytorium bierze z projektu Tablicy):
 
 - `repo` (dla `worktree` — `path`) musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
   kanonicznej (`realpath`, bez dowiązań) równą repozytorium projektu Tablicy (`repo` z projektu) albo worktree
@@ -529,6 +530,66 @@ zmian.”. Odpowiedź bez `groups[]` wygląda jak dotąd.
 | `no-worktree` | źródło `worktree`: `path` jest na liście Worktrees, ale katalogu już nie ma (usunięty po odczycie listy); `message`: „Katalog worktree nie istnieje (został usunięty?): <ścieżka>” (PT-360) |
 | `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
 | `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
+
+### Mapa gałęzi (`Git.BranchMap`, K-99, PT-387)
+
+Jak gałęzie kart i ticketów projektu wiszą na sobie — dane dla trybu „Gałęzie” okna Worktrees. Ta część to **czysta
+projekcja dzienników kart i Tablicy, bez uruchamiania gita** (`gitread/branchmap.py`); metryki gita (istnienie
+gałęzi, stary start, worktree, upstream) dochodzą w #11 jako nowe pola węzła, bez zmiany istniejących.
+
+- `GitMonitor` dostaje obok źródła dziennika źródło Tablicy (`board_source`: projekty `slug`, `name`, `repo` i karty
+  `project`, `title`, `column`; tylko odczyt). Źródło Tablicy jest wołane w wątku głównym, jak lista repozytoriów
+  `Diff`, a projekcja wielu dzienników — w puli runnera odczytu. **Repozytorium mapy pochodzi z projektu Tablicy,
+  nigdy z żądania.** Stan kart czytają wyłącznie istniejące funkcje (`Journal.state` → `fold`, `base_of`,
+  `ticket_of`, `merge_of`); odczyt nie dopisuje zdarzeń do dziennika, nie zapisuje Tablicy i nie zmienia refów.
+- **Bez pola `mainRef`** (także po #11): mapa nie potrzebuje gałęzi głównej — drzewo wisi pod refami baz z dzienników.
+  „Nazwaną główną” dla okna scalania podaje `ListCardBranches` (`mainRef`), a karta ma `flow.mainBranch` w migawce.
+
+**Żądanie `{}`** — projekty Tablicy z repozytorium (lista wyboru w Worktrees), po nazwie:
+`{ok: true, projects: [{slug, name, repo, cards}]}`; `cards` to liczba kart Tablicy z tym projektem głównym. Projekt
+bez repozytorium nie jest na liście.
+
+**Żądanie `{"project": "<slug>", "limit"?: N}`** — mapa projektu:
+`{ok: true, project, repo, nodes, edges, total, truncated, warnings}`.
+
+- Karta należy do mapy, gdy jej ostatnie zlecenie (`card.started`) dotyczy tego projektu (`project`) albo jego
+  repozytorium (ścieżka kanoniczna). Karta bez gałęzi (brak udanego `card-branch`) nie ma węzła.
+- `nodes[]` — najpierw węzły `base` (po refie) i `unknown-base`, potem karty od najnowszej, każda ze swoimi ticketami:
+
+| Pole | Opis |
+| --- | --- |
+| `id` | `base:<ref>`, `unknown-base`, `card:K-N`, `ticket:K-N:PT-M` |
+| `kind` | `base` — ref użyty w dziennikach jako baza startu albo cel scalenia karty (np. `refs/heads/develop`, `refs/remotes/origin/main`; nie powstaje dla `master`, którego dzienniki nie wymieniają), `card` — gałąź karty z wyniku `card-branch`, `ticket` — gałąź ticketu z wyniku `ticket-branch`, `unknown-base` — jedna grupa kart z bazą `unknown` |
+| `ref`, `branch` | pełny ref i krótka nazwa (`refs/remotes/origin/develop` → `origin/develop`); dla `unknown-base` puste |
+| `card`, `ticket` | `K-N` (karta i ticket), `PT-M` (ticket) |
+| `title` | karta — tytuł z Tablicy; ticket — tytuł z zatwierdzonego planu albo rezerwacji; `unknown-base` — „Nieznana baza” (pole pomijane, gdy brak) |
+| `column` | tylko karta: kolumna z pliku karty Tablicy |
+| `state` | `active`; `closed` — karta domknięta (`card.finished`/`card.closed`) albo w Gotowe/Archiwum, ticket niescalony takiej karty; `merged` — karta scalona do celu (`card.merged`/`card.main-merged`), ticket scalony do gałęzi karty (wynik `merge`); `rejected` — odrzucony ticket (`ticket.rejected`); węzły `base` i `unknown-base` — `active` |
+| `started` | `{ref, sha, date}`: karta — baza z `base_of` (po skutecznej korekcie bazy `card.base-changed` nowa baza, a pierwotna w `started.initial: {ref, sha}`; baza `unknown` — puste `ref` i `sha`), `date` — czas zlecenia albo korekty; ticket — gałąź karty, SHA startu z wyniku `ticket-branch` i jego czas |
+| `merged` | `{targetRef, sha, date}`: karta — cel, `resultCommit` i czas z `card.merged` (stare `card.main-merged` przez `merge_of`); ticket — gałąź karty, commit i czas wyniku `merge` |
+
+- `edges[]` — `{kind, from, to}`. `start`: od rodzica do gałęzi — karta od węzła swojej bazy, od gałęzi innej karty
+  z mapy (dopasowanie po pełnym refie: karta wystartowana od `refs/heads/card/k-12-…` wisi pod `card:K-12`) albo od
+  `unknown-base`; ticket od gałęzi karty. `merge`: od scalonej gałęzi do celu — ticket → karta (z wyniku `merge`,
+  także gdy gałąź ticketu usunięto: dane pochodzą z dziennika), karta → cel z `card.merged` (gałąź innej karty
+  z mapy albo węzeł `base`). Każdy koniec krawędzi jest węzłem odpowiedzi.
+- **Limit:** `limit` to liczba gałęzi kart i ticketów, domyślnie 200, najwyżej 500 (większy jest obcinany do 500;
+  zero, liczba ujemna albo nie-liczba to `bad-request`). Wybierane są najnowsze karty — po ostatnim zdarzeniu karty
+  albo któregoś z jej ticketów — razem z ich najnowszymi ticketami, więc ticket nigdy nie zostaje bez swojej karty.
+  `total` to liczba wszystkich gałęzi kart i ticketów projektu, `truncated: true` — część pominięto. Gdy pominięto
+  kartę, z której wystartowała inna, ta druga wisi pod węzłem `base` o refie gałęzi pominiętej karty.
+- `warnings[]` — zdania po polsku, np. dziennik karty, którego nie dało się odczytać (karta jest pomijana, reszta
+  mapy zostaje), albo scalenie karty bez zapisanego celu.
+
+**Błędy** (`{ok: false, error, message}`; nieoczekiwany wyjątek nie trafia do odpowiedzi — tylko do dziennika usługi):
+
+| `error` | Kiedy |
+| --- | --- |
+| `bad-request` | żądanie nie jest obiektem JSON, `project` nie jest niepustym napisem, zły `limit` |
+| `unknown-project` | nie ma projektu Tablicy o tym slugu |
+| `no-repo` | projekt nie ma repozytorium |
+| `unavailable` | Tablica albo przepływ karty (dziennik kart) są wyłączone w usłudze, albo nie dało się odczytać Tablicy |
+| `cancelled`, `failed` | zamykanie usługi; nieoczekiwany błąd projekcji (ogólny komunikat) |
 
 ## Nowe zadanie
 
@@ -5636,7 +5697,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_worktree_open.py` — bramka `Open` (katalog z listy, plik tylko dla Ridera, `..`, dowiązania, rodzeństwo o wspólnym prefiksie) i `WorktreeMonitor.open` z atrapą `Popen` (argv `[rider, plik]`, `cwd` = katalog pliku, terminal odmawia),
 - `daemon/tests/test_gitread_diffdata.py` — `Git.Diff` źródła `card` na tymczasowych repozytoriach i dzienniku karty: pliki, hunki i sumy zgodne z `git diff` i `git diff --numstat` od przypiętej bazy, zakres po ruchu gałęzi startowej, `targetRef` (merge-base, ref bez wspólnej historii, ref z `-`), kody `unknown-base`, `unknown-card`, `no-branch`, `bad-request`, gałąź główna `main` i `develop` bez `origin`, karta z grupy kart (repozytorium z `card.started`), brak zapisu do dziennika i refów, pułapka konfiguracji z PT-348 nieuruchomiona; duże diffy (PT-355): limit linii i bajtów z pełną listą plików i `truncated`, plik `large` bez hunków, binarne z `oldSize`/`newSize`, `options.path` (także `large` i przycięty) i `options.context`, walidacja `options`, odczyt strumieniowy `Cancellation.run_capped` (nieskończone wyjście ucięte bez czytania całości, dokładnie limit to nie ucięcie); `GitMonitor` — odpowiedź z puli wątków po pracy w tle, pętla wolna,
 - `daemon/tests/test_gitread_diffsources.py` (K-36, PT-349) — `Git.Diff` źródła `ticket` (merge-base z gałęzią karty, drugi ticket bez plików pierwszego, ticket scalony z usuniętą gałęzią: zakres z pary `intent`/`result` akcji `merge` równy diffowi sprzed usunięcia, `no-ticket-range` bez zapisu, z nieudanym scaleniem, z SHA spoza repozytorium i z wartością zaczynającą się od `-`, nieznany ticket i karta), `commit` (pierwszy rodzic, commit scalający, commit początkowy względem pustego drzewa, worktree z listy, `options.path`) i `range` (merge-base, zmiany na `from` poza wynikiem, pełne refy i SHA, brak wspólnej historii); walidacja `repo`/refów (`validate.py`): repozytorium spoza listy, przez dowiązanie i `..` oraz ref z `-` odrzucone `bad-request` bez wywołania runnera, dowiązanie do znanego repozytorium rozwiązane do ścieżki kanonicznej, brak zapisu do dziennika i zmian refów oraz indeksu; `GitMonitor` przekazuje źródło znanych repozytoriów,
-- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów,
+- `daemon/tests/test_gitread_branchmap.py` (K-99, PT-387) — `Git.BranchMap` jako projekcja dzienników kart (zdarzenia w kształcie zapisów silnika) i Tablicy: lista projektów z repozytorium, węzły i krawędzie kart w toku, domkniętej, scalonej i z odrzuconym ticketem, karta od gałęzi innej karty, korekta bazy (`started.initial`) i korekta nieskuteczna, grupa `unknown-base`, scalony ticket z krawędzią `merge` bez gita, bazy `main`/`develop`/`origin/develop` bez węzła `master`, brak `mainRef`, limit (najnowsze, `total`, `truncated`, domyślnie 200, obcięcie do 500), błędy bez wyjątku i bez treści wyjątku, brak zapisu dziennika i Tablicy; `GitMonitor.branch_map` — odpowiedź z puli po pracy w tle, źródło Tablicy w wątku głównym, atrapa runnera bez wywołań gita,
+- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów; `BranchMap()` (PT-387): lista projektów, mapa karty i ticketu z prawdziwego dziennika, `unknown-project`, `bad-request`, bez nowych zdarzeń i zmian refów,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_homes.py` — kilka katalogów danych Codexa na świecie w katalogu tymczasowym (`~/.codex`, `~/snap/codex/33`, `34`, `current` → `34`; nigdy prawdziwe katalogi — `tests/__init__.py` ustawia też nieistniejący `$CODEX_HOME` dla usług uruchamianych bez `--codex-dir`): domyślna lista i `$CODEX_HOME`, `--codex-dir` powtarzane, rozwiązywanie `current` (także po odświeżeniu snapa), starsza rewizja pomijana, kopia tego samego pliku w dwóch katalogach liczona raz (Agents, KRunner, worktrees, raport, koordynacja), segmenty wątku jako jedna pozycja w Agents i KRunnerze, a osobno w raporcie i worktrees, przepięcie obserwacji na nową rewizję po odświeżeniu snapa, „Wznów” w raporcie dla sesji ze snapa, `is_snap` tylko pod `~/snap/codex`, przypisanie procesu ze ścieżką z numerem rewizji i Meta+A do karty Konsole, nowe pliki w obu katalogach zauważone przez obserwację katalogów (bez przeglądu co 30 s), nazwy wątków i baza stanu ze snapa w KRunnerze, wznowienie Codexem ze snapa albo spoza niego,
 - `daemon/tests/test_codex_desktop.py` — Codex Desktop: odnośnik tylko z UUID, linia `Exec` (kody pól, cudzysłowy, brak programu), szukanie pliku `.desktop` i `$TIDE_CODEX_DESKTOP`, polecenie jako lista argumentów w `systemd-run --scope`, zmienne ekranu z `systemctl --user show-environment`; uruchomienie z atrapą `chatgpt` (`fakebin.py`) — nigdy prawdziwej aplikacji; wątek główny podagenta (kilka poziomów, nieznany rodzic, pętla), zwijanie podagentów i stan najpilniejszy, podagent bez rodzica, `AgentMonitor.activate` i Meta+A (otwarcie wątku głównego, podniesienie okna `ChatGPT`) z atrapą aplikacji,

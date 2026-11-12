@@ -293,7 +293,12 @@ def main(argv=None) -> int:
     def flow_journal():
         return board.flow.engine.journal if board is not None and board.flow is not None else None
 
-    git_reads = GitMonitor(flow_journal, parent=app, repos_source=known_git_repos)
+    def board_for_map():
+        """Projekty i karty Tablicy dla `Git.BranchMap` (tylko odczyt); None — Tablica wyłączona."""
+        from .gitread.branchmap import board_view
+        return board_view(board.store.load()) if board is not None else None
+
+    git_reads = GitMonitor(flow_journal, parent=app, repos_source=known_git_repos, board_source=board_for_map)
     # „Zaciągnij” i pole `flowBranch` (PT-353): gałęzie kart w przepływie z tego samego dziennika (odczyt w wątku
     # roboczym Worktrees, bez blokady repozytorium).
     trees.scanner.journal_source = flow_journal

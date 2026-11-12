@@ -36,6 +36,10 @@ Obiekt /Git, interfejs org.tide.Daemon.Git (odczyty gita jako dane, K-36, git_mo
 - Diff(s request) -> s       diff jako dane (odpowiedź po zakończeniu, git w puli wątków runnera odczytu):
                              request {"source": "card", "card": "K-N", "targetRef"?}; JSON {ok: true, ...DiffData}
                              albo {ok: false, error, message} (docs/tide-daemon.md, „Interfejs Git”).
+- BranchMap(s request) -> s  mapa gałęzi kart i ticketów z dzienników kart i Tablicy, bez gita (K-99, PT-387;
+                             odpowiedź po zakończeniu, projekcja w puli wątków runnera odczytu): request {} →
+                             {ok, projects}; {"project": slug, "limit"?} → {ok, project, repo, nodes, edges, total,
+                             truncated, warnings} albo {ok: false, error, message}.
 
 Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
 - Repos() -> s               repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych,
@@ -308,6 +312,10 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
 
 GIT_XML = f"""<interface name="{GIT_IFACE}">
   <method name="Diff">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="BranchMap">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
@@ -821,17 +829,26 @@ class GitAdaptor(QDBusAbstractAdaptor):
         self.monitor = monitor
         self.bus = bus
 
-    @pyqtSlot(str, QDBusMessage, result=str)
-    def Diff(self, request: str, message: QDBusMessage) -> str:
-        # Git działa w puli wątków runnera odczytu; odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+    def _delayed(self, message: QDBusMessage, name: str):
         message.setDelayedReply(True)
         pending = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
 
         def reply(text: str) -> None:
             if not self.bus.send(pending.createReply([text])):
-                print("tide-daemon: nie udało się odesłać wyniku Git.Diff", flush=True)
+                print(f"tide-daemon: nie udało się odesłać wyniku Git.{name}", flush=True)
 
-        self.monitor.diff(request, reply)
+        return reply
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Diff(self, request: str, message: QDBusMessage) -> str:
+        # Git działa w puli wątków runnera odczytu; odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.diff(request, self._delayed(message, "Diff"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def BranchMap(self, request: str, message: QDBusMessage) -> str:
+        # Projekcja dzienników kart w puli wątków runnera odczytu (K-99, PT-387); odpowiedź z opóźnieniem.
+        self.monitor.branch_map(request, self._delayed(message, "BranchMap"))
         return ""
 
 

@@ -69,3 +69,46 @@ class GitDiffDbusTest(FlowCase):
         self.assertEqual(git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"), refs)
         # Pętla usługi odpowiada dalej na inne wywołania (odpowiedź Diff jest opóźniona, z puli wątków).
         self.assertTrue(self.call("Snapshot")["cards"])
+
+    def branch_map(self, request):
+        return self.call("BranchMap", json.dumps(request), path=GIT_PATH, iface=GIT_IFACE)
+
+    def test_branch_map_over_dbus_from_real_card_journal(self):
+        """`Git.BranchMap` (K-99, PT-387): projekty Tablicy i mapa gałęzi karty uruchomionej „Od razu”."""
+        intro = self.service.call(SERVICE, GIT_PATH, "org.freedesktop.DBus.Introspectable", "Introspect")
+        self.assertIn('<method name="BranchMap">', intro.arguments()[0])
+        listed = self.branch_map({})
+        self.assertTrue(listed["ok"], listed)
+        self.assertEqual([(p["slug"], p["repo"], p["cards"]) for p in listed["projects"]], [("proj", self.repo, 0)])
+        empty = self.branch_map({"project": "proj"})
+        self.assertEqual((empty["ok"], empty["nodes"], empty["edges"], empty["total"]), (True, [], [], 0))
+
+        card_id = self.card()
+        reply = self.start(card_id)
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card_id, "review")
+        events = len(self.events(card_id))
+        refs = git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)")
+
+        data = self.branch_map({"project": "proj"})
+        self.assertTrue(data["ok"], data)
+        self.assertNotIn("mainRef", data)
+        self.assertEqual((data["project"], data["repo"], data["total"], data["truncated"]), ("proj", self.repo, 2, False))
+        nodes = {n["id"]: n for n in data["nodes"]}
+        card = nodes[f"card:{card_id}"]
+        self.assertEqual((card["branch"], card["state"], card["title"]), (reply["cardBranch"], "active", "Eksport CSV"))
+        self.assertEqual((card["started"]["ref"], card["started"]["sha"]), ("refs/heads/master", self.master))
+        ticket = nodes[f"ticket:{card_id}:{reply['ticket']}"]
+        self.assertEqual((ticket["branch"], ticket["state"], ticket["started"]["ref"]),
+                         (reply["branch"], "active", f"refs/heads/{reply['cardBranch']}"))
+        self.assertEqual(nodes["base:refs/heads/master"]["kind"], "base")
+        self.assertIn({"kind": "start", "from": "base:refs/heads/master", "to": card["id"]}, data["edges"])
+        self.assertIn({"kind": "start", "from": card["id"], "to": ticket["id"]}, data["edges"])
+        self.assertEqual(self.branch_map({})["projects"][0]["cards"], 1)
+
+        self.assertEqual(self.branch_map({"project": "brak"})["error"], "unknown-project")
+        bad = self.call("BranchMap", "nie json", path=GIT_PATH, iface=GIT_IFACE)
+        self.assertEqual((bad["ok"], bad["error"]), (False, "bad-request"))
+        self.assertEqual(len(self.events(card_id)), events)
+        self.assertEqual(git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"), refs)
+        self.assertTrue(self.call("Snapshot")["cards"])
