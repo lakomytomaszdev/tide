@@ -65,6 +65,11 @@ LAUNCH_KEYS = ("entry", "mode", "tool", "worktree", "launched")
 PROJECTS_KEY = "projects"
 # Limit ticketów w toku na kartę (PT-375): 1..6, brak klucza — ustawienie przepływu `ticketsPerCard`.
 MAX_TICKETS_KEY = "max-tickets"
+# Priorytet karty (PT-377): kolejność kroków czekających na miejsce u dostawcy (`cardflow/stepqueue`). Brak klucza
+# albo zła wartość — `normal`; w nowych plikach tylko wtedy, gdy różny od `normal`.
+PRIORITY_KEY = "priority"
+PRIORITIES = ("high", "normal", "low")
+DEFAULT_PRIORITY = "normal"
 # Kolumna wyświetlana karty (z pracy agentów albo ręczna) w chwili ostatniego MoveCard (PT-29): „do poprawy”
 # (karta zostaje w swojej kolumnie po skończonej pracy) tylko po przeniesieniu z review albo done.
 MOVED_FROM_KEY = "moved-from"
@@ -197,6 +202,7 @@ class Card:
     launched: str = ""
     projects: list = field(default_factory=list)   # dodatkowe projekty (slugi), bez głównego
     max_tickets: int | None = None   # `max-tickets` (PT-375, 1..6); None — ustawienie domyślne przepływu
+    priority: str = "normal"         # `priority` (PT-377): high, normal, low
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -318,6 +324,11 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
             card.max_tickets = int(raw_max)
         else:
             errors.append(_err(path, f"{name}: niepoprawny limit ticketów „{raw_max}” (1–6) — obowiązuje ustawienie domyślne"))
+    raw_priority = doc.get(PRIORITY_KEY).strip()
+    if raw_priority in PRIORITIES:
+        card.priority = raw_priority
+    elif raw_priority:
+        errors.append(_err(path, f"{name}: niepoprawny priorytet „{raw_priority}” (high, normal, low) — obowiązuje normal"))
     for slug in split_tags(doc.get(PROJECTS_KEY)):
         if not SLUG_RE.match(slug):
             errors.append(_err(path, f"{name}: niepoprawny dodatkowy projekt „{slug}” — pomijam"))

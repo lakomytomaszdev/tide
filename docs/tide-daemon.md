@@ -1196,6 +1196,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
 | `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
 | `max-tickets` | limit ticketów w toku na kartę (PT-375): liczba 1–6; brak klucza — ustawienie przepływu `ticketsPerCard`. Zapis: `UpdateCard {maxTickets}` (pusta wartość usuwa klucz), migawka: `maxTickets`. Zła wartość w pliku — limit domyślny i wpis w `errors` |
+| `priority` | priorytet karty (PT-377): `high`, `normal` albo `low`; brak klucza — `normal`. Ustala kolejność kroków czekających na miejsce u dostawcy (sekcja „Kolejność kroków czekających na miejsce u dostawcy (PT-377)”). Zapis: `UpdateCard {priority}` i `CreateCard {priority}` (tylko te trzy wartości, inna → `{ok: false}` bez zmian; `normal` usuwa klucz z pliku), migawka: `priority`. Zła wartość w pliku — `normal` i wpis w `errors` („niepoprawny priorytet”), bez błędu odczytu karty. Okno: „Priorytet” w ustawieniach pełnej karty (Wysoki / Normalny / Niski) |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -3313,6 +3314,8 @@ blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzię
 ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
 Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
 zwykłych kroków, ich wcześniejsze czekanie nadal liczy się w kolejce innych kart.
+Od PT-377 ta sama kolejka obejmuje wszystkie kroki, a klucz porządku dostaje priorytet karty — sekcja „Kolejność
+kroków czekających na miejsce u dostawcy (PT-377)”.
 
 **Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
 i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu
@@ -3568,6 +3571,44 @@ tickety na kartę, a K-36 uruchomiła 3: dotąd jedynym limitem była liczba kro
 - **Okno.** Strona „Zarządzaj”: „Ciężkie polecenia naraz” i „Tickety naraz na kartę” (1–6, jeden zapis
   `SetCardFlowSettings`, błąd usługi pod sekcją). Ustawienia pełnej karty: „Tickety naraz” (puste pole — ustawienie
   domyślne; zapis `UpdateCard {maxTickets}`).
+
+### Kolejność kroków czekających na miejsce u dostawcy (PT-377)
+
+Zwolnione miejsce u dostawcy (`providerSlots`) bierze czekający krok karty o wyższym priorytecie, a przy równym
+priorytecie krok czekający dłużej — niezależnie od tego, którą kartę tick sprawdza jako pierwszą (`journal.cards()`).
+Uogólnia to kolejkę opiekuna z PT-150 („Pierwszeństwo slotu”) na wszystkie kroki. Porządek liczy wyłącznie
+`cardflow/stepqueue.py`; silnik tylko go woła.
+
+- **Priorytet karty** — klucz `priority` w pliku karty (`high`, `normal`, `low`; brak albo zła wartość — `normal`).
+  Karta toru silnika dostaje pierwszeństwo, gdy właściciel nada jej priorytet wysoki.
+- **Klucz porządku** (mniejszy rusza pierwszy, wspólny dla wszystkich kart i totalny):
+  `(podbicie, priorytet karty, since, karta, ticket, rodzaj)`. `since` to początek czekania (`step.waiting.since`,
+  zachowany przy zmianie powodu); krok jeszcze nieczekający przychodzi po wszystkich czekających o tym samym
+  priorytecie. Remis w obrębie sekundy rozstrzyga stały porządek (karta, ticket, rodzaj), więc dwa kroki nigdy nie
+  czekają na siebie nawzajem. Podbicie jest dziś zawsze fałszywe (ustawi je ręczne podbicie, K-39 #11).
+- **Start kroku.** `_admit` → `_earlier_waiters` buduje wpis tego kroku i liczy wpisy innych kart w kolejce przed nim
+  u tego samego dostawcy (`stepqueue.order` + `stepqueue.ahead`). Liczą się jak trwające kroki (w powodzie najwyżej
+  `limit/limit`), więc krok startuje tylko wtedy, gdy miejsc wystarcza dla wszystkich wpisów przed nim. Kroki tej samej
+  karty nie czekają na siebie w tej kolejce (ich kolejność ustala dalej przebieg karty i rezerwacja opiekuna
+  `_caretaker_reserved`, bez zmian). Krok modelu lokalnego ma własną kolejkę (`model_queue`) i tej nie podlega.
+- **Bieżąca przyczyna, nie zapisany `cause`.** W kolejce stoją wpisy `step.waiting` z zapisanym `cause` `slots` albo
+  `quota`, ale o miejscu decyduje stan z chwili decyzji: stan kart z fazy odczytu ticku, limit tygodniowy i okna
+  dostawcy (`_low_limit`), pauza, decyzja o bazie, miejsce w karcie. Wpis z `cause: slots`, którego dostawca teraz
+  przekroczył limit, czeka na limit i nie blokuje innych; wpis z `cause: quota`, którego limit się odnowił, wraca do
+  kolejki po miejsce. Krok, który nie może ruszyć z innego powodu, nie zajmuje miejsca: karta czeka na decyzję o bazie,
+  nowy ticket (bez kroku) czeka na miejsce w karcie (`max-tickets`/`ticketsPerCard`), na testy po scaleniu albo
+  trwającą operację karty, a zwykły krok jest zablokowany rezerwacją własnego opiekuna (PT-150, runda 3 — bez cyklu
+  czekania). Karty zakończone, wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu, odrzucone i scalone tickety oraz
+  trwające kroki wypadają z kolejki.
+- **Koszt.** Kolejność liczona jest ze stanów kart z jednej fazy odczytu ticku (`journal.state`, bez dodatkowych
+  odczytów dzienników na krok). Priorytety i limity kart pochodzą z kontekstu odczytu Tablicy bieżącego ticku
+  (`BoardRead`, K-98 #3); poza tickiem (start z D-Bus) — z jednego świeżego odczytu, i to tylko wtedy, gdy u dostawcy
+  czeka krok innej karty. Limit tygodniowy i rezerwacja opiekuna są liczone raz na dostawcę/kartę w jednej decyzji.
+- **Jedna funkcja porządku.** `stepqueue.order` zwraca czekających w kolejności startu z bieżącą przyczyną i powodem;
+  użyje jej także część `queue.steps` migawki (K-39 #10). Kolejka ciężkich poleceń (`heavyqueue`) i limit
+  `providerSlots` się nie zmieniają.
+- **Ograniczenie.** Wpis należy do kolejki dostawcy zapisanego w `step.waiting`. Przekazanie pracy innemu dostawcy po
+  limicie (`limitTransfer`) zmienia dostawcę dopiero przy następnej próbie startu tego kroku.
 
 ### Piaskownica i strażnik (PT-158)
 

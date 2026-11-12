@@ -42,7 +42,7 @@ from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_ENTRY, DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, ENTRIES, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, LEGACY_SPEC_MODE, MANUAL_COLUMNS,
                     MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
-                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, MAX_TICKETS_KEY, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
+                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, MAX_TICKETS_KEY, PRIORITY_KEY, PRIORITIES, DEFAULT_PRIORITY, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     REVIEW_CLASSES, REVIEW_CLASSES_KEY, REVIEW_POLICIES, REVIEW_POLICY_KEY,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -78,7 +78,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
-               *LAUNCH_KEYS, "maxTickets")
+               *LAUNCH_KEYS, "maxTickets", "priority")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
@@ -786,6 +786,8 @@ class BoardStore:
                 doc.set(key, v[key])
         if v.get("maxTickets"):
             doc.set(MAX_TICKETS_KEY, v["maxTickets"])
+        if v.get("priority", DEFAULT_PRIORITY) != DEFAULT_PRIORITY:
+            doc.set(PRIORITY_KEY, v["priority"])
         if v.get("planPath"):
             doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
@@ -823,6 +825,12 @@ class BoardStore:
                     changed.append(MAX_TICKETS_KEY)
             else:
                 changed += _doc_set(card.doc, MAX_TICKETS_KEY, v["maxTickets"])
+        if "priority" in v:        # PT-377: `normal` to brak klucza (także zła wartość w pliku znika)
+            if v["priority"] == DEFAULT_PRIORITY:
+                if card.doc.remove(PRIORITY_KEY):
+                    changed.append(PRIORITY_KEY)
+            else:
+                changed += _doc_set(card.doc, PRIORITY_KEY, v["priority"])
         if "planPath" in v:
             project = board.projects.get(primary)
             checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
@@ -1411,6 +1419,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         # Limit ticketów w toku (PT-375): nadpisanie karty (None — ustawienie domyślne); limit efektywny dokłada
         # usługa przepływu (`derived.flow.ticketLimit`), a bez niej — ustawienie domyślne.
         "maxTickets": card.max_tickets,
+        # Priorytet karty (PT-377): high, normal, low (zła wartość w pliku — normal i wpis w errors).
+        "priority": card.priority,
         "extraProjects": [{"slug": p.slug, "name": p.name, "repo": p.repo, "repoMissing": p.repo_missing}
                           for p in extra],
         "description": card.description,
@@ -1610,6 +1620,10 @@ def _card_values(data: dict, create: bool = False) -> dict:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
     if "maxTickets" in data:
         out["maxTickets"] = _max_tickets(data["maxTickets"])
+    if "priority" in data:
+        if not isinstance(data["priority"], str) or data["priority"] not in PRIORITIES:
+            raise BoardError("priority musi być jedną z wartości: high, normal, low")
+        out["priority"] = data["priority"]
     out.update(_entry_mode_values(data, allow_empty=True))
     if "tool" in data:
         out["tool"] = _enum(data["tool"], ("", *TOOLS), "tool") if _text(data["tool"], "tool").strip() else ""
