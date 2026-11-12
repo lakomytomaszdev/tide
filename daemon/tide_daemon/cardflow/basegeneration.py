@@ -5,6 +5,7 @@ przenoszenia plików ani sprzątania częściowego wyniku. Wszystkie zasoby są 
 """
 from __future__ import annotations
 
+import contextlib
 import os
 
 from . import basechange
@@ -226,9 +227,25 @@ class BaseGeneration:
                                 operationId=intent["key"], baseVersion=intent["baseVersion"], generation=intent["generation"])
         self.engine._project_base(card)
 
-    def recover(self, card):
-        # K-105 PT-415: projekcja z pamięci `Journal.state` (ten sam `fold` odczytu) zamiast złożenia co tick.
-        intent = intent_of(self.journal.state(card))
-        if intent:
-            with lock_for(intent["repo"]), self.journal.lock:
-                self.resume(card, intent)
+    def recover(self, card, observed=None):
+        """Odtworzenie generacji bazy w pętli odtwarzania ticku.
+
+        K-105 PT-459: `observed` — (zdarzenia, stan karty) z fazy ticku nad pamięcią stanu procesu karty (PT-415),
+        bez pełnego odczytu historii przy niezmienionym dzienniku. Zakończona generacja (aktywacja i wynik
+        w historii) nie ma już zapisu dziennika; projekcję bazy ponawia `_project_base` pętli. Każde inne
+        odtworzenie zaczyna się od świeżego porównania historii z tymi zdarzeniami (`Journal.unchanged`): dopisanie
+        po odczycie z pamięci daje `HistoryChanged` przed jakimkolwiek skutkiem, a kolejny tick decyduje na nowej
+        historii. Bez `observed` — stan z `Journal.state` jak przed PT-459."""
+        if observed is None:
+            events, st = None, self.journal.state(card)
+        else:
+            events, st = observed
+        intent = intent_of(st)
+        if not intent:
+            return
+        if (events is not None and st.base_change.get("operationId") == intent["key"]
+                and (ACTION, intent["key"]) in st.results):
+            return
+        with lock_for(intent["repo"]), self.journal.lock, (
+                self.journal.unchanged(card, events) if events is not None else contextlib.nullcontext()):
+            self.resume(card, intent)

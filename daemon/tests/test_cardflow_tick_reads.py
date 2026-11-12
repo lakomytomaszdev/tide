@@ -303,6 +303,151 @@ class HistoryPhaseTickTest(TickFixture):
         self.assertTrue(flowfakes.alive(self.pid), "blokada nie kończy procesu bez dowodu")
 
 
+ORDER_CARD = "K-901"
+
+
+class ReplayLoopMemoryTest(TickFixture):
+    """K-105 PT-459: pętla odtwarzania na początku ticku (`startorder`, `BaseGeneration.recover`, `_project_base`,
+    skan `order.`) czyta historię każdej karty z fazy ticku nad pamięcią ścisłego odczytu (PT-411) i stanu procesu
+    karty (PT-415), a nie własnym pełnym odczytem.
+
+    Licznik pełnych odczytów historii: granica PT-411 (`Journal._read_strict`) i dawny własny pełny odczyt pliku
+    w pętli (`startorder.events`) — oba liczone, żeby licznik nie był węższy niż przed zmianą."""
+
+    def setUp(self):
+        super().setUp()
+        # Karta ze zleceniem startu (`order.*`) obok karty z żywym krokiem.
+        self.journal.append(ORDER_CARD, "order.reserved", orderId="o-1", fingerprint="f",
+                            generation={}, base={"baseRef": "", "baseCommit": ""})
+
+    @contextlib.contextmanager
+    def counting(self):
+        """Pełne odczyty historii ticku: (karta, źródło) — `strict` (PT-411) albo `startorder` (własny odczyt)."""
+        from tide_daemon.cardflow import startorder
+        reads = []
+        real_full, real_events = self.journal._read_strict, startorder.events
+
+        def full(card):
+            reads.append((card, "strict"))
+            return real_full(card)
+
+        def own(engine, card):
+            reads.append((card, "startorder"))
+            return real_events(engine, card)
+        with mock.patch.object(self.journal, "_read_strict", side_effect=full), \
+                mock.patch.object(startorder, "events", side_effect=own):
+            yield reads
+
+    def external_append(self, card):
+        """Dopisanie spoza procesu do kopii usługi (autorytatywnej), bez zmiany licznika zapisów procesu."""
+        events = self.journal.read_fresh(card)
+        with open(self.journal.mirror_path(card), "a", encoding="utf-8") as fh:
+            fh.write(_lines([_external_event(events, card)]))
+
+    def test_second_tick_replay_loop_reads_no_card_history_in_full(self):
+        self.engine.tick()
+        with self.counting() as reads:
+            self.engine.tick()
+        self.assertEqual(reads, [], "drugi tick bez zmian: pełny odczyt historii w pętli odtwarzania")
+
+    def test_external_append_to_one_card_reads_only_that_card_and_the_loop_sees_the_fresh_history(self):
+        self.engine.tick()
+        self.external_append(ORDER_CARD)
+        parsed, seen = [], {}
+        from tide_daemon.cardflow import journal as journal_module
+        real_parse, real_state = journal_module._parse_strict, trialhold.process_state
+
+        def parse(data, card, before):       # pełny odczyt i przyrost (trafienie pamięci nie parsuje)
+            parsed.append(card)
+            return real_parse(data, card, before)
+
+        def state(journal, card, phase=None, **kwargs):     # pierwszy odczyt karty w ticku: pętla odtwarzania
+            events, st = real_state(journal, card, phase, **kwargs)
+            seen.setdefault(card, (list(events), st))
+            return events, st
+        with mock.patch.object(journal_module, "_parse_strict", side_effect=parse), \
+                mock.patch.object(trialhold, "process_state", side_effect=state):
+            self.engine.tick()
+        self.assertEqual(set(parsed), {ORDER_CARD}, "doczytana tylko karta z dopisaniem")
+        for card in (self.card_id, ORDER_CARD):     # wynik równy wynikowi bez pamięci
+            fresh = self.journal.read_fresh(card)
+            self.assertEqual(seen[card][0], fresh, card)
+            self.assertEqual(vars(seen[card][1]), vars(fold(fresh)), card)
+        self.assertEqual(seen[ORDER_CARD][0][-1]["key"], "zewnetrzny")
+
+    def test_base_projection_from_memory_is_refused_after_an_external_append(self):
+        self.engine.tick()
+        item = self.store.load().cards[int(self.card_id.partition("-")[2])]
+        with open(item.path, encoding="utf-8") as fh:
+            text = fh.read()
+        stripped = "".join(line for line in text.splitlines(keepends=True) if not line.startswith("base-commit:"))
+        with open(item.path, "w", encoding="utf-8") as fh:     # pole bazy zniknęło z pliku karty
+            fh.write(stripped)
+        phase = trialhold.HistoryPhase(self.journal)
+        observed = trialhold.process_state(self.journal, self.card_id, phase)      # odczyt z pamięci (pętla ticku)
+        self.external_append(self.card_id)
+        refused = []
+        real_guard = self.journal.unchanged
+
+        @contextlib.contextmanager
+        def guard(*args):
+            try:
+                with real_guard(*args):
+                    yield
+            except HistoryChanged:
+                refused.append(args[0])
+                raise
+        with mock.patch.object(self.journal, "unchanged", guard):
+            self.engine._project_base(self.card_id, BoardRead(self.store), observed)
+        self.assertEqual(refused, [self.card_id])
+        with open(item.path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), stripped, "odmowa bez zapisu Tablicy")
+        self.engine.tick()                    # nowa faza: projekcja na aktualnej historii
+        with open(item.path, encoding="utf-8") as fh:
+            self.assertIn("base-commit:", fh.read())
+
+    def test_broken_journal_pauses_the_replay_of_that_card_only_while_broken(self):
+        healthy = self.card_id
+        for damage in ("cut", "seq"):
+            with self.subTest(damage=damage):
+                events = self.journal.read_fresh(ORDER_CARD)
+                good = _lines(events)
+                if damage == "cut":
+                    bad = good + _lines([_external_event(events, ORDER_CARD)])[:-10]
+                else:
+                    bad = good + _lines([{**_external_event(events, ORDER_CARD), "seq": len(events) + 2}])
+                path = self.journal.mirror_path(ORDER_CARD)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(bad)
+                for _ in range(2):            # każdy kolejny tick, dopóki plik jest uszkodzony
+                    recovered, projected = [], []
+                    from tide_daemon.cardflow.basegeneration import BaseGeneration
+                    real_recover, real_project = BaseGeneration.recover, self.engine._project_base
+                    with mock.patch.object(BaseGeneration, "recover", autospec=True,
+                                           side_effect=lambda gen, card, *a, **k: recovered.append(card) or
+                                           real_recover(gen, card, *a, **k)), \
+                            mock.patch.object(self.engine, "_project_base",
+                                              side_effect=lambda card, *a, **k: projected.append(card) or
+                                              real_project(card, *a, **k)):
+                        unreadable = self.engine._replay_starts(BoardRead(self.store),
+                                                                trialhold.HistoryPhase(self.journal))
+                    self.assertEqual(unreadable, {ORDER_CARD})
+                    self.assertNotIn(ORDER_CARD, recovered + projected)
+                    self.assertIn(healthy, recovered)
+                    self.assertIn(healthy, projected)
+                    # Cały tick: rozpoznanie niepełnej historii wstrzymuje odzyskiwanie jak dotąd (przed pętlą).
+                    self.engine.tick()
+                    self.assertIn("odzyskiwanie wstrzymane", self.engine._warnings.get("journal", ""))
+                    with open(path, encoding="utf-8") as fh:
+                        self.assertEqual(fh.read(), bad, "unknown bez naprawy pliku")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(good)
+                self.engine.tick()
+                self.assertNotIn("journal", self.engine._warnings)
+                self.assertEqual(self.engine._replay_starts(BoardRead(self.store),
+                                                            trialhold.HistoryPhase(self.journal)), set())
+
+
 class BoardTickContextTest(TickFixture):
     def test_warm_tick_loads_the_board_once(self):
         self.engine.tick()

@@ -2623,8 +2623,20 @@ z `gate`), próba testów po scaleniu (wynik z zapisanego zakończenia, start po
 przekazanie, ręczne domknięcie, diagnostyka K-38 i `public_inventory` przed zapisem.
 Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), powtarza całą
 inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
-zmian w dziennikach nie woła modelu tożsamości ani `fold` (także `BaseGeneration.recover` i `_pending_main_merge`
-czytają projekcję `Journal.state`). Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
+zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
+Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
+
+**Pętla odtwarzania na początku ticku (K-105 PT-459).** `FlowEngine._replay_starts` obejmuje każdą kartę z dziennikiem
+(także zakończoną) i bierze jej historię oraz stan procesu karty z fazy ticku (`trialhold.process_state` z
+`HistoryPhase` — pamięć PT-411/PT-415), a nie z własnych pełnych odczytów: ścisła reguła odczytu zastępuje dawny skan
+`order.` po `journal.read` i kontrolę `startorder.events` (pełne wiersze, kolejny `seq`; poza pętlą `startorder` przy
+starcie zlecenia czyta plik świeżo jak dotąd), a `BaseGeneration.recover` i `_project_base` dostają ten sam odczyt
+(`observed`). Błąd odczytu albo nieznana tożsamość karty wstrzymuje odtwarzanie tylko tej karty (tick pomija ją
+też dalej). Pamięć nie autoryzuje zapisu: zakończona generacja bazy (aktywacja i wynik w historii) nie jest
+wznawiana, każde inne odtworzenie generacji zaczyna się od `Journal.unchanged` z odczytem z pamięci (dopisanie po
+odczycie → `HistoryChanged` przed operacjami git i zapisem; generacja w toku płaci więc jeden świeży odczyt na tick),
+a projekcja bazy na Tablicę porównuje historię świeżo tylko przed faktycznym zapisem pól (`project_card_base(guard=…)`).
+Po zapisie odtworzenia faza czyta kartę ponownie (licznik zapisów), więc projekcja widzi własny zapis.
 
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:

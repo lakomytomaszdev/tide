@@ -3526,19 +3526,59 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if claim is not None:
             model_queue.shared().release_step(claim)
 
-    def _project_base(self, card: str, read=None) -> None:
+    def _project_base(self, card: str, read=None, observed=None) -> None:
         """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól.
-        `read`: kontekst odczytu ticku (K-98 #3) — gdy pola bazy już są na Tablicy, bez zapisu i bez wczytania."""
-        st = self.journal.state(card)
+        `read`: kontekst odczytu ticku (K-98 #3) — gdy pola bazy już są na Tablicy, bez zapisu i bez wczytania.
+        `observed` (K-105 PT-459, pętla odtwarzania ticku): (zdarzenia, stan karty) z fazy ticku nad pamięcią stanu
+        procesu karty (PT-415) zamiast odczytu dziennika; zapis pól na Tablicy idzie wtedy przez świeże porównanie
+        historii z tymi zdarzeniami (`Journal.unchanged`) — dopisanie po odczycie z pamięci daje `HistoryChanged`
+        bez zapisu, a kolejny tick liczy projekcję od nowa."""
+        guard = None
+        if observed is None:
+            st = self.journal.state(card)
+        else:
+            events, st = observed
+            guard = lambda: self.journal.unchanged(card, events)    # noqa: E731
         if st.started:
             try:
                 with self.journal.lock:
                     if read is None:
-                        self.store.project_card_base(card, base_of(st))
+                        self.store.project_card_base(card, base_of(st), guard=guard)
                     else:
-                        self.store.project_card_base(card, base_of(st), board=read.board)
+                        self.store.project_card_base(card, base_of(st), board=read.board, guard=guard)
             except Exception as exc:
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
+
+    def _replay_starts(self, read, history) -> set:
+        """Pętla odtwarzania na początku ticku dla każdej karty z dziennikiem (także zakończonej): ścisła kontrola
+        historii zlecenia (dawny skan `order.` po `journal.read` i własny pełny odczyt `startorder.events`), odtworzenie
+        generacji bazy (`BaseGeneration.recover`), projekcja bazy (`_project_base`) i odtworzenie startów kroków.
+
+        K-105 PT-459: historia karty pochodzi z fazy ticku (`history`) nad pamięcią ścisłego odczytu (PT-411) i stanu
+        procesu karty (PT-415) — drugi tick bez zmian nie czyta jej w całości. Ścisła reguła odczytu obejmuje kontrolę
+        `startorder.events` (pełne wiersze, kolejny `seq`). Błąd odczytu (unknown) wstrzymuje odtwarzanie tylko tej
+        karty; zwraca zbiór takich kart (tick pomija je także dalej). Zapisy elementów pętli porównują historię
+        świeżo przed skutkiem (`Journal.unchanged`, `append`) — pamięć nie autoryzuje zapisu."""
+        from .basegeneration import BaseGeneration
+        unreadable = set()
+        for card in self.journal.cards():
+            try:
+                generation = self.journal.generation(card)
+                observed = trialhold.process_state(self.journal, card, history)
+                try:
+                    BaseGeneration(self).recover(card, observed)
+                except Exception as exc:
+                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
+                if self.journal.generation(card) != generation:     # zapis odtworzenia: faza czyta ponownie
+                    observed = trialhold.process_state(self.journal, card, history)
+            except (OSError, ValueError, TypeError, KeyError):
+                unreadable.add(card)
+                continue
+            self._project_base(card, read, observed)
+            current = self.journal.state(card)
+            if not baseproposal.blocked(current):
+                self._recover_started_steps(card, current, history=history)
+        return unreadable
 
     def tick(self) -> None:
         # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów (w pętli recovery
@@ -3568,24 +3608,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             from ..issue_start import recover as recover_issue_starts
             from ..issues import IssueStore
             recover_issue_starts(IssueStore(self.store), self)
-            from .basegeneration import BaseGeneration
-            from . import startorder
-            unreadable_starts = set()
-            for card in self.journal.cards():
-                if any(e["type"].startswith("order.") for e in self.journal.read(card)):
-                    try:
-                        startorder.events(self, card)
-                    except (OSError, ValueError):
-                        unreadable_starts.add(card)
-                        continue
-                try:
-                    BaseGeneration(self).recover(card)
-                except Exception as exc:
-                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
-                self._project_base(card, read)
-                current = self.journal.state(card)
-                if not baseproposal.blocked(current):
-                    self._recover_started_steps(card, current, history=history)
+            unreadable_starts = self._replay_starts(read, history)
             boxstep.recover_network(self, history=history)
             # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
             running_local = {s["step"]: s for card in self.journal.cards()

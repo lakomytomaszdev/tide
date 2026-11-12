@@ -460,7 +460,9 @@ BARRIERS = {
                   "daemon.tests.test_cardflow_limits:InteractiveTransferTest.test_restart_opens_persisted_console_task_once"]),
     "recovery": dict(
         consumers=[("cardflow/engine.py", "FlowEngine._reconcile"), ("cardflow/engine.py", "FlowEngine._recover_started_steps"),
-                   ("cardflow/engine.py", "FlowEngine.tick")],
+                   ("cardflow/engine.py", "FlowEngine.tick"),
+                   # K-105 PT-459: pętla odtwarzania ticku — stan procesu karty z fazy ticku (pamięć PT-415).
+                   ("cardflow/engine.py", "FlowEngine._replay_starts")],
         denial="read_process_history/_process_check przed odtworzeniem", effect="odzyskanie kroku po restarcie",
         negative=NEG, positive=[f"{FLOW}:RestartInProcessTest.test_restart_after_launch_result_recovers_the_running_step"]),
     "poll-stop": dict(
