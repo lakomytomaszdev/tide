@@ -1964,6 +1964,58 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    at_least=minimum_number)
         return {"ticket": got["ids"][0], "title": title}
 
+    def _reserve_plan_rows(self, card: str, seq, rows, *, repo: str, prefix: str, floor: int) -> dict:
+        """{#n: ID} lokalnych wierszy roboczych planu (K-102 #1; wspólne dla zatwierdzenia i edycji planu).
+
+        Wiersz z udanym wynikiem `reserve` (klucz `plan:<seq>:#n`) zachowuje numer. Pozostałe dostają zamiar `intent`
+        w dotychczasowym kształcie i numery z jednej rezerwacji zbiorczej (`request_key` `<karta>:plan:<seq>:#n`, wpisy
+        jak z pojedynczego `reserve`), po czym wynik `result` per wiersz. Restart po zapisie rejestru, a przed wynikami,
+        zostawia otwarte zamiary: `_reconcile` (pojedyncza rezerwacja z tym samym kluczem) albo ponowione zatwierdzenie
+        zwraca te same numery. Błąd — `result ok:false` dla wierszy objętych wywołaniem i FlowError."""
+        st = self.journal.state(card)
+        if baseproposal.blocked(st):
+            raise FlowDeferred("decyzja o bazie karty")
+        mapping, missing = {}, []
+        for row in rows:
+            key = f"plan:{seq}:{row['workId']}"
+            done = st.results.get(("reserve", key))
+            if done is not None and done.get("ok"):
+                mapping[row["workId"]] = done["ticket"]
+            else:
+                missing.append((row, key, done))
+        if not missing:
+            return mapping
+        for row, key, _done in missing:
+            if ("reserve", key) not in st.intents:
+                self.journal.append(card, "intent", action="reserve", key=key, repo=repo, title=row["title"],
+                                    prefix=prefix, minimumNumber=floor)
+        frozen = self._guard_freeze(st, self._guard_watched(st))
+        try:
+            guarded = self._guard_check(card, st)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        try:
+            got = reservations.reserve_many(
+                repo, [{"request_key": f"{card}:{key}", "title": row["title"]} for row, key, _done in missing],
+                prefix=prefix, at_least=floor, local_fallback=True)
+        except (reservations.ReservationError, OSError) as exc:
+            self._guard_rebase(card, guarded, "reserve", frozen)
+            for _row, key, done in missing:
+                if done is None or done.get("error") != str(exc):
+                    self.journal.append(card, "result", action="reserve", key=key, ok=False, error=str(exc))
+            if isinstance(exc, OSError):
+                raise
+            raise FlowError("reserve", str(exc)) from None
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        self._guard_rebase(card, guarded, "reserve", frozen)
+        for (row, key, _done), ticket in zip(missing, got["ids"]):
+            self.journal.append(card, "result", action="reserve", key=key, ok=True, ticket=ticket, title=row["title"])
+            mapping[row["workId"]] = ticket
+        return {row["workId"]: mapping[row["workId"]] for row in rows}
+
     def enter(self, card_id: str, step_id: str) -> dict:
         """Stare wejście po ID albo warunkowe przejęcie próby wybranej z Snapshot."""
         if not step_id.lstrip().startswith("{"):
@@ -2450,29 +2502,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
         _, project = self._project(card_id)
         mapping = {}
+        # K-102 #1: lokalne numery wszystkich wierszy `#n` jedną rezerwacją zbiorczą (jedna blokada i jeden odczyt planów).
+        local = {} if project.youtrack else self._reserve_plan_rows(
+            card_id, proposal["seq"], [r for r in proposal.get("rows") or [] if r["workId"].startswith("#")],
+            repo=repo, prefix=prefix, floor=imported_floor)
         for row in proposal.get("rows") or []:
             work_id = row["workId"]
-            if work_id.startswith("#"):
+            if work_id.startswith("#") and not project.youtrack:
+                mapping[work_id] = local[work_id]
+            elif work_id.startswith("#"):
                 key = f"plan:{proposal['seq']}:{work_id}"
-                if project.youtrack:
-                    try:
-                        old = st.results.get(('reserve', key)) or {}
-                        source = row['cardPath']
-                        if not os.path.isfile(source) and old.get('ticket'):
-                            source = os.path.join(os.path.dirname(source), old['ticket'] + '.md')
-                        with open(source, encoding='utf-8') as fh:
-                            description = fh.read()
-                        result = self._tracker_reserve(card_id, key, int(work_id[1:]), row['title'], description)
-                    except yt.YouTrackError as exc:
-                        if exc.permanent:
-                            raise FlowError('youtrack', str(exc)) from None
-                        return {"ok": True, "id": card_id, "queued": True, "map": mapping, "message": str(exc)}
-                else:
-                    result = self._act(card_id, "reserve", key,
-                                       lambda row=row, key=key: self._reserve(repo, row["title"],
-                                                                                f"{card_id}:{key}", prefix, imported_floor),
-                                       retry_failed=True, repo=repo, title=row["title"], prefix=prefix,
-                                       minimumNumber=imported_floor)
+                try:
+                    old = st.results.get(('reserve', key)) or {}
+                    source = row['cardPath']
+                    if not os.path.isfile(source) and old.get('ticket'):
+                        source = os.path.join(os.path.dirname(source), old['ticket'] + '.md')
+                    with open(source, encoding='utf-8') as fh:
+                        description = fh.read()
+                    result = self._tracker_reserve(card_id, key, int(work_id[1:]), row['title'], description)
+                except yt.YouTrackError as exc:
+                    if exc.permanent:
+                        raise FlowError('youtrack', str(exc)) from None
+                    return {"ok": True, "id": card_id, "queued": True, "map": mapping, "message": str(exc)}
                 mapping[work_id] = result["ticket"]
             else:
                 mapping[work_id] = work_id

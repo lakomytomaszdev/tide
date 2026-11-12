@@ -1183,6 +1183,11 @@ kolumnami (pastel `butter`), raport poranny — pozycję „Konflikt numerów: �
 największy numer z rejestru (główny katalog repozytorium + prefiks) i ze wszystkich planów, kolejne N
 numerów zapisane z tytułem i czasem. Pusty rejestr zasiewa się z planów; prefiks z YouTracka — odmowa
 („numer nadaje YouTrack — załóż ticket tam”); `--dry-run` niczego nie zapisuje.
+Zatwierdzenie planu karty z lokalną numeracją (`ApproveCardPlan`, K-102) nadaje numery wszystkim wierszom `#n`
+jedną rezerwacją zbiorczą (`reserve_many`): jedna blokada, jeden odczyt planów repozytorium, jeden zapis rejestru.
+Wpisy mają kształt pojedynczej rezerwacji z kluczem (`<karta>:plan:<seq>:#n`), więc ponowienie i odzyskanie zamiaru
+po restarcie zwracają te same numery. Więcej niż 50 nowych numerów w jednym wywołaniu to błąd bez zapisu (bez
+dzielenia); dziennik karty nadal ma zamiar i wynik `reserve` dla każdego wiersza.
 
 **Odświeżanie** (`coordination_monitor.py`): pierwszy odczyt 1,5 s po starcie, potem co 20 s, po zmianie
 w `/Agents` (najwyżej co 4 s) i na żądanie. Praca w jednym wątku roboczym, D-Bus odpowiada z gotowych
