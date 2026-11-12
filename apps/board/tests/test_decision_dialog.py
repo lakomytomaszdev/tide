@@ -175,6 +175,8 @@ click(option(""" + str(index) + """))
 key(Qt.Key.Key_Return)
 out["sent"] = calls()
 """, scenario_f(self.data, decisions(journal_merge_check(problem))))
+                    self.assertEqual(out["state"]["kind"], "Testy po scaleniu",
+                                     "decyzja testów po scaleniu ma własną plakietkę rodzaju merge-check (PT-374)")
                     self.assertEqual([o[0] for o in out["state"]["options"]],
                                      ["Ponów próbę", "Akceptuj mimo porażki"])
                     self.assertEqual([o[2] for o in out["state"]["options"]], [True, False],

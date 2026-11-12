@@ -402,7 +402,7 @@ class SnapshotTest(GuardRepo):
         self.assertEqual(guard.changes(before, self.snap()), [])
 
 
-class EngineGuardTest(GuardRepo):
+class EngineGuardRepo(GuardRepo):
     """Metody silnika na samym dzienniku i gicie: stan bazowy, zapis Tide w trakcie kroku i werdykt."""
 
     UNIT = "tide-step-K-1-care-1"
@@ -422,7 +422,7 @@ class EngineGuardTest(GuardRepo):
         self.engine = SimpleNamespace(git=self.git, journal=Journal(board), freeze_unit=freeze,
                                       procs={"K-1-care-1": self.proc})
         for name in ("_act", "_guard_baseline", "_guard_watched", "_guard_check", "_guard_freeze", "_guard_thaw",
-                     "_guard_rebase", "_guard_verdict"):
+                     "_guard_rebase", "_guard_verdict", "_guard_outside"):
             setattr(self.engine, name, getattr(FlowEngine, name).__get__(self.engine))
         self.engine.journal.append(CARD, "flow.started", provider="anthropic")
 
@@ -440,6 +440,8 @@ class EngineGuardTest(GuardRepo):
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(text)
 
+
+class EngineGuardTest(EngineGuardRepo):
     def test_tide_merge_into_the_card_branch_is_not_a_caretaker_write(self):
         self.baseline()
         frozen_during = []
@@ -546,6 +548,211 @@ class EngineGuardTest(GuardRepo):
         self.baseline()
         self.engine.journal.append(CARD, "step.finished", step="K-1-care-1", result="done")
         self.assertEqual(self.engine._guard_check(CARD, fold(self.engine.journal.read(CARD))), [])
+
+
+class OutsideRunsTest(unittest.TestCase):
+    """Czyste funkcje wyjątku (PT-372): uruchomienia z dziennika, nakładanie się na stan bazowy, dopasowanie ścieżek."""
+
+    def test_runs_pair_start_and_finish_and_take_the_merge_check_worktree_from_its_pseudo_step(self):
+        events = [
+            {"seq": 1, "type": "merge.check-step", "step": "merge-check-PT-1-1", "worktree": "/w/k-1/"},
+            {"seq": 2, "type": "outside.started", "step": "K-1-PT-2-1", "worktree": "/w/./pt-2"},
+            {"seq": 3, "type": "outside.started", "step": "merge-check-PT-1-1", "worktree": "/inny"},
+            {"seq": 4, "type": "outside.finished", "step": "K-1-PT-2-1"},
+            {"seq": 5, "type": "outside.started", "step": "K-1-PT-3-1"},
+        ]
+        self.assertEqual(guard.runs(events), [
+            {"step": "K-1-PT-2-1", "worktree": "/w/pt-2", "started": 2, "finished": 4},
+            {"step": "merge-check-PT-1-1", "worktree": "/w/k-1", "started": 3, "finished": None},
+            {"step": "K-1-PT-3-1", "worktree": "", "started": 5, "finished": None},
+        ])
+
+    def test_active_runs_overlap_the_baseline(self):
+        found = [{"step": "a", "worktree": "/w", "started": 2, "finished": 4},     # skończone przed stanem bazowym
+                 {"step": "b", "worktree": "/w", "started": 3, "finished": 5},     # skończone równo z nim
+                 {"step": "c", "worktree": "/w", "started": 6, "finished": 8},     # ruszyło i skończyło się w trakcie
+                 {"step": "d", "worktree": "/v", "started": 1, "finished": None},  # trwa
+                 {"step": "e", "worktree": "", "started": 6, "finished": None},    # bez worktree
+                 {"step": "care", "worktree": "/u", "started": 6, "finished": None}]
+        self.assertEqual(guard.active({"seq": 5}, found, "care"), {"/w": ["c"], "/v": ["d"]})
+        self.assertEqual(guard.active({}, found, "care"), {}, "bez seq stanu bazowego nic nie jest wyłączone")
+
+    def test_paths_are_normalised_without_following_symlinks(self):
+        root = tempfile.mkdtemp(prefix="tide-guard-where-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        wt = os.path.join(root, "pt-1")
+        os.makedirs(wt)
+        os.symlink(wt, os.path.join(root, "link"))
+        self.assertEqual(guard.where(wt + "/"), wt)
+        self.assertEqual(guard.where(os.path.join(root, ".", "pt-1", ".")), wt)
+        self.assertNotEqual(guard.where(os.path.join(root, "link")), wt)
+        self.assertEqual(guard.where(None), "")
+        self.assertEqual(guard.where(""), "")
+
+    def test_excuse_keeps_head_refs_and_other_worktrees(self):
+        base = {"seq": 3, "repo": "/r", "branches": ["b"], "refs": {"b": "1"},
+                "worktrees": [{"worktree": "/w/", "gitDir": "/g", "tree": {"a": "1"}, "head": "ref: b"},
+                              {"worktree": "/v", "gitDir": "/h", "tree": {"a": "1"}, "head": "ref: c"}]}
+        fresh = {"repo": "/r", "branches": ["b"], "refs": {"b": "2"},
+                 "worktrees": [{"worktree": "/w/", "gitDir": "/g", "tree": {"a": "1", "build": "2"}, "head": "x"},
+                               {"worktree": "/v", "gitDir": "/h", "tree": {"a": "3"}, "head": "ref: c"}]}
+        busy = {"/w": ["K-1-PT-1-1"]}
+        rebased = guard.excuse(base, fresh, busy)
+        self.assertEqual(guard.skipped(base, fresh, busy),
+                         [{"run": "K-1-PT-1-1", "worktree": "/w/", "entries": ["build"]}])
+        self.assertEqual(set(rebased), set(guard.FIELDS))
+        self.assertEqual(guard.changes(rebased, fresh), [
+            "przesunięty HEAD worktree /w/", "zmienione pliki w worktree /v: a", "przesunięta gałąź b"])
+        gone = {**fresh, "worktrees": [{**fresh["worktrees"][0], "tree": guard.MISSING}, fresh["worktrees"][1]]}
+        self.assertEqual(guard.skipped(base, gone, busy), [], "zniknięcie worktree nie jest wyłączone")
+        self.assertEqual(guard.changes(guard.excuse(base, gone, busy), gone)[0], "worktree /w/ zniknął")
+
+
+class OutsideGuardTest(EngineGuardRepo):
+    """Polecenie Tide w worktree pod strażą w trakcie kroku opiekuna (PT-372): zmiany drzewa tego worktree to zapisy
+    polecenia, `HEAD`, refy i inne worktree — nadal kroku."""
+
+    RUN = "K-1-PT-1-2"
+
+    def started(self, worktree, step=RUN):
+        fields = {} if worktree is None else {"worktree": worktree}
+        self.engine.journal.append(CARD, "outside.started", step=step, ticket="PT-1", command="make test-changed",
+                                   unit=f"tide-outside-{step}", **fields)
+
+    def finished(self, step=RUN):
+        self.engine.journal.append(CARD, "outside.finished", step=step, ticket="PT-1", command="make test-changed",
+                                   exit=0, tail="")
+
+    def build(self, worktree, name="build"):
+        os.makedirs(os.path.join(worktree, name), exist_ok=True)
+        self.append(os.path.join(worktree, name, "wynik.txt"))
+
+    def guard_events(self):
+        return [e for e in self.engine.journal.read(CARD) if e["type"] == guard.EVENT]
+
+    def test_ticket_worktree_with_a_running_outside_command_is_not_a_caretaker_write(self):
+        self.baseline()
+        self.started(self.wt)
+        self.build(self.wt)
+        self.build(self.wt, "__pycache__")
+        self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+        last = self.guard_events()[-1]
+        self.assertEqual(last["cause"], guard.OUTSIDE)
+        self.assertEqual(last["wrote"], [])
+        self.assertEqual(last["skipped"], [{"run": self.RUN, "worktree": self.wt, "entries": ["__pycache__", "build"]}])
+        # Stan tego worktree wzięty na nowo: kolejne sprawdzenie bez nowych zmian nic nie dopisuje.
+        self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+        self.assertEqual(len(self.guard_events()), 2)
+
+    def test_merge_check_in_the_card_worktree_is_not_a_caretaker_write(self):
+        self.baseline()
+        self.engine.journal.append(CARD, "merge.check-step", step="merge-check-PT-1-1", ticket="PT-1",
+                                   kind="merge-check", check="PT-1-1", worktree=self.card_wt + "/")
+        self.started(None, step="merge-check-PT-1-1")
+        self.build(self.card_wt)
+        self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+        skipped = self.guard_events()[-1]["skipped"]
+        self.assertEqual(skipped, [{"run": "merge-check-PT-1-1", "worktree": self.card_wt, "entries": ["build"]}])
+
+    def test_a_command_started_and_finished_during_the_caretaker_step_counts(self):
+        self.baseline()
+        self.started(self.wt)
+        self.build(self.wt)
+        self.finished()
+        self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+
+    def test_a_command_finished_before_the_baseline_does_not_count(self):
+        self.started(self.wt)
+        self.finished()
+        self.baseline()
+        self.build(self.wt)
+        self.assertIn("zmienione pliki w worktree", self.engine._guard_verdict(CARD, "K-1-care-1"))
+
+    def test_head_and_branch_changes_during_a_running_command_are_still_caretaker_writes(self):
+        self.baseline()
+        self.started(self.wt)
+        self.build(self.wt)
+        git(self.wt, "commit", "-q", "--allow-empty", "-m", "opiekun commituje")
+        verdict = self.engine._guard_verdict(CARD, "K-1-care-1")
+        self.assertIn("przesunięta gałąź ticket/pt-1", verdict)
+        self.assertNotIn("zmienione pliki", verdict)
+        git(self.wt, "checkout", "-q", "--detach")
+        self.assertIn(f"przesunięty HEAD worktree {self.wt}", self.engine._guard_verdict(CARD, "K-1-care-1"))
+
+    def test_check_before_a_tide_action_skips_the_tree_and_keeps_head(self):
+        self.baseline()
+        self.started(self.wt)
+        self.build(self.wt)
+        git(self.wt, "checkout", "-q", "--detach")
+        self.tide_writes(lambda: None)
+        causes = [(e["cause"], bool(e["wrote"])) for e in self.guard_events()]
+        self.assertEqual(causes[:3], [("start", False), (guard.OUTSIDE, False), ("check", True)])
+        verdict = self.engine._guard_verdict(CARD, "K-1-care-1")
+        self.assertIn("przesunięty HEAD worktree", verdict)
+        self.assertNotIn("zmienione pliki", verdict)
+
+    def test_rebase_after_an_unfrozen_tide_action_skips_the_tree_and_keeps_head(self):
+        """`_guard_rebase`: krok nie dał się zamrozić, w trakcie działania Tide polecenie w worktree ticketu pisze
+        `build/`, a `HEAD` się przesuwa — drzewo nie jest zapisem kroku, `HEAD` jest."""
+        self.freezes = False
+        self.baseline()
+        self.started(self.wt)
+
+        def action():
+            self.build(self.wt)
+            git(self.wt, "checkout", "-q", "--detach")
+
+        self.tide_writes(action, action="step-start")
+        last = self.guard_events()[-1]
+        self.assertEqual(last["cause"], "step-start")
+        self.assertEqual(len(last["wrote"]), 1)
+        self.assertIn("przesunięty HEAD worktree", last["wrote"][0])
+        self.assertNotIn("zmienione pliki", last["wrote"][0])
+        self.assertIn(guard.OUTSIDE, [e["cause"] for e in self.guard_events()])
+        verdict = self.engine._guard_verdict(CARD, "K-1-care-1")
+        self.assertIn("przesunięty HEAD worktree", verdict)
+        self.assertNotIn("zmienione pliki", verdict)
+
+    def test_rebase_with_only_tree_changes_of_a_running_command_is_clean(self):
+        self.freezes = False
+        self.baseline()
+        self.started(self.wt)
+        self.tide_writes(lambda: self.build(self.wt), action="step-start")
+        self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+
+    def test_other_path_forms_of_the_same_worktree_match(self):
+        forms = {"końcowy /": lambda wt: wt + "/", "./": lambda wt: os.path.join(os.path.dirname(wt), ".", "pt-1")}
+        for label, form in forms.items():
+            with self.subTest(form=label):
+                self.setUp()
+                self.baseline()
+                self.started(form(self.wt))
+                self.build(self.wt)
+                self.assertEqual(self.engine._guard_verdict(CARD, "K-1-care-1"), "")
+
+    def test_outside_started_without_a_worktree_does_not_disable_the_guard(self):
+        self.baseline()
+        self.started(None)
+        self.build(self.wt)
+        self.assertIn("zmienione pliki w worktree", self.engine._guard_verdict(CARD, "K-1-care-1"))
+        self.assertNotIn(guard.OUTSIDE, [e["cause"] for e in self.guard_events()])
+
+    def test_symlink_to_the_worktree_is_another_path(self):
+        link = os.path.join(self.root, "dowiazanie")
+        os.symlink(self.wt, link)
+        self.baseline()
+        self.started(link)
+        self.build(self.wt)
+        self.assertIn("zmienione pliki w worktree", self.engine._guard_verdict(CARD, "K-1-care-1"))
+
+    def test_write_into_another_guarded_worktree_is_still_a_caretaker_write(self):
+        self.baseline()
+        self.started(self.wt)
+        self.build(self.wt)
+        self.append(os.path.join(self.card_wt, "README.md"))
+        verdict = self.engine._guard_verdict(CARD, "K-1-care-1")
+        self.assertIn(f"zmienione pliki w worktree {self.card_wt}: README.md", verdict)
+        self.assertNotIn(f"worktree {self.wt}:", verdict)
 
 
 if __name__ == "__main__":

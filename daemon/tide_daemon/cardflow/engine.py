@@ -37,6 +37,7 @@ import shutil
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -56,6 +57,10 @@ from ..worktrees.naming import slug_from_prompt
 from . import testrerun
 from . import testpolicy
 from . import mergecheck
+from . import heavyqueue
+from . import queueview
+from . import ticketlimit
+from . import stepqueue
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -90,7 +95,7 @@ from .journal import HistoryChanged, Journal
 from .stepnotes import close_console
 from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
-                    guard_reason, ticket_waits, _epoch, _bookkeeping)
+                    guard_reason, ticket_waits, _epoch, _bookkeeping, approval_live)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -129,7 +134,15 @@ ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi mocny wykonawca spo
 BOX_STEP_KINDS = ("ticket", "fix", "review", "close")
 OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
 OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
+# Ciężkie polecenia (kontrakt testów projektu, testy po scaleniu) mają osobny limit na maszynę `heavyLimit`
+# (K-39 #3, PT-373: cardflow/heavyqueue.py) i liczą się także do łącznego, więc łączny nie może być mniejszy.
+assert OUTSIDE_TOTAL >= heavyqueue.MAX_LIMIT
 OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
+
+
+def _queue_heavy(entry) -> bool:
+    """Pole `heavy` wpisu kolejki outside (PT-373); wpis bez pola (starszy kształt) — lekki."""
+    return len(entry) > 4 and bool(entry[4])
 
 
 def test_pool_available(worktree: str) -> bool:
@@ -181,6 +194,14 @@ def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
+
+class _ProviderOnly:
+    """Wybór wykonawcy sprowadzony do dostawcy: wpis kolejki innej karty (`stepqueue`) przy sprawdzaniu rezerwacji
+    jej opiekuna (`_caretaker_reserved`, `_wait_reason`)."""
+    __slots__ = ("provider", "local")
+
+    def __init__(self, provider: str):
+        self.provider, self.local = provider, False
 
 
 LOGIN_MARKERS = ("failed to authenticate", "oauth session expired", "please run /login", "invalid api key",
@@ -515,7 +536,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.journal = journal or Journal(store.root)
         self._risk_view = RiskMemo()    # K-105 #4: pamięć oceny ryzyka outside tylko dla widoku (nie dla workera)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
-        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
+        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie, ciężkie): kolejka FIFO
+        self._outside_heavy = {}        # krok → ciężkie (bool): klasa polecenia czekającego albo trwającego (PT-373)
+        self._heavy_held = {}           # krok → (zajęte, limit): ciężkie wstrzymane limitem przy ostatniej decyzji
         self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
@@ -546,7 +569,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
         self.watch: dict[str, tuple] = {}          # krok → (odcisk postępu, od kiedy bez zmian, ostatnie sprawdzenie)
         self._warnings: dict[str, str] = {}
+        # Kontekst odczytu Tablicy bieżącego ticku (wątek, BoardRead) dla kolejności kroków (`_order_board`, PT-377).
+        self._tick_read: tuple | None = None
         self._hidden: tuple = (frozenset(), ())
+        self._queue: dict | None = None   # `queue` migawki Tablicy (K-39 #4): liczone raz na tick, tylko do odczytu
         self._busy: tuple = ()
         self._notices: list[dict] = []
         self._local_claims: dict[str, object] = {}
@@ -675,7 +701,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """(ustawienia, wersja): jeden odczyt pliku (zapis jest atomowy) i skrót tych samych bajtów jako wersja
         odpowiedzi GetCardFlowSettings (K-98 #2) — treść i wersja zawsze pochodzą z tej samej wersji pliku."""
         try:
-            with open(self.settings, "rb") as fh:
+            with open(getattr(self, "settings", None) or os.devnull, "rb") as fh:
                 raw = fh.read()
         except OSError:
             return {}, "missing"
@@ -710,6 +736,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
                 "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
+                "heavyLimit": heavyqueue.limit_of(data.get("heavyLimit")),
+                "ticketsPerCard": ticketlimit.default_of(data.get("ticketsPerCard")),
+                "heavyCommands": heavyqueue.patterns_of(data.get("heavyCommands")),
+                "quietCommands": heavyqueue.quiet_patterns_of(data.get("quietCommands")),
                 **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
                 "version": version, "readState": "ready"}
 
@@ -738,7 +768,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def set_flow_settings(self, request: dict) -> dict:
         allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
-                   *caretaker.SETTINGS_DEFAULTS}
+                   "heavyLimit", "heavyCommands", "ticketsPerCard", "quietCommands", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -771,12 +801,32 @@ class FlowEngine(CaretakerChat, PlanEditing):
         rounds = request.get("reviewRoundsBeforeQuestion", current["reviewRoundsBeforeQuestion"])
         if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 20:
             raise FlowError("bad-settings", "liczba rund review przed pytaniem musi być od 1 do 20")
+        # Ciężkie polecenia naraz na maszynę (PT-373). Zmniejszenie nie przerywa trwających — działa przy kolejnym starcie.
+        if "heavyLimit" in request and heavyqueue.limit_problem(request["heavyLimit"]):
+            raise FlowError("bad-settings", heavyqueue.limit_problem(request["heavyLimit"]))
+        # Tickety naraz na kartę (PT-375). Zmniejszenie nie zatrzymuje trwających ticketów — działa przy starcie nowych.
+        if "ticketsPerCard" in request and ticketlimit.problem(request["ticketsPerCard"]):
+            raise FlowError("bad-settings", ticketlimit.problem(request["ticketsPerCard"]))
+        # Wzorce ciężkich poleceń (PT-382): niepoprawna lista nie trafia do pliku.
+        if "heavyCommands" in request and heavyqueue.patterns_problem(request["heavyCommands"]):
+            raise FlowError("bad-settings", heavyqueue.patterns_problem(request["heavyCommands"]))
+        # Wzorce poleceń wymagających ciszy (PT-376): składnia jak `heavyCommands`, domyślnie lista pusta.
+        if "quietCommands" in request and heavyqueue.quiet_patterns_problem(request["quietCommands"]):
+            raise FlowError("bad-settings", heavyqueue.quiet_patterns_problem(request["quietCommands"]))
         data = self._settings_data()
         box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
         if "reviewRoundsBeforeQuestion" in request:
             data["reviewRoundsBeforeQuestion"] = rounds
+        if "heavyLimit" in request:
+            data["heavyLimit"] = request["heavyLimit"]
+        if "ticketsPerCard" in request:
+            data["ticketsPerCard"] = request["ticketsPerCard"]
+        if "heavyCommands" in request:
+            data["heavyCommands"] = heavyqueue.patterns_of(request["heavyCommands"])
+        if "quietCommands" in request:
+            data["quietCommands"] = heavyqueue.quiet_patterns_of(request["quietCommands"])
         if box is not None:
             data["box"] = box
         self._write_settings(data)
@@ -957,6 +1007,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             out = derived(st, card)
         if out:
             ticketentry.enrich(st, out)
+            fullcard.heavy_queued(st, out, self._heavy_view(card.get("id") or ""))
+            self._decision_queue(card.get("id") or "", st, out)
+            override = card.get("maxTickets")
+            fullcard.card_limit(st, out, ticketlimit.effective(override, self._settings_data().get("ticketsPerCard")),
+                                override if ticketlimit.valid(override) else None)
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
@@ -1002,6 +1057,42 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             'linkedTs': stamp(result),
                             'activityTs': max([stamp(e) for e in related] or [stamp(result)])})
         return {'tickets': tickets}
+
+    def queue_view(self) -> dict | None:
+        """Pole `queue` migawki Tablicy policzone w ostatnim ticku (K-39 #4); None — jeszcze nie było ticku.
+        Zwraca gotowy słownik bez odczytów: `snapshot_json` tylko go dołącza."""
+        return self._queue
+
+    def _queue_view(self) -> dict | None:
+        """`queueview.build` ze stanów kart tej samej fazy ticku (`journal.state`, bez odczytu dziennika) i ustawień.
+        Błąd widoku nie zatrzymuje ticku: zostaje poprzednia wartość."""
+        try:
+            states = {}
+            for card in self.journal.cards():
+                st = self.journal.state(card)
+                if st.started is not None:
+                    states[card] = st
+            return queueview.build(
+                states, self._settings_data(),
+                heavy_of=self._heavy_of, quiet_of=self._quiet_of, load=self._load_reader(),
+                outside_limits=(OUTSIDE_PER_PROJECT, OUTSIDE_TOTAL), provider_slots_default=DEFAULT_PROVIDER_SLOTS)
+        except Exception as exc:
+            print(f"tide-daemon: przepływ karty: stan kolejki: {exc!r}", flush=True)
+            return self._queue
+
+    def _decision_queue(self, card: str, st: FlowState, out: dict) -> None:
+        """Część techniczna decyzji zgody na polecenie poza piaskownicą dostaje `queue`: `heavy` albo `outside`
+        (ta sama klasyfikacja co start polecenia, `_outside_heavy_of`; próba testów po scaleniu jest zawsze ciężka).
+        Okno liczy z tego prognozę na polach `queue` migawki."""
+        queueview.mark_decisions(card, st, (out.get("flow") or {}).get("decisions") or [], self._heavy_of)
+
+    def _heavy_of(self, card: str, name: str, step: dict, command: str) -> bool:
+        """`heavy_of` dla `queueview`: klasa polecenia kroku (`_outside_heavy_of`, pamiętana do końca uruchomienia)."""
+        return self._outside_heavy_of(card, {**step, "step": name}, command)
+
+    def _quiet_of(self, card: str, name: str, step: dict, command: str) -> bool:
+        """`quiet_of` dla `queueview`: czy polecenie wymaga ciszy (#6; znacznik kroku i `quietCommands`)."""
+        return self._outside_quiet_of(card, {**step, "step": name}, command)
 
     def warnings(self) -> list[dict]:
         return [{"path": self.journal.path(card), "message": text} for card, text in sorted(self._warnings.items())]
@@ -1975,6 +2066,58 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    at_least=minimum_number)
         return {"ticket": got["ids"][0], "title": title}
 
+    def _reserve_plan_rows(self, card: str, seq, rows, *, repo: str, prefix: str, floor: int) -> dict:
+        """{#n: ID} lokalnych wierszy roboczych planu (K-102 #1; wspólne dla zatwierdzenia i edycji planu).
+
+        Wiersz z udanym wynikiem `reserve` (klucz `plan:<seq>:#n`) zachowuje numer. Pozostałe dostają zamiar `intent`
+        w dotychczasowym kształcie i numery z jednej rezerwacji zbiorczej (`request_key` `<karta>:plan:<seq>:#n`, wpisy
+        jak z pojedynczego `reserve`), po czym wynik `result` per wiersz. Restart po zapisie rejestru, a przed wynikami,
+        zostawia otwarte zamiary: `_reconcile` (pojedyncza rezerwacja z tym samym kluczem) albo ponowione zatwierdzenie
+        zwraca te same numery. Błąd — `result ok:false` dla wierszy objętych wywołaniem i FlowError."""
+        st = self.journal.state(card)
+        if baseproposal.blocked(st):
+            raise FlowDeferred("decyzja o bazie karty")
+        mapping, missing = {}, []
+        for row in rows:
+            key = f"plan:{seq}:{row['workId']}"
+            done = st.results.get(("reserve", key))
+            if done is not None and done.get("ok"):
+                mapping[row["workId"]] = done["ticket"]
+            else:
+                missing.append((row, key, done))
+        if not missing:
+            return mapping
+        for row, key, _done in missing:
+            if ("reserve", key) not in st.intents:
+                self.journal.append(card, "intent", action="reserve", key=key, repo=repo, title=row["title"],
+                                    prefix=prefix, minimumNumber=floor)
+        frozen = self._guard_freeze(st, self._guard_watched(st))
+        try:
+            guarded = self._guard_check(card, st)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        try:
+            got = reservations.reserve_many(
+                repo, [{"request_key": f"{card}:{key}", "title": row["title"]} for row, key, _done in missing],
+                prefix=prefix, at_least=floor, local_fallback=True)
+        except (reservations.ReservationError, OSError) as exc:
+            self._guard_rebase(card, guarded, "reserve", frozen)
+            for _row, key, done in missing:
+                if done is None or done.get("error") != str(exc):
+                    self.journal.append(card, "result", action="reserve", key=key, ok=False, error=str(exc))
+            if isinstance(exc, OSError):
+                raise
+            raise FlowError("reserve", str(exc)) from None
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        self._guard_rebase(card, guarded, "reserve", frozen)
+        for (row, key, _done), ticket in zip(missing, got["ids"]):
+            self.journal.append(card, "result", action="reserve", key=key, ok=True, ticket=ticket, title=row["title"])
+            mapping[row["workId"]] = ticket
+        return {row["workId"]: mapping[row["workId"]] for row in rows}
+
     def enter(self, card_id: str, step_id: str) -> dict:
         """Stare wejście po ID albo warunkowe przejęcie próby wybranej z Snapshot."""
         if not step_id.lstrip().startswith("{"):
@@ -2461,29 +2604,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
         _, project = self._project(card_id)
         mapping = {}
+        # K-102 #1: lokalne numery wszystkich wierszy `#n` jedną rezerwacją zbiorczą (jedna blokada i jeden odczyt planów).
+        local = {} if project.youtrack else self._reserve_plan_rows(
+            card_id, proposal["seq"], [r for r in proposal.get("rows") or [] if r["workId"].startswith("#")],
+            repo=repo, prefix=prefix, floor=imported_floor)
         for row in proposal.get("rows") or []:
             work_id = row["workId"]
-            if work_id.startswith("#"):
+            if work_id.startswith("#") and not project.youtrack:
+                mapping[work_id] = local[work_id]
+            elif work_id.startswith("#"):
                 key = f"plan:{proposal['seq']}:{work_id}"
-                if project.youtrack:
-                    try:
-                        old = st.results.get(('reserve', key)) or {}
-                        source = row['cardPath']
-                        if not os.path.isfile(source) and old.get('ticket'):
-                            source = os.path.join(os.path.dirname(source), old['ticket'] + '.md')
-                        with open(source, encoding='utf-8') as fh:
-                            description = fh.read()
-                        result = self._tracker_reserve(card_id, key, int(work_id[1:]), row['title'], description)
-                    except yt.YouTrackError as exc:
-                        if exc.permanent:
-                            raise FlowError('youtrack', str(exc)) from None
-                        return {"ok": True, "id": card_id, "queued": True, "map": mapping, "message": str(exc)}
-                else:
-                    result = self._act(card_id, "reserve", key,
-                                       lambda row=row, key=key: self._reserve(repo, row["title"],
-                                                                                f"{card_id}:{key}", prefix, imported_floor),
-                                       retry_failed=True, repo=repo, title=row["title"], prefix=prefix,
-                                       minimumNumber=imported_floor)
+                try:
+                    old = st.results.get(('reserve', key)) or {}
+                    source = row['cardPath']
+                    if not os.path.isfile(source) and old.get('ticket'):
+                        source = os.path.join(os.path.dirname(source), old['ticket'] + '.md')
+                    with open(source, encoding='utf-8') as fh:
+                        description = fh.read()
+                    result = self._tracker_reserve(card_id, key, int(work_id[1:]), row['title'], description)
+                except yt.YouTrackError as exc:
+                    if exc.permanent:
+                        raise FlowError('youtrack', str(exc)) from None
+                    return {"ok": True, "id": card_id, "queued": True, "map": mapping, "message": str(exc)}
                 mapping[work_id] = result["ticket"]
             else:
                 mapping[work_id] = work_id
@@ -2616,35 +2758,71 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return len(pending) if found is not None and found.provider == selected.provider else 0
 
     def _earlier_waiters(self, card: str, st: FlowState, selected, ticket: str, kind: str) -> int:
-        """Krok opiekuna nie wyprzedza kroków innych kart (PT-150, US 37): liczba kroków innych kart, które czekają
-        na miejsce u tego samego dostawcy (`cause: slots`) od chwili nie późniejszej niż ten krok opiekuna (`since`
-        z `step.waiting`; krok jeszcze nieczekający przychodzi po wszystkich czekających). Liczą się jak trwające
-        kroki, więc zwolnione miejsce bierze najpierw wcześniej czekająca karta. Pomijane są karty zakończone,
-        wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
-        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga jeden porządek wspólny dla wszystkich kart:
-        (`since`, identyfikator karty, ticket, rodzaj kroku) — dwaj opiekunowie z równym `since` nie czekają na
-        siebie nawzajem (PT-150, runda 2). Krok zablokowany rezerwacją własnego opiekuna nie zajmuje miejsca
-        w tej kolejce: inaczej ticket A → opiekun B → opiekun A tworzy cykl czekania (runda 3)."""
-        if kind != caretaker.KIND or selected.local:
+        """Ile kroków innych kart stoi w kolejce przed tym krokiem u tego samego dostawcy (PT-150 dla opiekuna,
+        PT-377 dla wszystkich kroków). Porządek i bieżące przyczyny czekania liczy wyłącznie `stepqueue`
+        (`_step_order`); silnik tylko dokłada ten krok jako wpis i liczy wpisy przed nim. Liczą się jak trwające
+        kroki, więc zwolnione miejsce bierze najpierw krok o wyższym kluczu porządku. Modele lokalne mają własną
+        kolejkę (`model_queue`), więc krok lokalny nie ustępuje tej."""
+        if selected.local:
             return 0
+        others = {other: self.journal.state(other) for other in self.journal.cards() if other != card}
+        board_now = self._order_board_once()
+        entries = self._step_order(others, board_now, provider=selected.provider)
+        if not entries:
+            return 0      # nikt inny nie czeka u tego dostawcy: bez odczytu Tablicy
         since = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
-        mine = (since, card, ticket or "", kind)
-        count = 0
-        for other in self.journal.cards():
-            if other == card:
-                continue
-            ost = self.journal.state(other)
-            if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
-                continue
-            running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
-            reserved = self._caretaker_reserved(other, ost, selected, "ticket")
-            blocked_by_caretaker = reserved and bool(self._wait_reason(selected, reserved))
-            count += sum(1 for key, wait in ost.waiting.items()
-                         if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
-                         key[0] not in ost.rejected and key not in running and
-                         (key[1] == caretaker.KIND or not blocked_by_caretaker) and
-                         (not since or ((wait.get("since") or ""), other, key[0] or "", key[1] or "") < mine))
-        return count
+        mine = stepqueue.Entry(card, ticket or "", kind, selected.provider, since,
+                               self._card_priority(board_now(), card))
+        return stepqueue.ahead(entries, mine)
+
+    def _step_order(self, states: dict, board_now=None, *, provider: str | None = None) -> list:
+        """`stepqueue.order` ze stanów kart (`journal.state`, faza odczytu ticku) i wywołań silnika: priorytet
+        i limit ticketów karty z Tablicy (`board_now()` — kontekst ticku albo jeden świeży odczyt, dopiero gdy ktoś
+        czeka), limit tygodniowy dostawcy (`_low_limit`) i rezerwacja własnego opiekuna (PT-150, runda 3: krok
+        zablokowany rezerwacją nie zajmuje miejsca w kolejce innych — bez cyklu czekania)."""
+        board_now = board_now or self._order_board_once()
+
+        def quota(provider_name):
+            low = self._low_limit(provider_name)
+            return flow_limits.wait_reason(low) if low else ""
+
+        def reserved(other, ost, entry):
+            selected = _ProviderOnly(entry.provider)
+            count = self._caretaker_reserved(other, ost, selected, "ticket")
+            return bool(count) and bool(self._wait_reason(selected, count))
+
+        def ticket_limit(other):
+            board = board_now()
+            return self._tickets_limit(board.cards.get(card_num(other)) if board is not None else None)
+        return stepqueue.order(states, priority_of=lambda other: self._card_priority(board_now(), other),
+                               quota_of=quota, reserved_of=reserved, ticket_limit_of=ticket_limit,
+                               provider=provider)
+
+    def _order_board(self):
+        """Tablica do kolejności kroków: kontekst odczytu bieżącego ticku (K-98 #3, ten sam wątek), poza tickiem
+        świeży odczyt. Błąd odczytu — None (wszystkie karty z priorytetem `normal`, limit ticketów domyślny)."""
+        context = getattr(self, "_tick_read", None)
+        try:
+            if context is not None and context[0] == threading.get_ident():
+                return context[1].board
+            return self.store.load()
+        except (BoardError, OSError, ValueError):
+            return None
+
+    def _order_board_once(self):
+        """Leniwy `_order_board` na jedną decyzję: Tablica wczytana najwyżej raz, przy pierwszym użyciu."""
+        loaded: list = []
+
+        def board_now():
+            if not loaded:
+                loaded.append(self._order_board())
+            return loaded[0]
+        return board_now
+
+    @staticmethod
+    def _card_priority(board, card: str) -> str:
+        item = board.cards.get(card_num(card)) if board is not None else None
+        return stepqueue.of(getattr(item, "priority", None))
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = self.journal.state(card)
@@ -3195,9 +3373,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         należą do kroku — zapisane w `wrote` przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do
         wzięcia stanu na nowo po działaniu."""
         names = self._guard_watched(st)
+        runs = guard.runs(self.journal.read(card)) if names else []
         for name in names:
             base = st.caretaker_guards[name]
-            found = guard.changes(base, guard.again(self.git, base))
+            fresh = guard.again(self.git, base)
+            base = self._guard_outside(card, name, base, fresh, runs)
+            found = guard.changes(base, fresh)
             if found:
                 self.journal.append(card, guard.EVENT, step=name, cause="check", wrote=found,
                                     **{k: base.get(k) for k in guard.FIELDS})
@@ -3211,6 +3392,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         try:
             st = self.journal.state(card)
+            runs = guard.runs(self.journal.read(card))
             for name in names:
                 base = st.caretaker_guards.get(name)
                 if base is None or name in st.finished:
@@ -3218,9 +3400,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 fresh = guard.again(self.git, base)
                 if guard.same(base, fresh):
                     continue
-                wrote = [] if frozen.get(name) else [
-                    f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
-                    + "; ".join(guard.changes(base, fresh))]
+                # Niezamrożony krok: zmiana drzewa worktree z poleceniem Tide nie jest zapisem kroku (PT-372).
+                found = [] if frozen.get(name) else guard.changes(self._guard_outside(card, name, base, fresh, runs),
+                                                                  fresh)
+                wrote = [f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
+                         + "; ".join(found)] if found else []
                 self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
         finally:
             self._guard_thaw(self.journal.state(card), frozen)
@@ -3232,8 +3416,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
         base = st.caretaker_guards.get(name)
         if base is None:
             return "brak stanu worktree sprzed kroku opiekuna — nie da się sprawdzić, czy krok nie pisał"
-        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, guard.again(self.git, base))]
+        runs = guard.runs(self.journal.read(card))
+        fresh = guard.again(self.git, base)
+        base = self._guard_outside(card, name, base, fresh, runs)
+        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, fresh)]
         return guard.reason(found)[:caretaker.REASON_MAX] if found else ""
+
+    def _guard_outside(self, card: str, name: str, base: dict, fresh: dict, runs: list) -> dict:
+        """Wyjątek strażnika (PT-372): zmiany drzewa worktree, w którym od stanu bazowego działało polecenie Tide
+        poza piaskownicą albo próba testów po scaleniu, nie należą do kroku. Zapisuje `caretaker.guard` z `cause:
+        outside` i `skipped` (stan bazowy z drzewem tego worktree wziętym na nowo) i zwraca stan do dalszego
+        porównania. `runs` — z dziennika przeczytanego przed migawką `fresh`."""
+        busy = guard.active(base, runs, name)
+        skipped = guard.skipped(base, fresh, busy)
+        if not skipped:
+            return base
+        rebased = guard.excuse(base, fresh, busy)
+        self.journal.append(card, guard.EVENT, step=name, cause=guard.OUTSIDE, wrote=[], skipped=skipped, **rebased)
+        return rebased
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
@@ -3344,87 +3544,93 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # ubocznym czytają świeżo jak dotąd.
         from ..board.readcontext import BoardRead
         read = BoardRead(self.store, invalidate_on_write=True)
+        # PT-377: kolejność kroków u dostawcy (`_order_board`) czyta priorytety kart z tego samego kontekstu ticku.
+        self._tick_read = (threading.get_ident(), read)
         try:
-            # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
-            # może wyprzedzić rozpoznania niepełnej historii po restarcie.
-            for card in self.journal.cards_complete():
-                trialhold.read_process_history(self.journal, card, history)
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
-            return
-        self._warnings.pop("journal", None)
-        from ..issue_start import recover as recover_issue_starts
-        from ..issues import IssueStore
-        recover_issue_starts(IssueStore(self.store), self)
-        from .basegeneration import BaseGeneration
-        from . import startorder
-        unreadable_starts = set()
-        for card in self.journal.cards():
-            if any(e["type"].startswith("order.") for e in self.journal.read(card)):
+            try:
+                # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
+                # może wyprzedzić rozpoznania niepełnej historii po restarcie.
+                for card in self.journal.cards_complete():
+                    trialhold.read_process_history(self.journal, card, history)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
+                return
+            self._warnings.pop("journal", None)
+            from ..issue_start import recover as recover_issue_starts
+            from ..issues import IssueStore
+            recover_issue_starts(IssueStore(self.store), self)
+            from .basegeneration import BaseGeneration
+            from . import startorder
+            unreadable_starts = set()
+            for card in self.journal.cards():
+                if any(e["type"].startswith("order.") for e in self.journal.read(card)):
+                    try:
+                        startorder.events(self, card)
+                    except (OSError, ValueError):
+                        unreadable_starts.add(card)
+                        continue
                 try:
-                    startorder.events(self, card)
-                except (OSError, ValueError):
-                    unreadable_starts.add(card)
+                    BaseGeneration(self).recover(card)
+                except Exception as exc:
+                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
+                self._project_base(card, read)
+                current = self.journal.state(card)
+                if not baseproposal.blocked(current):
+                    self._recover_started_steps(card, current, history=history)
+            boxstep.recover_network(self, history=history)
+            # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
+            running_local = {s["step"]: s for card in self.journal.cards()
+                             for s in self.journal.state(card).running() if s.get("local")}
+            for name in set(self._local_claims) - set(running_local):
+                self._release_local(name)
+            for name, step in running_local.items():
+                if name not in self._local_claims:
+                    self._local_claims[name] = model_queue.shared().claim_step(
+                        self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
+                        recovering=True)
+            hidden_ids, hidden_places, busy = set(), set(), set()
+            guarded: set[str] = set()
+            for card in self.journal.cards():
+                if card in unreadable_starts:
                     continue
-            try:
-                BaseGeneration(self).recover(card)
-            except Exception as exc:
-                print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
-            self._project_base(card, read)
-            current = self.journal.state(card)
-            if not baseproposal.blocked(current):
-                self._recover_started_steps(card, current, history=history)
-        boxstep.recover_network(self, history=history)
-        # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
-        running_local = {s["step"]: s for card in self.journal.cards()
-                         for s in self.journal.state(card).running() if s.get("local")}
-        for name in set(self._local_claims) - set(running_local):
-            self._release_local(name)
-        for name, step in running_local.items():
-            if name not in self._local_claims:
-                self._local_claims[name] = model_queue.shared().claim_step(
-                    self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
-                    recovering=True)
-        hidden_ids, hidden_places, busy = set(), set(), set()
-        guarded: set[str] = set()
-        for card in self.journal.cards():
-            if card in unreadable_starts:
-                continue
-            warning = self.journal.check(card)
-            if warning:
-                self._warnings[card] = warning
-                print(f"tide-daemon: przepływ karty: {warning}", flush=True)
-            st = self.journal.state(card)
-            for step in [*st.steps.values(), *st.caretakers.values()]:
-                hidden_ids.add(str(step.get("session") or ""))
-                if step.get("worktree"):
-                    hidden_places.add(os.path.realpath(step["worktree"]))
-            try:
-                repo = (st.started or {}).get("repo") or ""
-                if repo and repo not in guarded:
-                    guarded.add(repo)
-                    self._main_branches[repo] = self.git.main_branch(repo)
-                    worktree_guard(repo, self._worktree_heads)
-            except Exception as exc:
-                print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
-            try:
-                self._tick_card(card, st, read, history)
-            except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
-                print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
-            try:
-                self._guard_card(card, read)
-                self._queue_notices(card, read)
-            except Exception as exc:
-                print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
-            st = self.journal.state(card)
-            busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
-            busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
-                     s.get("mode") == "interactive" and not s.get("consoleClosed")}
-            if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
-                busy.add(ticket_of(st)["cardWorktree"])
-        self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
-        self._busy = tuple(sorted(busy))
-        boxstep.lifecycle.tick(self)
+                warning = self.journal.check(card)
+                if warning:
+                    self._warnings[card] = warning
+                    print(f"tide-daemon: przepływ karty: {warning}", flush=True)
+                st = self.journal.state(card)
+                for step in [*st.steps.values(), *st.caretakers.values()]:
+                    hidden_ids.add(str(step.get("session") or ""))
+                    if step.get("worktree"):
+                        hidden_places.add(os.path.realpath(step["worktree"]))
+                try:
+                    repo = (st.started or {}).get("repo") or ""
+                    if repo and repo not in guarded:
+                        guarded.add(repo)
+                        self._main_branches[repo] = self.git.main_branch(repo)
+                        worktree_guard(repo, self._worktree_heads)
+                except Exception as exc:
+                    print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
+                try:
+                    self._tick_card(card, st, read, history)
+                except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
+                    print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+                try:
+                    self._guard_card(card, read)
+                    self._queue_notices(card, read)
+                except Exception as exc:
+                    print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                st = self.journal.state(card)
+                busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
+                busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
+                         s.get("mode") == "interactive" and not s.get("consoleClosed")}
+                if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
+                    busy.add(ticket_of(st)["cardWorktree"])
+            self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
+            self._busy = tuple(sorted(busy))
+            self._queue = self._queue_view()
+            boxstep.lifecycle.tick(self)
+        finally:
+            self._tick_read = None
 
     def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:
         """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty.
@@ -3959,6 +4165,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # Odrzucony bloker nie blokuje na zawsze: użytkownik wydzielił go z karty (K-16/LEGAL-75, 03.11).
             if not set(row["blockers"]) <= merged | set(st.rejected):
                 continue
+            # Limit ticketów w toku na kartę (PT-375): dotyczy tylko startu nowego ticketu; ticket w toku nie blokuje
+            # własnych kroków (te nie przechodzą przez `_plan_next`), a zmniejszenie limitu niczego nie zatrzymuje.
+            running, limit = len(ticketlimit.in_progress(st, rows)), self._tickets_limit(item)
+            if running >= limit:
+                self._card_limit_wait(card, st, ticket, running, limit)
+                continue
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
             if catalog is None:
@@ -4008,6 +4220,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 continue
             st = self.journal.state(card)
         # Odrzucony ticket nie blokuje niezależnych gałęzi grafu.
+
+    def _tickets_limit(self, item) -> int:
+        """Limit ticketów w toku karty: `max-tickets` karty albo ustawienie przepływu `ticketsPerCard` (PT-375)."""
+        return ticketlimit.effective(getattr(item, "max_tickets", None), self._settings_data().get("ticketsPerCard"))
+
+    def _card_limit_wait(self, card: str, st: FlowState, ticket: str, running: int, limit: int) -> None:
+        """`step.waiting` z `cause: card-limit` — raz na zmianę powodu (bez zapętlenia zapisu przy każdym ticku);
+        krok startu ticketu zdejmuje wpis (`step.started`)."""
+        reason = ticketlimit.wait_reason(running, limit)
+        previous = st.waiting.get((ticket, "ticket")) or {}
+        if previous.get("reason") != reason or previous.get("cause") != ticketlimit.CAUSE:
+            self.journal.append(card, "step.waiting", ticket=ticket, kind="ticket", provider="", reason=reason,
+                                cause=ticketlimit.CAUSE, until="")
 
     def _plan_commit(self, card: str, st: FlowState, repo: str, branch: str, worktree: str) -> None:
         approved = st.plan_approved or {}
@@ -6181,6 +6406,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
         if data.get("waitFor"):
             extra["waitFor"] = data["waitFor"]
+        if data.get("result") == "denied":
+            # Polecenie wymagające ciszy (K-39 #6, PT-376); stare wyniki bez pola mają `false`.
+            extra["exclusive"] = heavyqueue.exclusive_of(data.get("exclusive"))
         remembered = False
         auto_allow = False
         broken_mcp = self._codex_broken_mcp(step, data)
@@ -6724,10 +6952,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if data["result"] == "outside":
             # Prośba o uruchomienie poza piaskownicą idzie ścieżką zgody na polecenie (dziennik, decyzja,
             # wznowienie, restart), z flagą `outside` — wynik polecenia dostaje wznowiony krok (03.11).
+            # `exclusive` (K-39 #6, PT-376): polecenie wymaga ciszy; zły typ to `false`, nie błąd wyniku.
             return {"result": "denied", "outside": True, "reason": str(data.get("reason") or "")[:600],
                     "question": "", "command": data["command"].strip(),
+                    "exclusive": heavyqueue.exclusive_of(data.get("exclusive")),
                     "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
+                "exclusive": heavyqueue.exclusive_of(data.get("exclusive")) if data["result"] == "denied" else False,
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
                 "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
@@ -6910,13 +7141,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return
             if not consent.before_start(self, card, step, {"command": step["command"]}, decision):
                 return
+            # Próba testów po scaleniu jest zawsze ciężka (PT-373).
+            self._outside_heavy_state()[name] = True
             if self._outside_busy(card):
-                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_behind(card, name, decision, quiet=True, heavy=True)
                 self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return
-            if self._outside_behind(card, name, decision):
+            if self._outside_behind(card, name, decision, heavy=True):
+                return
+            if not self._heavy_admitted(card, name):
                 return
             self._outside_waiting.pop(name, None)
+            self._heavy_held_state().pop(name, None)
             self._outside_log(name, "start")
             self._merge_check_start(card, step, entry)
             return
@@ -7341,15 +7577,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return None
             if not consent.before_start(self, card, step, done, decision):
                 return None
+            # Polecenie wymagające ciszy (#6: `exclusive` wyniku kroku albo `quietCommands`) jest zawsze ciężkie.
+            heavy = self._outside_heavy_of(card, step, done.get("command") or "",
+                                           heavyqueue.exclusive_of(done.get("exclusive")))
             if self._outside_busy(card):
                 # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
                 # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
-                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_behind(card, name, decision, quiet=True, heavy=heavy)
                 self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
-            if self._outside_behind(card, name, decision):
+            if self._outside_behind(card, name, decision, heavy=heavy):
                 return None
+            if heavy and not self._heavy_admitted(card, name):
+                return None     # kolejka ciężkich poleceń na maszynę (PT-373)
             self._outside_waiting.pop(name, None)
+            self._heavy_held_state().pop(name, None)
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
@@ -7388,6 +7630,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except OSError:
             tail = "(brak wyniku)"
         self._outside_active.pop(name, None)
+        self._outside_heavy_state().pop(name, None)
+        self._outside_quiet_state().pop(name, None)
         # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
         stepstop._systemctl("stop", started["unit"] + ".scope")
         return code, tail
@@ -7732,10 +7976,203 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
 
-    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False) -> bool:
+    # --- kolejka ciężkich poleceń na maszynę (K-39 #3, PT-373; zasada: heavyqueue.py) ---------------
+
+    def _outside_heavy_state(self) -> dict:
+        return self.__dict__.setdefault("_outside_heavy", {})
+
+    def _heavy_held_state(self) -> dict:
+        return self.__dict__.setdefault("_heavy_held", {})
+
+    def _heavy_limit(self) -> int:
+        return heavyqueue.limit_of(self._settings_data().get("heavyLimit"))
+
+    def _heavy_patterns(self) -> list:
+        return heavyqueue.patterns_of(self._settings_data().get("heavyCommands"))
+
+    def _heavy_contract(self, card: str, worktree: str):
+        """Efektywny kontrakt testów projektu karty dla klasyfikacji (z `{base}` nierozwiniętym): zatwierdzony
+        kontrakt z profilu, inaczej cele `make` worktree (testpolicy.effective_tests)."""
+        _, project = self._project(card)
+        tests = getattr(project, "tests", None)
+        error = getattr(project, "tests_error", "") or ""
+        approved = False
+        if isinstance(tests, dict) and not error:
+            try:
+                from ..board import contract_approval
+                approved = contract_approval.approved(self.store.root, project.slug, tests,
+                                                      getattr(self.store, "approvals_path", None)) is True
+            except Exception:
+                approved = False
+        return testpolicy.effective_tests(tests, worktree, approved, "", error=error)
+
+    def _outside_quiet_state(self) -> dict:
+        return self.__dict__.setdefault("_outside_quiet", {})
+
+    def _quiet_patterns(self) -> list:
+        return heavyqueue.quiet_patterns_of(self._settings_data().get("quietCommands"))
+
+    def _outside_heavy_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
+        """Klasa polecenia procesu `step` (raz na proces, pamiętana do końca uruchomienia). Błąd odczytu kontraktu
+        albo projektu — lekkie (dotychczasowe limity). Polecenie wymagające ciszy (#6) jest zawsze ciężkie."""
+        return self._outside_class(card, step, command, marked)[0]
+
+    def _outside_quiet_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
+        """Czy polecenie procesu `step` wymaga ciszy (K-39 #6, PT-376): pole `exclusive` w `step.finished` albo wzorzec
+        `quietCommands`. Pamiętane razem z klasą ciężkości do końca uruchomienia."""
+        return self._outside_class(card, step, command, marked)[1]
+
+    def _outside_class(self, card: str, step: dict, command: str, marked: bool | None = None) -> tuple[bool, bool]:
+        """(ciężkie, wymaga ciszy) procesu `step`. `marked` — pole `exclusive` wyniku kroku; None — odczyt
+        ze stanu karty (`journal.state`, także po restarcie: znacznik odtwarza się z `step.finished` i ustawień).
+        Próba testów po scaleniu jest ciężka i nie wymaga ciszy."""
+        name = step.get("step") or ""
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
+        if name not in quiet:
+            exclusive = False
+            if not mergecheck.is_step(name):
+                try:
+                    if marked is None:
+                        marked = heavyqueue.exclusive_of(
+                            (self.journal.state(card).finished.get(name) or {}).get("exclusive"))
+                    exclusive = bool(marked)
+                    _, project = self._project(card)
+                    roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+                    exclusive = heavyqueue.needs_quiet(command, roots, self._quiet_patterns(), marked=exclusive)
+                except Exception:
+                    pass        # błąd projektu albo ustawień: zostaje sam znacznik kroku
+            quiet[name] = exclusive
+        if name not in known:
+            if quiet[name] or mergecheck.is_step(name):
+                heavy = True
+            else:
+                try:
+                    _, project = self._project(card)
+                    worktree = step.get("worktree") or ""
+                    roots = (worktree, project.repo, step.get("stepDir") or "")
+                    heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree),
+                                               self._heavy_patterns()).heavy
+                except Exception:
+                    heavy = False
+            known[name] = heavy
+        return bool(known[name] or quiet[name]), bool(quiet[name])
+
+    def _heavy_running(self) -> set:
+        """Trwające ciężkie z żywego `_outside_active` (po `_outside_busy` i po każdym starcie w tym ticku, także
+        próby po scaleniu) — nie z migawki stanu kart. Po restarcie klasa z dziennika: polecenie prośby kroku,
+        ponowienie padniętych modułów (`rerunOf`) jest ciężkie jak jego pełny przebieg, próba po scaleniu zawsze."""
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
+        found = set()
+        for name, (card, _unit) in list((getattr(self, "_outside_active", None) or {}).items()):
+            if name not in known or name not in quiet:
+                self._started_heavy(card, name)
+            if known.get(name) or quiet.get(name):
+                found.add(name)
+        return found
+
+    def _quiet_running(self, running: set) -> set:
+        """Trwające wymagające ciszy (podzbiór `running`, klasa z `_heavy_running`)."""
+        quiet = self._outside_quiet_state()
+        return {name for name in running if quiet.get(name)}
+
+    def _started_heavy(self, card: str, name: str) -> bool:
+        """Klasa trwającego polecenia z dziennika (po restarcie); wypełnia pamięć ciężkości i ciszy."""
+        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
+        if mergecheck.is_step(name):
+            known[name] = True
+            quiet.setdefault(name, False)
+            return True
+        try:
+            events = self.journal.read(card)
+            started = processidentity.outside_runs(events).get(name) or \
+                processidentity.outside_run(events, name)[1] or {}
+            current = fold(events)
+            step = current.steps.get(name) or {}
+            done = current.finished.get(name) or {}
+            command = done.get("command") or started.get("command") or ""
+        except Exception:
+            known.setdefault(name, False)
+            quiet.setdefault(name, False)
+            return known[name]
+        heavy, _ = self._outside_class(card, {**step, "step": name}, command,
+                                       heavyqueue.exclusive_of(done.get("exclusive")))
+        if started.get("rerunOf") and not heavy:
+            known[name] = heavy = True
+        return heavy
+
+    def _load_reader(self):
+        """Odczyt obciążenia maszyny dla warunku ciszy (#6); testy podmieniają `_read_load`."""
+        return getattr(self, "_read_load", None) or heavyqueue.read_load
+
+    def _outside_describe(self, name: str) -> str:
+        """Opis polecenia do zdań o ciszy: „make test (K-36)” — polecenie z `outside.started` albo prośby kroku."""
+        found = (getattr(self, "_outside_active", None) or {}).get(name) or \
+            (getattr(self, "_outside_waiting", None) or {}).get(name)
+        card = found[0] if found else ""
+        command = ""
+        if card:
+            try:
+                st = self.journal.state(card)
+                command = (st.outside_started.get(name) or {}).get("command") or \
+                    (st.finished.get(name) or st.merge_check_steps.get(name) or {}).get("command") or ""
+            except Exception:
+                command = ""
+        text = " ".join(str(command or name).split())
+        text = text if len(text) <= 40 else text[:39] + "…"
+        return f"{text} ({card})" if card else text
+
+    def _heavy_decision(self, name: str = "") -> "heavyqueue.Admission":
+        """`heavyqueue.admit` z czekającymi ciężkimi, które mogą ruszyć (ich karta nie ma zajętego miejsca projektu
+        ani łącznego; `name` liczy się zawsze), żywym zbiorem trwających i ich znacznikami ciszy."""
+        running = self._heavy_running()
+        quiet = self._outside_quiet_state()
+        waiting = [heavyqueue.Waiting(other, entry[2], bool(quiet.get(other)), entry[0])
+                   for other, entry in list(self._outside_waiting.items())
+                   if _queue_heavy(entry) and (other == name or not self._outside_busy(entry[0]))]
+        return heavyqueue.admit(waiting, running, self._heavy_limit(),
+                                exclusive_running=self._quiet_running(running), describe=self._outside_describe,
+                                load=self._load_reader())
+
+    def _quiet_held(self) -> set:
+        """Czekające ciężkie wstrzymane teraz ciszą (#6). Bez wpisów wymagających ciszy (czekających ani trwających)
+        pusty zbiór bez liczenia decyzji i bez odczytu obciążenia."""
+        quiet = self._outside_quiet_state()
+        if not any(quiet.get(n) for n in self._outside_waiting) and not self._quiet_running(self._heavy_running()):
+            return set()
+        return {n for n, reason in self._heavy_decision().held.items() if heavyqueue.quiet_hold(reason)}
+
+    def _heavy_admitted(self, card: str, name: str) -> bool:
+        """Decyzja startu ciężkiego polecenia `name` (już zgłoszonego w kolejce): `_heavy_decision`. Wstrzymane
+        zapamiętuje do statusu ticketu: (zajęte, limit) przy limicie albo zdanie o ciszy (#6)."""
+        decision = self._heavy_decision(name)
+        held = self._heavy_held_state()
+        if name in decision.admitted:
+            held.pop(name, None)
+            return True
+        reason = decision.held.get(name)
+        if heavyqueue.quiet_hold(reason):
+            held[name] = reason
+            self._outside_log(name, reason)
+            return False
+        held[name] = (decision.busy, decision.limit)
+        running = self._heavy_running()
+        self._outside_log(name, f"ciężkie polecenia: {decision.busy} z {decision.limit} zajęte"
+                                + (f" ({', '.join(sorted(running))})" if running else ""))
+        return False
+
+    def _heavy_view(self, card: str) -> dict:
+        """Ciężkie polecenia tej karty wstrzymane w kolejce: krok → (zajęte, limit) przy limicie albo zdanie o ciszy
+        (#6) — tylko wpisy nadal w kolejce."""
+        waiting = dict(getattr(self, "_outside_waiting", None) or {})
+        return {name: value for name, value in dict(self._heavy_held_state()).items()
+                if (waiting.get(name) or ("",))[0] == card and _queue_heavy(waiting[name])}
+
+    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False,
+                        heavy: bool = False) -> bool:
         """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
         projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
-        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
+        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki. Wpis ma pole `heavy`
+        (PT-373): starsze ciężkie polecenie, które nie ruszy, bo limit ciężkich jest zajęty, nie blokuje innych."""
         now = time.time()
         if not getattr(self, "_outside_seeded", False):
             self._outside_seeded = True
@@ -7743,11 +8180,25 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slug = self._project(card)[1].slug
         previous = self._outside_waiting.get(name)
         queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
-        self._outside_waiting[name] = (card, slug, queued, now)
+        self._outside_waiting[name] = (card, slug, queued, now, heavy)
         self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
-        for other, (other_card, other_slug, other_queued, _) in self._outside_waiting.items():
+        heavy_load = None
+        quiet_held = None
+        for other, entry in list(self._outside_waiting.items()):
+            other_card, other_slug, other_queued = entry[:3]
             if other == name or (other_queued, other) >= (queued, name):
                 continue
+            if _queue_heavy(entry):
+                if heavy_load is None:
+                    heavy_load = (len(self._heavy_running()), self._heavy_limit())
+                if not heavyqueue.holds_queue(True, *heavy_load):
+                    continue    # czeka na miejsce ciężkich — ruszy dopiero po zwolnieniu, nie trzyma innych
+                if quiet_held is None:
+                    # Cisza (#6): starsze ciężkie wstrzymane ciszą (czeka na spokojną maszynę albo za poleceniem
+                    # wymagającym ciszy) nie ruszy teraz, więc nie trzyma lekkich ani innych projektów.
+                    quiet_held = self._quiet_held()
+                if other in quiet_held:
+                    continue
             if other_slug == slug or not self._outside_busy(other_card):
                 if not quiet:
                     self._outside_log(name, f"czeka za starszą zgodą {other}")
@@ -7791,8 +8242,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 # Stara zgoda (karta porzucona) nie blokuje kolejki nawet przez OUTSIDE_QUEUE_STALE.
                 if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
                         name in outside and name not in started and name not in resumed and \
-                        name not in current.superseded and now - queued < 86400:
-                    self._outside_waiting.setdefault(name, (other, slug, queued, now))
+                        approval_live(current, name, now):
+                    # Pole `heavy` z tej samej klasyfikacji co przy zgłoszeniu (PT-373): kolejność czekających
+                    # ciężkich po restarcie to dalej czas zgody. Znacznik ciszy (#6) z `step.finished` i ustawień.
+                    done = current.finished.get(name) or {}
+                    heavy = self._outside_heavy_of(other, {**(current.steps.get(name) or {}), "step": name},
+                                                   done.get("command") or "",
+                                                   heavyqueue.exclusive_of(done.get("exclusive")))
+                    self._outside_waiting.setdefault(name, (other, slug, queued, now, heavy))
 
     def _outside_exit(self, card: str, name: str) -> str:
         """Plik kodu wyjścia uruchomienia outside procesu ze wspólnego wyniku redukcji (PT-288 review 2, M7):

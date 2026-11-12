@@ -163,6 +163,12 @@ nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomij
 Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
 `make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
 
+Czas zatwierdzenia planu (K-102 #5): `python3 tools/approval_benchmark.py` buduje tymczasowe repozytorium
+(300 planów, 40 gałęzi, 8 worktree), kartę z 18 ticketami i prywatny rejestr numerów, po czym wypisuje linię JSON
+z `seconds`, `planReads` (licznik pełnych odczytów planów — kryterium regresji, nie czas), `tickets` i `tideRoot`.
+`--base-ref <SHA>` mierzy kod tej rewizji w tymczasowym worktree (usuwanym po pomiarze), `--tide-root <ścieżka>`
+kod innego drzewa. Cele poza katalogiem tymczasowym kończą się kodem 2 przed zapisem.
+
 Pomiar obu selektorów: `python3 tools/test_changed_benchmark.py --base <SHA-startu-ticketu>`.
 Procedura porównuje diffy pięciu ostatnich commitów bez merge z tej bazy. Opcja
 `--history-ref <SHA>` wybiera inny punkt historii **tylko do pomiarów**: pozwala uwzględnić
