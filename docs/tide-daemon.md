@@ -2539,6 +2539,13 @@ zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej od
 startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
 Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
 
+**Obciążenie maszyny w zdarzeniach outside (K-100, PT-423).** `outside.started` i `outside.finished` (prośba
+kroku i próba testów po scaleniu) mają `loadavg: [l1, l5, l15]` (średnie obciążenie z chwili zapisu, dwa miejsca po
+przecinku) i `cores` — liczbę rdzeni dostępnych usłudze (`sched_getaffinity`, inaczej `cpu_count`). Błąd odczytu
+daje `null` w danym polu; nigdy nie zatrzymuje polecenia ani zapisu zdarzenia. Pola są wyłącznie diagnostyczne
+(miernik porażek pod obciążeniem): nie zmieniają kolejki, zgód, wznowień ani modelu tożsamości procesów (pola
+neutralne w `cardflow/processidentity.py`), a wpisy sprzed zmiany, bez tych pól, czyta się jak dotąd.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
@@ -5391,7 +5398,7 @@ a przy samym `test` — `make test` z `fallback: full`). Bez polecenia próba ma
 karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Kontrakt, który po podstawieniu nie jest pojedynczym
 poleceniem (łańcuch, podpowłoka, powłoka, `env`, zmienne jak `PATH=` — kryterium kolejki poza piaskownicą), daje
 taką samą próbę niedostępną z `source: contract, reason: contract-not-single`, bez przejścia na `Makefile`. Do wyniku `0` bieżącej próby
-(`merge.check-finished {ticket, check, exit, log}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
+(`merge.check-finished {ticket, check, exit, log, failedModules?, failedTests?}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
 scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
 `"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.
 Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
@@ -5418,8 +5425,13 @@ nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejno
 plik kodu wyjścia, rozliczenie zatrzymanej jednostki z PT-315, limit czasu) w worktree gałęzi karty, gdy jego HEAD to
 `after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości, bez ponowienia samych
 padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje
-`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba,
-`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed
+`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` z tym
+samym `exit` (liczba, `"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). `failedModules` i `failedTests`
+(K-100, PT-423) to moduły z `returncode` różnym od 0 i nazwy ich testów (`failures`, `errors`,
+`unexpected_successes`, najwyżej 200) z `summary.json` uruchamiacza testów, którego katalog wskazuje pierwszy
+nagłówek `Moduły: N, JOBS=…, logi: <katalog>` w `log`. Brak lub błąd dziennika, nagłówka albo raportu (np. przebieg
+ucięty, inny program testów) daje puste listy bez błędu; pola są diagnostyczne i nie zmieniają bramki, a wyniki
+sprzed zmiany, bez nich, czyta się jak dotąd. Odmowa zgody (także po zgodzie automatycznej, przed
 startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
 Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
 `outside.finished` a `merge.check-finished` usługa dopisuje raz.

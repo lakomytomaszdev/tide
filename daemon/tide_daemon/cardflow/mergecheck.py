@@ -17,9 +17,11 @@ Zdarzenia (dziennik karty):
   nie wznawia się i nie dostaje review,
 - `step.decision {step: merge-check-…, ticket, kind: "merge-check", check, choice, command, auto?}` — zgoda albo
   odmowa jednej próby; ta sama ścieżka co prośba `outside` kroku (reguły projektu, `consent`, PT-311),
-- `merge.check-finished {ticket, check, exit, log}` — wynik próby (zapisuje go przebieg pod zgodą, PT-329);
-  `exit: 0` bieżącej próby otwiera bramkę, każda inna wartość daje problem `merge-check-failed`, wynik
-  nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`,
+- `merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` — wynik próby (zapisuje go przebieg
+  pod zgodą, PT-329); `exit: 0` bieżącej próby otwiera bramkę, każda inna wartość daje problem `merge-check-failed`,
+  wynik nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`.
+  `failedModules`/`failedTests` (K-100, PT-423) to wyłącznie diagnostyka z `summary.json` uruchamiacza
+  (`failed_from_summary`); brak lub błąd raportu daje puste listy, a wpisy bez tych pól czyta się jak dotąd,
 - `merge.check-accepted {ticket, check, after, by}` — „Akceptuj mimo porażki” (PT-320): jawna decyzja człowieka
   (`ResolveCardStep`, `choice: accept-merge-check`) o dokładnie tej próbie (`check`) na dokładnie tym wierzchołku
   (`after`), przy problemie `merge-check-failed`, `merge-check-denied` albo `merge-check-unavailable`. Otwiera bramkę
@@ -38,10 +40,13 @@ zapisane przez Tide na tej karcie, z których każdy zmienia tylko nagłówek i 
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shlex
 
 from . import testpolicy
+from .testrerun import HEADER as RUNNER_HEADER
 
 ARMED, REQUESTED, FINISHED = "merge.check-armed", "merge.check-requested", "merge.check-finished"
 STEP = "merge.check-step"
@@ -57,6 +62,33 @@ CONTRACT_NOT_SINGLE = "contract-not-single"
 BASE_PARAM = "{base}"
 CHANGED_TARGET, FULL_TARGET = "test-changed", "test"
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+FAILED_TESTS_MAX = 200     # najwięcej nazw testów w `failedTests` jednego wyniku (dziennik karty, nie raport)
+_FAILED_KEYS = ("failures", "errors", "unexpected_successes")
+
+
+def failed_from_summary(log: str) -> tuple[list[str], list[str]]:
+    """Padnięte moduły i testy próby (K-100, PT-423) z `summary.json` uruchamiacza testów projektu: katalog raportu
+    wskazuje nagłówek przebiegu w pełnym wyniku próby (`log`), ten sam co przy ponowieniu (`testrerun.HEADER`).
+    Brak lub błąd dziennika, nagłówka albo raportu, inny schemat — puste listy, bez wyjątku: pole jest wyłącznie
+    diagnostyczne i nie zmienia wyniku próby."""
+    try:
+        with open(log, encoding="utf-8", errors="replace") as fh:
+            header = RUNNER_HEADER.search(fh.read())
+        with open(os.path.join(header.group(2), "summary.json"), encoding="utf-8") as fh:
+            results = json.load(fh)["results"]
+        modules, tests = [], []
+        for item in results if isinstance(results, list) else ():
+            if not isinstance(item, dict) or not isinstance(item.get("module"), str) or not item.get("returncode"):
+                continue
+            modules.append(item["module"])
+            for key in _FAILED_KEYS:
+                names = item.get(key)
+                tests += [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+        return modules, tests[:FAILED_TESTS_MAX]
+    except Exception:   # noqa: BLE001 — błąd odczytu raportu nie może zatrzymać zapisu wyniku próby
+        return [], []
+
 
 def make_targets(texts) -> set[str]:
     """Cele reguł z tekstów `Makefile` i `mk/*.mk` — ten sam parser co wykrycie testów kroku (K-69): jedynym
