@@ -947,8 +947,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             st.caretaker_setup = self._caretaker_setup(st)
         cid = card.get("id") or ""
         # K-105 #4: ocena ryzyka outside w opisie decyzji z pamięci widoku — tylko w odczycie prezentacji.
-        scope = (self._risk_view.scope(cid, self.journal.view_version(cid)) if self.journal.presenting()
-                 else contextlib.nullcontext())
+        presenting = getattr(self.journal, "presenting", None)    # dzienniki zastępcze w testach nie mają trybu widoku
+        if presenting is not None and presenting():
+            memo = self.__dict__.setdefault("_risk_view", RiskMemo())   # też dla silnika zbudowanego bez __init__
+            scope = memo.scope(cid, self.journal.view_version(cid))
+        else:
+            scope = contextlib.nullcontext()
         with scope:
             out = derived(st, card)
         if out:
