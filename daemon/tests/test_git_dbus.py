@@ -96,14 +96,21 @@ class GitDiffDbusTest(FlowCase):
         self.assertEqual((data["project"], data["repo"], data["total"], data["truncated"]), ("proj", self.repo, 2, False))
         nodes = {n["id"]: n for n in data["nodes"]}
         card = nodes[f"card:{card_id}"]
-        self.assertEqual((card["branch"], card["state"], card["title"]), (reply["cardBranch"], "active", "Eksport CSV"))
+        # Atrapa agenta prowadzi kartę „Od razu” do końca: ticket scalony do gałęzi karty (i sprzątnięty), a krok
+        # `close` zapisuje `card.closed` — karta domknięta, jeszcze nie scalona do głównej.
+        events_by_type = {e["type"] for e in self.events(card_id)}
+        self.assertIn("card.closed", events_by_type)
+        self.assertEqual((card["branch"], card["state"], card["title"]), (reply["cardBranch"], "closed", "Eksport CSV"))
+        self.assertNotIn("merged", card)
         self.assertEqual((card["started"]["ref"], card["started"]["sha"]), ("refs/heads/master", self.master))
         ticket = nodes[f"ticket:{card_id}:{reply['ticket']}"]
         self.assertEqual((ticket["branch"], ticket["state"], ticket["started"]["ref"]),
-                         (reply["branch"], "active", f"refs/heads/{reply['cardBranch']}"))
+                         (reply["branch"], "merged", f"refs/heads/{reply['cardBranch']}"))
+        self.assertEqual(ticket["merged"]["targetRef"], f"refs/heads/{reply['cardBranch']}")
         self.assertEqual(nodes["base:refs/heads/master"]["kind"], "base")
         self.assertIn({"kind": "start", "from": "base:refs/heads/master", "to": card["id"]}, data["edges"])
         self.assertIn({"kind": "start", "from": card["id"], "to": ticket["id"]}, data["edges"])
+        self.assertIn({"kind": "merge", "from": ticket["id"], "to": card["id"]}, data["edges"])
         self.assertEqual(self.branch_map({})["projects"][0]["cards"], 1)
 
         self.assertEqual(self.branch_map({"project": "brak"})["error"], "unknown-project")
