@@ -260,7 +260,8 @@ class FlowGit:
     def ref_syntax_error(self, repo: str, ref) -> str:
         """Składnia pełnego refu bazy: `refs/heads/…` albo `refs/remotes/…` i `git check-ref-format`.
 
-        Pusty napis — składnia poprawna. Jedna funkcja dla bazy karty (`resolve_base`) i pola karty `startRef`;
+        Pusty napis (i nie-napis) to błąd prefiksu; czyszczenie pola `startRef` obsługuje wywołujący, nie woła tej
+        funkcji dla pustej wartości. Jedna funkcja dla bazy karty (`resolve_base`) i pola karty `startRef`;
         nie czyta refów repozytorium (nie sprawdza istnienia gałęzi)."""
         if not isinstance(ref, str) or not ref.startswith(("refs/heads/", "refs/remotes/")):
             return "baza musi być pełnym refem refs/heads/… albo refs/remotes/…"

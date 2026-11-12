@@ -272,6 +272,7 @@ class CardTest(BoardCase):
         self.assertTrue(self.store.update_card("K-1", {"startRef": ""})["changed"])
         self.assertEqual(self.cards()["K-1"]["startRef"], "")
         self.assertNotIn("refs/", self.card_text("K-1"))
+        self.assertRegex(self.card_text("K-1"), r"(?m)^start-ref:[ \t]*$")   # klucz zostaje pusty (docs)
         self.assertEqual(self.cards()["K-1"]["baseRef"], "")          # pole nie jest projekcją bazy
 
     def test_start_ref_invalid_is_rejected_without_writing(self):
