@@ -470,11 +470,14 @@ i `.sh` (język z rozszerzenia, `Diff.languageFor`) dostają kolory składni, je
 wyłącznie dla widocznych linii znanego języka (nie dla pliku `large` ani binarnego, nie dla nagłówków hunków). Podświetlacz
 to `Component` wstrzykiwany jednym punktem (`DiffView.highlighter`, w testach atrapa); domyślnie widok ładuje
 `ModuleHighlighter.qml` dynamicznie przez `Qt.createComponent` i przy braku modułu zostaje przy zwykłym `Text`, a ściągawka
-(`?`) mówi „Podświetlanie składni niedostępne (brak modułu KSyntaxHighlighting)”. Motyw: ciemny motyw modułu. Tła linii
-dodanej, usuniętej i kontekstowej się nie zmieniają; `DiffView.readableColor` zastępuje kolor formatu tekstem z palety, gdy
-jego kontrast na którymkolwiek z trzech teł jest poniżej 4,5:1 (WCAG 2.x). Ograniczenia: każda linia to osobny dokument, więc
-wieloliniowe konstrukcje (komentarze blokowe, napisy wielowierszowe) nie są rozpoznawane; kolorów formatów prawdziwego
-modułu nie da się podmienić z QML, więc `readableColor` działa na podświetlaczach, które go używają (atrapa w testach).
+(`?`) mówi „Podświetlanie składni niedostępne (brak modułu KSyntaxHighlighting)”. Motyw: „Tide”, generowany z palety
+(`theme/syntax/generate.py`, instalowany przez `make install-appearance` do `$XDG_DATA_HOME/org.kde.syntax-highlighting/themes/`);
+każdy kolor tekstu ma kontrast >= 4,5:1 (WCAG 2.x) na tle okna i na tłach linii dodanej i usuniętej, style nie mają tła
+formatu. Bez zainstalowanego motywu `ModuleHighlighter` używa ciemnego motywu modułu. Tła linii dodanej, usuniętej i
+kontekstowej się nie zmieniają; `DiffView.readableColor` zastępuje kolor formatu tekstem z palety dla podświetlaczy, które go
+używają (atrapa w testach). Ograniczenia: każda linia to osobny dokument, więc wieloliniowe konstrukcje (komentarze blokowe,
+napisy wielowierszowe) nie są rozpoznawane; kolorów formatów modułu nie da się podmienić z QML, stąd osobny motyw; motyw
+powstaje z Mist (warianty palety nie mają własnego).
 
 **Widok diffa** (`apps/common/qml/git/DiffView.qml`, `diff.js`): plik `large` jest zwinięty z przyciskiem „duży plik —
 N linii, pokaż” (klik wysyła `Git.Diff` z `options.path` i wstawia treść); plik binarny pokazuje „plik binarny (rozmiar

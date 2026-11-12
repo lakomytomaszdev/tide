@@ -6,6 +6,8 @@
 // Umowa podświetlacza (`highlighter` to Component, wstrzykiwany jednym punktem przez DiffView): tworzony z właściwościami
 // `textEdit` (TextEdit tej linii), `language` (nazwa definicji, np. „Python”) i `readable` (funkcja koloru: zwraca kolor
 // czytelny na tłach linii diffu, inaczej tekst z palety). Prawdziwy: ModuleHighlighter.qml (moduł KSyntaxHighlighting).
+// Podświetlacz powstaje raz, przy tworzeniu TextEdit: zmiana `highlighter` przy żywym delegacie nie tworzy nowej instancji
+// (gospodarz ustala go przed danymi, `resolveHighlighter`).
 import QtQuick
 import "../tide" as Tide
 

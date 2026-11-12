@@ -1291,8 +1291,11 @@ class PackageTest(unittest.TestCase):
             pkg = stage(os.path.join(tmp, "pkg"))
             files = files_under(pkg)
         for name in ("qml/git/DiffView.qml", "qml/git/start.js", "qml/git/diff.js",
+                     "qml/git/SyntaxText.qml", "qml/git/ModuleHighlighter.qml",
                      "views/board/qml/git/DiffView.qml", "views/board/qml/git/start.js",
-                     "views/worktrees/qml/git/DiffView.qml"):
+                     "views/board/qml/git/SyntaxText.qml", "views/board/qml/git/ModuleHighlighter.qml",
+                     "views/worktrees/qml/git/DiffView.qml", "views/worktrees/qml/git/SyntaxText.qml",
+                     "views/worktrees/qml/git/ModuleHighlighter.qml"):
             self.assertIn(name, files)
 
 

@@ -124,7 +124,7 @@ class HighlightCase(base.QmlCase):
         with open(os.path.join(cls.tmp, "git", "MissingHighlighter.qml"), "w", encoding="utf-8") as fh:
             fh.write(MISSING)
 
-    def probe(self, scenario: str, files=EXTRA) -> dict:
+    def probe(self, scenario: str, files=EXTRA, env_extra=None) -> dict:
         script = os.path.join(self.tmp, "scenario.py")
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(base.SCENARIO_HEAD + HEAD + "\nDIFF = json.loads(" + repr(json.dumps(DIFF)) + ")\n"
@@ -132,6 +132,7 @@ class HighlightCase(base.QmlCase):
                      + scenario)
         env = offscreen()
         env["TZ"] = "UTC"
+        env.update(env_extra or {})
         result = subprocess.run(["/usr/bin/python3", PROBE, self.tmp, script], env=env, capture_output=True,
                                 text=True, timeout=90)
         self.stderr = result.stderr
@@ -245,7 +246,35 @@ out["note"] = texts("diffHighlightNote")
 
 
 class RealModuleTest(HighlightCase):
+    THEME_SCENARIO = '''
+start("apps/a.py", mock=False)
+out["available"] = view("highlightAvailable")
+if out["available"]:
+    out["themes"] = field("diffSyntaxText", "it.instance ? it.instance.engine.theme.name : ''")
+'''
+
+    def test_the_generated_tide_theme_is_used_when_installed_and_the_module_theme_otherwise(self):
+        from theme import palette as palettes
+        from theme.syntax.generate import render
+        data = os.path.join(self.tmp, "xdg-data")
+        themes = os.path.join(data, "org.kde.syntax-highlighting", "themes")
+        os.makedirs(themes, exist_ok=True)
+        with open(os.path.join(themes, "Tide.theme"), "w", encoding="utf-8") as fh:
+            fh.write(render(palettes.load("mist")))
+        with_tide = self.probe(self.THEME_SCENARIO, env_extra={"XDG_DATA_HOME": data})
+        if not with_tide["available"]:
+            self.skipTest("brak modułu QML org.kde.syntaxhighlighting (KSyntaxHighlighting) w środowisku testów")
+        self.assertEqual({n for n in with_tide["themes"] if n}, {"Tide"}, "motyw z palety (kontrast 4,5:1 policzony w theme/syntax)")
+        empty = os.path.join(self.tmp, "xdg-empty")
+        os.makedirs(empty, exist_ok=True)
+        without = self.probe(self.THEME_SCENARIO, env_extra={"XDG_DATA_HOME": empty})
+        names = {n for n in without["themes"] if n}
+        self.assertEqual(len(names), 1)
+        self.assertNotIn("Tide", names, "bez zainstalowanego motywu: ciemny motyw modułu")
+
     def test_a_python_line_gets_the_real_highlighter(self):
+        """Dowodzi okablowania: każda widoczna linia kodu `.py` ma prawdziwy SyntaxHighlighter z definicją Python.
+        Nie dowodzi kolorów: z QML nie da się odczytać formatów dokumentu; kontrast motywu liczy theme/syntax/tests."""
         out = self.probe('''
 start("apps/a.py", mock=False)
 out["available"] = view("highlightAvailable")
