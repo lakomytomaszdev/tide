@@ -229,6 +229,27 @@ Rectangle {
     // Wiersze projektów liczone tylko w widoku wierszy; w „Razem” nikt ich nie czyta.
     readonly property var lanesRaw: layoutMode === "lanes" ? Logic.groupLanes(cards) : []
     property var panelCard: null
+    // PT-408: zatwierdzanie planu — oczekiwanie TEGO okna na odpowiedź ApproveCardPlan / ApproveCardEnvironment.
+    // Plan: trwa do zdarzenia `plan.approved` (następna migawka) albo błędu; migawka dodatkowo niesie `approving`.
+    // Różnica planu: wyłącznie do doręczenia odpowiedzi (migawka nie ma `approving`, `plan.approved` nie przychodzi).
+    property string planApproveCard: ""
+    property bool planApproveDiff: false
+    readonly property bool planApproveWaiting: planApproveCard !== "" && !!panelCard && panelCard.id === planApproveCard
+    function beginPlanApproval(cardId) {
+        const flow = panelCard && panelCard.id === cardId && panelCard.derived ? panelCard.derived.flow : null
+        const plan = flow ? flow.plan : null
+        planApproveDiff = !!(plan && plan.revision && plan.revision.pending)
+        planApproveCard = cardId
+        planApproveFallback.stop()
+    }
+    // Odpowiedź usługi kończy oczekiwanie (sukces z mapą, błąd, różnica planu). Wyjątek: `approving: true` (zatwierdza
+    // już inne wywołanie) — plan zostaje „w trakcie”, aż przyjdzie migawka (z krótkim bezpiecznikiem).
+    function planApprovalReplied(failed, approving) {
+        if (planApproveCard === "") return
+        if (!failed && approving && !planApproveDiff) planApproveFallback.restart()
+        else planApproveCard = ""
+    }
+    Timer { id: planApproveFallback; interval: 4000; onTriggered: page.planApproveCard = "" }
     property var decisionCard: null
     property var fullCard: null
     property var errorLines: []
@@ -917,18 +938,22 @@ Rectangle {
             planManager.error = error
             if (!error) planManager.notice = "Zmiana planu zapisana."
         } else if (tag.indexOf("plan-approve:") === 0) {
+            const approveText = !error && reply.approving ? "Zatwierdzanie trwa — karta ruszy sama."
+                              : "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            planApprovalReplied(!!error, !!reply.approving)
             cardPanel.busy = false
             cardPanel.error = error
-            if (!error) cardPanel.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            if (!error) cardPanel.notice = approveText
             planManager.busy = false
             planManager.error = error
-            if (!error) planManager.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            if (!error) planManager.notice = approveText
         } else if (tag.indexOf("env-approve:") === 0) {
             // Odmowę waliduje usługa; panel pokazuje jej komunikat i pozycje (nowe do zaznaczenia), nic nie zgaduje.
+            if (tag.indexOf("env-approve:plan:") === 0) planApprovalReplied(!!error || !!reply.preview, !!reply.approving)
             cardPanel.busy = false
             cardPanel.environmentError = error
             cardPanel.environmentReply = error || reply.exposure || reply.revoked ? reply : null
-            if (!error) cardPanel.notice = reply.preview ? "Podgląd zakresu gotowy. Zaznacz zgodę po przeczytaniu."
+            if (!error) cardPanel.notice = reply.approving ? "Zatwierdzanie trwa — karta ruszy sama." : reply.preview ? "Podgląd zakresu gotowy. Zaznacz zgodę po przeczytaniu."
                 : reply.message ? reply.message : reply.onlyPlan
                 ? "Plan zatwierdzony. Środowisko czeka na zatwierdzenie."
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
@@ -971,6 +996,7 @@ Rectangle {
 
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
     onSnapshotChanged: {
+        if (planApproveFallback.running) planApproveCard = ""   // PT-408: po odpowiedzi nową migawkę przejmuje stan zatwierdzania
         refreshColumnSpecs()
         optimistic = []
         if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
@@ -1937,11 +1963,17 @@ Rectangle {
         }
         onPlanEditRequested: (cardId, request) =>
             page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
-        onPlanApproveRequested: cardId =>
+        approveWaiting: page.planApproveWaiting
+        onPlanApproveRequested: cardId => {
+            if (page.planApproveWaiting) return   // PT-408: odpowiedź jeszcze nie wróciła — drugie wywołanie nie wychodzi
+            page.beginPlanApproval(cardId)
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
-        onEnvironmentApproveRequested: (cardId, yaml, onlyPlan) => {
+        }
+        onEnvironmentApproveRequested: (cardId, yaml, onlyPlan, approvesPlan) => {
+            if (approvesPlan && page.planApproveWaiting) return
             cardPanel.environmentError = ""
-            page.environmentApproveRequested(page.nextTag("env-approve:" + cardId), cardId, yaml, onlyPlan)
+            if (approvesPlan) page.beginPlanApproval(cardId)
+            page.environmentApproveRequested(page.nextTag("env-approve:" + (approvesPlan ? "plan:" : "") + cardId), cardId, yaml, onlyPlan)
         }
         onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId => page.openDiff(cardId)
@@ -1989,7 +2021,10 @@ Rectangle {
             planManager.busy = true
             page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
         }
+        approveWaiting: page.planApproveWaiting
         onApproveRequested: cardId => {
+            if (page.planApproveWaiting) return
+            page.beginPlanApproval(cardId)
             planManager.busy = true
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
         }
