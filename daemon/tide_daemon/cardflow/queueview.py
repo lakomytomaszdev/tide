@@ -10,15 +10,18 @@ Kształt (dodatek do migawki, istniejące pola bez zmian):
 
     queue = {
       "heavy":   {"limit": 2,
-                  "running": [{"step", "card", "ticket", "command", "since", "kind": "outside"|"merge-check"}],
-                  "waiting": [{… to samo …, "reason": "zdanie z usługi"}]},   # w kolejności startu
+                  "running": [{"step", "card", "ticket", "command", "since", "kind": "outside"|"merge-check",
+                               "exclusive": bool}],                      # wymaga ciszy (#6)
+                  "waiting": [{… to samo …, "reason": "zdanie z usługi"}],   # w kolejności startu
+                  "load": {"avg1", "cores", "threshold", "error"}},        # obciążenie maszyny (#6)
       "outside": {"perProject": 6, "total": 7,                    # limity poleceń poza piaskownicą
                   "occupied": {"total": n, "projects": {slug: n}}, # trwające razem z ciężkimi (liczą się do limitów)
                   "running": [{… "project": slug}], "waiting": [{… "project": slug}]},   # tylko lekkie
       "limits":  {"heavyLimit": 2, "providerSlots": {dostawca: n}, "providerSlotsDefault": 3},
     }
 
-Obciążenie maszyny (`heavy.load`) dojdzie w #6, część `steps` w #10.
+Obciążenie maszyny (`heavy.load`, #6) to jeden odczyt na tick (wstrzykiwany `load`, domyślnie `/proc/loadavg`) —
+w fazie ticku, nie w `snapshot_json`. Powody czekania (limit, cisza) to zdania `heavyqueue.admit`. Część `steps` w #10.
 
 Źródła w `FlowState`: trwające — `outside_started` (krok → `outside.started`: polecenie i `since`; ticket z `steps` albo
 `merge_check_steps`), czekające — `state.outside_queued` (decyzja „uruchom” bez startu; polecenie z `finished`, czas zgody
@@ -39,12 +42,23 @@ WAITING_HELD = "czeka na wolne miejsce: ciężkie polecenia {busy} z {limit} zaj
 WAITING_NEXT = "ruszy przy najbliższym sprawdzeniu kolejki"
 
 
-def _entry(card: str, name: str, ticket: str, command: str, since: str, kind: str, project: str) -> dict:
+def _entry(card: str, name: str, ticket: str, command: str, since: str, kind: str, project: str,
+           exclusive: bool = False) -> dict:
     return {"step": name, "card": card, "ticket": ticket or "", "command": command or "", "since": since or "",
-            "kind": kind, "project": project}
+            "kind": kind, "exclusive": bool(exclusive), "project": project}
 
 
-def _running(card: str, st: FlowState, project: str, heavy_of) -> list[tuple[bool, dict]]:
+def _exclusive(card: str, st: FlowState, name: str, step: dict, command: str, quiet_of) -> bool:
+    """Czy polecenie wymaga ciszy (#6): klasa z silnika (`quiet_of`: znacznik kroku i `quietCommands`), bez niej sam
+    znacznik `exclusive` z `step.finished`. Próba testów po scaleniu nie wymaga ciszy."""
+    if mergecheck.is_step(name):
+        return False
+    if quiet_of is not None:
+        return bool(quiet_of(card, name, step, command))
+    return heavyqueue.exclusive_of((st.finished.get(name) or {}).get("exclusive"))
+
+
+def _running(card: str, st: FlowState, project: str, heavy_of, quiet_of=None) -> list[tuple[bool, dict]]:
     out = []
     for name, started in st.outside_started.items():
         if not isinstance(name, str):
@@ -52,13 +66,15 @@ def _running(card: str, st: FlowState, project: str, heavy_of) -> list[tuple[boo
         step = st.steps.get(name) or st.merge_check_steps.get(name) or {}
         command = started.get("command") or step.get("command") or ""
         merge = mergecheck.is_step(name)
-        heavy = merge or bool(started.get("rerunOf")) or bool(heavy_of(card, name, step, command))
+        exclusive = _exclusive(card, st, name, step, command, quiet_of)
+        heavy = merge or exclusive or bool(started.get("rerunOf")) or bool(heavy_of(card, name, step, command))
         out.append((heavy, _entry(card, name, step.get("ticket") or started.get("ticket") or "", command,
-                                  started.get("ts") or "", KIND_MERGE_CHECK if merge else KIND_OUTSIDE, project)))
+                                  started.get("ts") or "", KIND_MERGE_CHECK if merge else KIND_OUTSIDE, project,
+                                  exclusive)))
     return out
 
 
-def _waiting(card: str, st: FlowState, project: str, heavy_of, now: float) -> list[tuple[bool, dict]]:
+def _waiting(card: str, st: FlowState, project: str, heavy_of, now: float, quiet_of=None) -> list[tuple[bool, dict]]:
     if st.paused or st.card_finished:
         return []        # wstrzymana albo zakończona karta nie zajmuje miejsca w kolejce
     out = []
@@ -68,8 +84,9 @@ def _waiting(card: str, st: FlowState, project: str, heavy_of, now: float) -> li
         step = st.steps.get(name) or {}
         command = (st.finished.get(name) or {}).get("command") or ""
         since = (st.step_decisions.get(name) or {}).get("ts") or ""
-        out.append((bool(heavy_of(card, name, step, command)),
-                    _entry(card, name, step.get("ticket") or "", command, since, KIND_OUTSIDE, project)))
+        exclusive = _exclusive(card, st, name, step, command, quiet_of)
+        out.append((exclusive or bool(heavy_of(card, name, step, command)),
+                    _entry(card, name, step.get("ticket") or "", command, since, KIND_OUTSIDE, project, exclusive)))
     for item in mergecheck.gate(st):
         name = mergecheck.step_name(item.get("check"))
         if item.get("status") != mergecheck.PENDING or name in st.outside_started or \
@@ -106,11 +123,25 @@ def _slots(settings: Mapping) -> dict:
             and v >= 1}
 
 
+def _describe(entries: list[dict]) -> Callable[[str], str]:
+    """Opis polecenia do zdań o ciszy: „make test (K-36)” (polecenie skrócone jak na kartce ticketu)."""
+    by_step = {e["step"]: e for e in entries}
+
+    def describe(name: str) -> str:
+        entry = by_step.get(name) or {}
+        text = " ".join(str(entry.get("command") or name).split())
+        text = text if len(text) <= 40 else text[:39] + "…"
+        return f"{text} ({entry['card']})" if entry.get("card") else text
+    return describe
+
+
 def build(states: Mapping[str, FlowState], settings: Mapping | None, *, heavy_of: Callable,
-          outside_limits: tuple[int, int], provider_slots_default: int = 3, now: float | None = None) -> dict:
+          outside_limits: tuple[int, int], provider_slots_default: int = 3, now: float | None = None,
+          quiet_of: Callable | None = None, load: Callable[[], "heavyqueue.Load"] = heavyqueue.read_load) -> dict:
     """`states` — karta → `FlowState`; `settings` — ustawienia przepływu (`heavyLimit`, `providerSlots`);
     `heavy_of(card, krok, wpis_kroku, polecenie)` — klasa polecenia z silnika (`True` — ciężkie; próby testów po
-    scaleniu i ponowienia modułów są ciężkie bez pytania);
+    scaleniu i ponowienia modułów są ciężkie bez pytania); `quiet_of` (ten sam podpis) — czy wymaga ciszy (#6;
+    bez niego sam znacznik `exclusive` kroku); `load` — odczyt obciążenia maszyny (raz na wywołanie);
     `outside_limits` — (na projekt, łącznie)."""
     settings = settings if isinstance(settings, Mapping) else {}
     now = time.time() if now is None else now
@@ -119,17 +150,22 @@ def build(states: Mapping[str, FlowState], settings: Mapping | None, *, heavy_of
     for card in sorted(states):
         st = states[card]
         project = str((st.started or {}).get("project") or "")
-        for heavy, entry in _running(card, st, project, heavy_of):
+        for heavy, entry in _running(card, st, project, heavy_of, quiet_of):
             (heavy_running if heavy else light_running).append(entry)
-        for heavy, entry in _waiting(card, st, project, heavy_of, now):
+        for heavy, entry in _waiting(card, st, project, heavy_of, now, quiet_of):
             (heavy_waiting if heavy else light_waiting).append(entry)
-    queued = {e["step"]: heavyqueue.Waiting(e["step"], _epoch(e["since"])) for e in heavy_waiting}
-    admission = heavyqueue.admit(queued.values(), [e["step"] for e in heavy_running], limit)
+    measured = heavyqueue.measure(load)      # jeden odczyt na tick (błąd odczytu jako `error`)
+    queued = {e["step"]: heavyqueue.Waiting(e["step"], _epoch(e["since"]), e["exclusive"], e["card"])
+              for e in heavy_waiting}
+    admission = heavyqueue.admit(queued.values(), [e["step"] for e in heavy_running], limit,
+                                 exclusive_running=[e["step"] for e in heavy_running if e["exclusive"]],
+                                 describe=_describe([*heavy_running, *heavy_waiting]), load=lambda: measured)
     waiting = []
     # Kolejność startu to kolejność `heavyqueue` (dziś czas zgody, potem nazwa) — druga kopia porządku nie powstaje.
     for entry in sorted(heavy_waiting, key=lambda e: heavyqueue.default_order(queued[e["step"]])):
         held = admission.held.get(entry["step"])
-        reason = WAITING_HELD.format(busy=admission.busy, limit=admission.limit) if held else WAITING_NEXT
+        reason = held if heavyqueue.quiet_hold(held) else \
+            WAITING_HELD.format(busy=admission.busy, limit=admission.limit) if held else WAITING_NEXT
         waiting.append({**{k: v for k, v in entry.items() if k != "project"}, "reason": reason})
     occupied: dict = {}
     for entry in (*heavy_running, *light_running):
@@ -138,7 +174,7 @@ def build(states: Mapping[str, FlowState], settings: Mapping | None, *, heavy_of
     return {
         "heavy": {"limit": limit,
                   "running": [{k: v for k, v in e.items() if k != "project"} for e in heavy_running],
-                  "waiting": waiting},
+                  "waiting": waiting, "load": measured.as_dict()},
         "outside": {"perProject": per_project, "total": total,
                     "occupied": {"total": len(heavy_running) + len(light_running), "projects": occupied},
                     "running": light_running, "waiting": light_waiting},

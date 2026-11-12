@@ -178,7 +178,29 @@ APPROVED = (
              "\nPrzed napisaniem podsumowania uruchom raz ",
              "\nŹródło polecenia pełnych testów: wykryte z Makefile.\nPrzed napisaniem podsumowania uruchom raz ",
              ("plasma-tide", "bez-profilu")),
+    # PT-376 (K-39 #6): kontrakt `outside` każe oznaczać pomiary wydajności `"exclusive": true` (polecenie wymagające
+    # ciszy); zdanie dochodzi po akapicie `outside` hosta we wszystkich kartkach i klasach projektów.
+    Approved("PT-376", (), KINDS,
+             "zgłoś `bash <skrypt>`.\n",
+             "zgłoś `bash <skrypt>`.\n"
+             "Do każdego pomiaru wydajności i innego polecenia, którego wynik zależy od obciążenia maszyny, dopisz w wyniku\n"
+             '`"exclusive": true` (np. {"result":"outside","command":"bash <skrypt pomiaru>","reason":"…","exclusive":true}) —\n'
+             "Tide uruchomi je dopiero na spokojnej maszynie i w trakcie nie wpuści innych ciężkich poleceń.\n"),
 )
+
+
+# Zatwierdzone różnice samej polityki poleceń hosta (`command_policy`): tylko zdanie o `exclusive` (PT-376).
+POLICY_APPROVED = tuple(change for change in APPROVED if change.ticket == "PT-376")
+
+
+def expected_policy(master_text: str) -> str:
+    """Polityka hosta master po zastosowaniu zatwierdzonych różnic polityki; brak fragmentu master to błąd."""
+    text = master_text
+    for change in POLICY_APPROVED:
+        if text.count(change.master) != 1:
+            raise AssertionError(f"polityka hosta: fragment master różnicy {change.ticket} nie występuje dokładnie raz")
+        text = text.replace(change.master, change.k38)
+    return text
 
 
 def approved_for(name: str) -> list[Approved]:

@@ -22,8 +22,20 @@ Pozostałe polecenia są lekkie; skrypt spoza `roots` nie pasuje do żadnego wzo
 
 `admit(waiting, running, limit, order=…)` — które czekające ciężkie polecenia mogą ruszyć: tyle, ile wolnych miejsc
 (`limit` minus trwające), w kolejności klucza porządku (dziś czas zgody, potem nazwa). Zmniejszony limit nie przerywa
-trwających: nowe ruszają dopiero, gdy trwających jest mniej niż limit. Priorytet (#8), podbicie (#11) i cisza (#6)
-dojdą przez klucz `order` i powód wstrzymania.
+trwających: nowe ruszają dopiero, gdy trwających jest mniej niż limit. Priorytet (#8) i podbicie (#11) dojdą przez
+klucz `order`.
+
+**Cisza (K-39 #6, PT-376).** Polecenie wymagające ciszy (`Waiting.exclusive`: krok dopisał do wyniku
+`"exclusive": true` albo polecenie pasuje do `quietCommands`, `pattern_matches`) jest zawsze ciężkie i:
+
+- rusza tylko przy spełnionym warunku `quiet`: brak trwających ciężkich i `loadavg1` mniejsze niż liczba rdzeni / 2
+  (odczyt wstrzykiwany, `read_load`; błąd odczytu to warunek niespełniony z powodem — nigdy start);
+- gdy trwa (`exclusive_running`) albo właśnie rusza, żadne inne ciężkie polecenie nie startuje;
+- gdy czeka na czele kolejki (pierwszy wpis w kolejności, który nie ruszył), nowsze ciężkie też nie startują
+  (opróżnianie), żeby nie czekało w nieskończoność. Wpis wymagający ciszy dalej w kolejce niczego nie wstrzymuje.
+
+Lekkie polecenia i kroki agentów nie przechodzą przez `admit`, więc cisza ich nie wstrzymuje. Powód wstrzymania
+(`Admission.held`) to `HELD_LIMIT` albo zdanie usługi o ciszy (`quiet_hold`).
 """
 from __future__ import annotations
 
@@ -62,19 +74,49 @@ class Verdict:
 
 @dataclass(frozen=True)
 class Waiting:
-    """Czekające ciężkie polecenie: nazwa procesu (krok albo pseudokrok próby) i czas zgody (epoka)."""
+    """Czekające ciężkie polecenie: nazwa procesu (krok albo pseudokrok próby), czas zgody (epoka), czy wymaga ciszy
+    (#6) i karta (do zdania o opróżnianiu kolejki)."""
     name: str
     queued: float
+    exclusive: bool = False
+    card: str = ""
+
+
+@dataclass(frozen=True)
+class Load:
+    """Odczyt obciążenia maszyny: `avg1` — 1-minutowe `loadavg`, `cores` — liczba rdzeni, `error` — powód błędu
+    odczytu (wtedy warunek ciszy nie jest spełniony)."""
+    avg1: float | None = None
+    cores: int | None = None
+    error: str = ""
+
+    @property
+    def threshold(self) -> float | None:
+        return self.cores / 2 if self.cores else None
+
+    def as_dict(self) -> dict:
+        """Kształt `queue.heavy.load` migawki."""
+        return {"avg1": self.avg1, "cores": self.cores, "threshold": self.threshold, "error": self.error}
+
+
+@dataclass(frozen=True)
+class Quiet:
+    """Wynik warunku ciszy: `ok` — można uruchomić polecenie wymagające ciszy, `reason` — zdanie usługi, gdy nie."""
+    ok: bool
+    reason: str
+    load: Load
 
 
 @dataclass(frozen=True)
 class Admission:
-    """`admitted` — nazwy, które mogą ruszyć (w kolejności), `held` — nazwa → powód wstrzymania,
-    `busy` — trwające ciężkie, `limit` — obowiązujący limit."""
+    """`admitted` — nazwy, które mogą ruszyć (w kolejności), `held` — nazwa → powód wstrzymania (`HELD_LIMIT` albo
+    zdanie o ciszy), `busy` — trwające ciężkie, `limit` — obowiązujący limit, `load` — odczyt obciążenia (None, gdy
+    w kolejce nie było polecenia wymagającego ciszy i nic go nie czytało)."""
     admitted: tuple
     held: dict = field(default_factory=dict)
     busy: int = 0
     limit: int = DEFAULT_LIMIT
+    load: Load | None = None
 
 
 def limit_of(value) -> int:
@@ -185,6 +227,104 @@ def patterns_of(value) -> list[str]:
     return [item.strip() for item in value]
 
 
+def quiet_patterns_problem(value) -> str:
+    """Opis błędu `quietCommands` do `bad-settings`; pusty — poprawna lista (może być pusta)."""
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return "wzorce poleceń wymagających ciszy muszą być listą napisów"
+    if any(not item.strip() or item.strip() == "*" for item in value):
+        return "wzorzec polecenia wymagającego ciszy nie może być pusty"
+    return ""
+
+
+def quiet_patterns_of(value) -> list[str]:
+    """`quietCommands` z ustawień przepływu (#6); brak klucza albo niepoprawna wartość — lista pusta."""
+    if value is None or quiet_patterns_problem(value):
+        return []
+    return [item.strip() for item in value]
+
+
+def exclusive_of(value) -> bool:
+    """Pole `exclusive` wyniku kroku: tylko JSON-owe `true` oznacza polecenie wymagające ciszy; zły typ — `false`."""
+    return value is True
+
+
+def needs_quiet(command: str, roots=(), patterns: Iterable[str] = (), *, marked: bool = False) -> bool:
+    """Czy polecenie wymaga ciszy: krok je oznaczył (`marked`) albo pasuje do wzorca `quietCommands` (ta sama funkcja
+    dopasowania co `heavyCommands`, argumenty z `roots` i normalizacją)."""
+    return bool(marked) or pattern_matches(command_argv(command, roots), patterns, roots)
+
+
+# --- warunek ciszy (#6) ----------------------------------------------------------------------------
+
+LOAD_FILE = "/proc/loadavg"
+
+QUIET_LOAD = "czeka na ciszę: obciążenie {avg1} przy progu {threshold}"
+QUIET_RUNNING = "czeka na ciszę: biegnie {running}"
+QUIET_ERROR = "czeka na ciszę: {error}"
+HELD_DRAIN = "wstrzymane: na czele kolejki czeka polecenie wymagające ciszy ({card})"
+HELD_EXCLUSIVE = "wstrzymane: biegnie polecenie wymagające ciszy: {running}"
+QUIET_PREFIXES = ("czeka na ciszę: ", "wstrzymane: ")
+
+
+def read_load(path: str = LOAD_FILE, cpu_count: Callable[[], int | None] = os.cpu_count) -> Load:
+    """Domyślny odczyt obciążenia: pierwsza liczba `/proc/loadavg` i `os.cpu_count()`. Błąd odczytu nie rzuca
+    wyjątku — wraca jako `Load.error` (warunek ciszy niespełniony)."""
+    try:
+        with open(path, encoding="ascii") as fh:
+            avg1 = float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError, UnicodeError) as exc:
+        return Load(error=f"nie da się odczytać obciążenia maszyny ({type(exc).__name__})")
+    if avg1 != avg1 or avg1 < 0:
+        return Load(error="nie da się odczytać obciążenia maszyny (zła wartość)")
+    try:
+        cores = cpu_count()
+    except Exception:
+        cores = None
+    if isinstance(cores, bool) or not isinstance(cores, int) or cores < 1:
+        return Load(avg1=avg1, error="nie da się odczytać liczby rdzeni")
+    return Load(avg1=avg1, cores=cores)
+
+
+def _decimal(value: float) -> str:
+    """Liczba w zdaniu usługi: jedna cyfra po przecinku (polski zapis), np. 7,1."""
+    return f"{value:.1f}".replace(".", ",")
+
+
+def measure(load: Callable[[], Load]) -> Load:
+    try:
+        found = load()
+    except Exception as exc:
+        return Load(error=f"nie da się odczytać obciążenia maszyny ({type(exc).__name__})")
+    if not isinstance(found, Load):
+        return Load(error="nie da się odczytać obciążenia maszyny")
+    if not found.error and (found.avg1 is None or found.threshold is None):
+        return Load(found.avg1, found.cores, "nie da się odczytać obciążenia maszyny")
+    return found
+
+
+def quiet(running: Iterable[str], *, describe: Callable[[str], str] = str,
+          load: Callable[[], Load] = read_load) -> Quiet:
+    """Warunek ciszy: brak trwających ciężkich (`running`) i `loadavg1` < rdzenie / 2. `describe(nazwa)` daje opis
+    trwającego do zdania („make test (K-36)”). Obciążenie jest czytane zawsze (do widoku), a błąd odczytu albo jego
+    brak to warunek niespełniony z powodem."""
+    names = sorted(set(running))
+    current = measure(load)
+    if names:
+        return Quiet(False, QUIET_RUNNING.format(running=", ".join(describe(n) for n in names)), current)
+    if current.error:
+        return Quiet(False, QUIET_ERROR.format(error=current.error), current)
+    if not current.avg1 < current.threshold:
+        return Quiet(False, QUIET_LOAD.format(avg1=_decimal(current.avg1), threshold=_decimal(current.threshold)),
+                     current)
+    return Quiet(True, "", current)
+
+
+def quiet_hold(reason) -> bool:
+    """Czy powód wstrzymania pochodzi z ciszy (a nie z limitu). Wpis wstrzymany ciszą nie trzyma kolejki zgód
+    (`_outside_behind`): lekkie polecenia i inne projekty idą dalej."""
+    return isinstance(reason, str) and reason.startswith(QUIET_PREFIXES)
+
+
 def classify(command: str, roots=(), contract=None, patterns: Iterable[str] = (), *,
              merge_check: bool = False) -> Verdict:
     """Czy polecenie jest ciężkie. `contract` — efektywny kontrakt testów projektu (`{"changed", "full"}` albo
@@ -210,17 +350,54 @@ def default_order(entry: Waiting) -> tuple:
 
 
 def admit(waiting: Iterable[Waiting], running: Iterable[str], limit: int, *,
-          order: Callable[[Waiting], tuple] = default_order) -> Admission:
+          order: Callable[[Waiting], tuple] = default_order, exclusive_running: Iterable[str] = (),
+          describe: Callable[[str], str] = str, load: Callable[[], Load] = read_load) -> Admission:
     """Które czekające ciężkie polecenia mogą ruszyć przy limicie `limit`. `running` — nazwy trwających ciężkich
     (żywy zbiór silnika po każdym starcie w ticku). Każda decyzja startu liczy wolne miejsca od nowa, więc zmniejszony
-    limit nie przerywa trwających, a nowe ruszają dopiero, gdy trwających jest mniej niż limit."""
-    busy = len(set(running))
+    limit nie przerywa trwających, a nowe ruszają dopiero, gdy trwających jest mniej niż limit.
+
+    Cisza (#6): `exclusive_running` — trwające wymagające ciszy (podzbiór `running`), `describe(nazwa)` — opis
+    polecenia do zdania, `load` — odczyt obciążenia (czytany najwyżej raz i tylko przy czekającym poleceniu
+    wymagającym ciszy). Bez wpisów `exclusive` wynik jest taki sam jak przed #6."""
+    running = set(running)
+    busy = len(running)
     limit = limit_of(limit)
     queue = sorted({w.name: w for w in waiting}.values(), key=order)
     free = max(0, limit - busy)
-    admitted = tuple(w.name for w in queue[:free])
-    held = {w.name: HELD_LIMIT for w in queue[free:]}
-    return Admission(admitted, held, busy, limit)
+    measured: list[Load] = []
+
+    def load_once() -> Load:
+        if not measured:
+            measured.append(measure(load))
+        return measured[0]
+
+    exclusive_now = sorted(set(exclusive_running) & running)
+    # `gate` — zdanie wstrzymujące wszystkie dalsze ciężkie: trwa albo właśnie rusza polecenie wymagające ciszy,
+    # albo takie polecenie czeka na czele kolejki (opróżnianie).
+    gate = HELD_EXCLUSIVE.format(running=", ".join(describe(n) for n in exclusive_now)) if exclusive_now else ""
+    admitted: list[str] = []
+    held: dict = {}
+    for entry in queue:
+        if entry.exclusive:
+            state = quiet(running | set(admitted), describe=describe, load=load_once)
+            if state.ok and not gate:
+                admitted.append(entry.name)
+                free -= 1
+                gate = HELD_EXCLUSIVE.format(running=describe(entry.name))
+                continue
+            head = not held and not gate
+            held[entry.name] = state.reason if state.reason else gate
+            if head:
+                gate = HELD_DRAIN.format(card=entry.card or entry.name)
+            continue
+        if gate:
+            held[entry.name] = gate
+        elif free > 0:
+            admitted.append(entry.name)
+            free -= 1
+        else:
+            held[entry.name] = HELD_LIMIT
+    return Admission(tuple(admitted), held, busy, limit, measured[0] if measured else None)
 
 
 def holds_queue(heavy: bool, busy: int, limit: int) -> bool:
