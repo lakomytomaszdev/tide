@@ -167,6 +167,45 @@ out["cleared"] = calls()[1:]
         self.assertEqual(out["toast"], "Karta K-8: najwyżej 5 tickety naraz. Trwające nie są zatrzymywane.")
         self.assertEqual(out["cleared"], [["UpdateCard", "K-8", '{"maxTickets":""}']])
 
+    def test_priority_buttons_save_the_chosen_value_and_mark_the_current_one(self):
+        """PT-377: „Priorytet” (Wysoki / Normalny / Niski) — przycisk zapisuje `priority` przez UpdateCard, bieżąca
+        wartość z migawki jest wyróżniona, a kliknięcie bieżącej niczego nie wysyła; brak pola w migawce = Normalny."""
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card.pop("priority", None)
+        out = self.probe(STATE_PY + """
+open_full()
+out["initial"] = [[js(items("settingPriority_" + p) + "[0].text"), js(items("settingPriority_" + p) + "[0].variant")]
+                  for p in ("high", "normal", "low")]
+click(at(items("settingPriority_normal") + "[0]"))
+out["sameCalls"] = len(calls())
+click(at(items("settingPriority_high") + "[0]"))
+wait(80)
+out["saved"] = calls()
+out["toast"] = js("page.toast")
+""", data)
+        self.assertEqual(out["initial"], [["Wysoki", "outline"], ["Normalny", "filled"], ["Niski", "outline"]])
+        self.assertEqual(out["sameCalls"], 0, "bieżąca wartość niczego nie wysyła")
+        self.assertEqual(out["saved"], [["UpdateCard", "K-8", '{"priority":"high"}']])
+        self.assertEqual(out["toast"], "Karta K-8: priorytet wysoki. Zmienia kolejność kroków czekających na "
+                                       "miejsce u dostawcy.")
+
+    def test_priority_from_the_snapshot_is_marked(self):
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card["priority"] = "low"
+        out = self.probe(STATE_PY + """
+open_full()
+out["variants"] = [js(items("settingPriority_" + p) + "[0].variant") for p in ("high", "normal", "low")]
+click(at(items("settingPriority_normal") + "[0]"))
+wait(80)
+out["saved"] = calls()
+""", data)
+        self.assertEqual(out["variants"], ["outline", "outline", "filled"])
+        self.assertEqual(out["saved"], [["UpdateCard", "K-8", '{"priority":"normal"}']])
+
     def test_linked_card_empty_field_only_focuses_and_unlink_is_explicit(self):
         data = full_d(self.data)
         for card in data["cards"]:

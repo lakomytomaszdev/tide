@@ -152,6 +152,8 @@ Rectangle {
     readonly property int storedMaxTickets: card && card.maxTickets ? card.maxTickets : 0
     readonly property int effectiveMaxTickets: flow && flow.ticketLimit ? flow.ticketLimit.limit : 0
     readonly property var typedMaxTickets: Settings.maxTickets(maxTicketsField.text)
+    // Priorytet karty (PT-377): kolejność kroków czekających na miejsce u dostawcy; brak w migawce — normalny.
+    readonly property string storedPriority: card && Settings.priorityLabel(card.priority) ? card.priority : "normal"
 
     // Jedna lista akcji dla sekcji ustawień i menu „Karta ▾”: {id, label, effect, danger, input}.
     // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
@@ -246,6 +248,15 @@ Rectangle {
         settingRequested("update", { field: "maxTickets", value: value,
             effect: value === "" ? "Karta " + card.id + ": tickety naraz wg ustawienia domyślnego."
                                  : "Karta " + card.id + ": najwyżej " + value + " tickety naraz. Trwające nie są zatrzymywane." })
+    }
+
+    // Priorytet zmienia tylko kolejność czekających kroków; trwających nie zatrzymuje i nie omija limitu dostawcy.
+    function applyPriority(value) {
+        settingError = ""
+        if (!Settings.priorityLabel(value) || value === storedPriority) return
+        settingRequested("update", { field: "priority", value: value,
+            effect: "Karta " + card.id + ": priorytet " + Settings.priorityLabel(value).toLowerCase()
+                    + ". Zmienia kolejność kroków czekających na miejsce u dostawcy." })
     }
 
     function askFinish(params) {
@@ -1349,6 +1360,42 @@ Rectangle {
                             text: "Tickety naraz: " + (view.storedMaxTickets > 0 ? view.storedMaxTickets : "domyślnie"
                                   + (view.effectiveMaxTickets > 0 ? " (" + view.effectiveMaxTickets + ")" : ""))
                                   + ". Puste pole przywraca ustawienie domyślne."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    // Priorytet (PT-377): zwolnione miejsce u dostawcy bierze najpierw krok karty o wyższym priorytecie.
+                    RowLayout {
+                        objectName: "settingPriorityRow"
+                        Layout.fillWidth: true
+                        spacing: 12
+                        Text {
+                            text: "Priorytet"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                        }
+                        Repeater {
+                            model: Settings.PRIORITIES
+                            delegate: Tide.TextButton {
+                                required property string modelData
+                                objectName: "settingPriority_" + modelData
+                                text: Settings.priorityLabel(modelData)
+                                variant: view.storedPriority === modelData ? "filled" : "outline"
+                                Accessible.name: "Priorytet " + Settings.priorityLabel(modelData).toLowerCase()
+                                                 + (view.storedPriority === modelData ? " (teraz)" : "")
+                                onClicked: view.applyPriority(modelData)
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Zwolnione miejsce u dostawcy bierze najpierw krok karty o wyższym priorytecie, "
+                                  + "a przy równym — krok czekający dłużej."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily

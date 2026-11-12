@@ -37,6 +37,7 @@ import shutil
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ from . import mergecheck
 from . import heavyqueue
 from . import queueview
 from . import ticketlimit
+from . import stepqueue
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -191,6 +193,14 @@ def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
+
+class _ProviderOnly:
+    """Wybór wykonawcy sprowadzony do dostawcy: wpis kolejki innej karty (`stepqueue`) przy sprawdzaniu rezerwacji
+    jej opiekuna (`_caretaker_reserved`, `_wait_reason`)."""
+    __slots__ = ("provider", "local")
+
+    def __init__(self, provider: str):
+        self.provider, self.local = provider, False
 
 
 LOGIN_MARKERS = ("failed to authenticate", "oauth session expired", "please run /login", "invalid api key",
@@ -557,6 +567,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
         self.watch: dict[str, tuple] = {}          # krok → (odcisk postępu, od kiedy bez zmian, ostatnie sprawdzenie)
         self._warnings: dict[str, str] = {}
+        # Kontekst odczytu Tablicy bieżącego ticku (wątek, BoardRead) dla kolejności kroków (`_order_board`, PT-377).
+        self._tick_read: tuple | None = None
         self._hidden: tuple = (frozenset(), ())
         self._queue: dict | None = None   # `queue` migawki Tablicy (K-39 #4): liczone raz na tick, tylko do odczytu
         self._busy: tuple = ()
@@ -2684,35 +2696,71 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return len(pending) if found is not None and found.provider == selected.provider else 0
 
     def _earlier_waiters(self, card: str, st: FlowState, selected, ticket: str, kind: str) -> int:
-        """Krok opiekuna nie wyprzedza kroków innych kart (PT-150, US 37): liczba kroków innych kart, które czekają
-        na miejsce u tego samego dostawcy (`cause: slots`) od chwili nie późniejszej niż ten krok opiekuna (`since`
-        z `step.waiting`; krok jeszcze nieczekający przychodzi po wszystkich czekających). Liczą się jak trwające
-        kroki, więc zwolnione miejsce bierze najpierw wcześniej czekająca karta. Pomijane są karty zakończone,
-        wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
-        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga jeden porządek wspólny dla wszystkich kart:
-        (`since`, identyfikator karty, ticket, rodzaj kroku) — dwaj opiekunowie z równym `since` nie czekają na
-        siebie nawzajem (PT-150, runda 2). Krok zablokowany rezerwacją własnego opiekuna nie zajmuje miejsca
-        w tej kolejce: inaczej ticket A → opiekun B → opiekun A tworzy cykl czekania (runda 3)."""
-        if kind != caretaker.KIND or selected.local:
+        """Ile kroków innych kart stoi w kolejce przed tym krokiem u tego samego dostawcy (PT-150 dla opiekuna,
+        PT-377 dla wszystkich kroków). Porządek i bieżące przyczyny czekania liczy wyłącznie `stepqueue`
+        (`_step_order`); silnik tylko dokłada ten krok jako wpis i liczy wpisy przed nim. Liczą się jak trwające
+        kroki, więc zwolnione miejsce bierze najpierw krok o wyższym kluczu porządku. Modele lokalne mają własną
+        kolejkę (`model_queue`), więc krok lokalny nie ustępuje tej."""
+        if selected.local:
             return 0
+        others = {other: self.journal.state(other) for other in self.journal.cards() if other != card}
+        board_now = self._order_board_once()
+        entries = self._step_order(others, board_now, provider=selected.provider)
+        if not entries:
+            return 0      # nikt inny nie czeka u tego dostawcy: bez odczytu Tablicy
         since = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
-        mine = (since, card, ticket or "", kind)
-        count = 0
-        for other in self.journal.cards():
-            if other == card:
-                continue
-            ost = self.journal.state(other)
-            if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
-                continue
-            running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
-            reserved = self._caretaker_reserved(other, ost, selected, "ticket")
-            blocked_by_caretaker = reserved and bool(self._wait_reason(selected, reserved))
-            count += sum(1 for key, wait in ost.waiting.items()
-                         if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
-                         key[0] not in ost.rejected and key not in running and
-                         (key[1] == caretaker.KIND or not blocked_by_caretaker) and
-                         (not since or ((wait.get("since") or ""), other, key[0] or "", key[1] or "") < mine))
-        return count
+        mine = stepqueue.Entry(card, ticket or "", kind, selected.provider, since,
+                               self._card_priority(board_now(), card))
+        return stepqueue.ahead(entries, mine)
+
+    def _step_order(self, states: dict, board_now=None, *, provider: str | None = None) -> list:
+        """`stepqueue.order` ze stanów kart (`journal.state`, faza odczytu ticku) i wywołań silnika: priorytet
+        i limit ticketów karty z Tablicy (`board_now()` — kontekst ticku albo jeden świeży odczyt, dopiero gdy ktoś
+        czeka), limit tygodniowy dostawcy (`_low_limit`) i rezerwacja własnego opiekuna (PT-150, runda 3: krok
+        zablokowany rezerwacją nie zajmuje miejsca w kolejce innych — bez cyklu czekania)."""
+        board_now = board_now or self._order_board_once()
+
+        def quota(provider_name):
+            low = self._low_limit(provider_name)
+            return flow_limits.wait_reason(low) if low else ""
+
+        def reserved(other, ost, entry):
+            selected = _ProviderOnly(entry.provider)
+            count = self._caretaker_reserved(other, ost, selected, "ticket")
+            return bool(count) and bool(self._wait_reason(selected, count))
+
+        def ticket_limit(other):
+            board = board_now()
+            return self._tickets_limit(board.cards.get(card_num(other)) if board is not None else None)
+        return stepqueue.order(states, priority_of=lambda other: self._card_priority(board_now(), other),
+                               quota_of=quota, reserved_of=reserved, ticket_limit_of=ticket_limit,
+                               provider=provider)
+
+    def _order_board(self):
+        """Tablica do kolejności kroków: kontekst odczytu bieżącego ticku (K-98 #3, ten sam wątek), poza tickiem
+        świeży odczyt. Błąd odczytu — None (wszystkie karty z priorytetem `normal`, limit ticketów domyślny)."""
+        context = getattr(self, "_tick_read", None)
+        try:
+            if context is not None and context[0] == threading.get_ident():
+                return context[1].board
+            return self.store.load()
+        except (BoardError, OSError, ValueError):
+            return None
+
+    def _order_board_once(self):
+        """Leniwy `_order_board` na jedną decyzję: Tablica wczytana najwyżej raz, przy pierwszym użyciu."""
+        loaded: list = []
+
+        def board_now():
+            if not loaded:
+                loaded.append(self._order_board())
+            return loaded[0]
+        return board_now
+
+    @staticmethod
+    def _card_priority(board, card: str) -> str:
+        item = board.cards.get(card_num(card)) if board is not None else None
+        return stepqueue.of(getattr(item, "priority", None))
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = self.journal.state(card)
@@ -3434,88 +3482,93 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # ubocznym czytają świeżo jak dotąd.
         from ..board.readcontext import BoardRead
         read = BoardRead(self.store, invalidate_on_write=True)
+        # PT-377: kolejność kroków u dostawcy (`_order_board`) czyta priorytety kart z tego samego kontekstu ticku.
+        self._tick_read = (threading.get_ident(), read)
         try:
-            # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
-            # może wyprzedzić rozpoznania niepełnej historii po restarcie.
-            for card in self.journal.cards_complete():
-                trialhold.read_process_history(self.journal, card, history)
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
-            return
-        self._warnings.pop("journal", None)
-        from ..issue_start import recover as recover_issue_starts
-        from ..issues import IssueStore
-        recover_issue_starts(IssueStore(self.store), self)
-        from .basegeneration import BaseGeneration
-        from . import startorder
-        unreadable_starts = set()
-        for card in self.journal.cards():
-            if any(e["type"].startswith("order.") for e in self.journal.read(card)):
+            try:
+                # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
+                # może wyprzedzić rozpoznania niepełnej historii po restarcie.
+                for card in self.journal.cards_complete():
+                    trialhold.read_process_history(self.journal, card, history)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
+                return
+            self._warnings.pop("journal", None)
+            from ..issue_start import recover as recover_issue_starts
+            from ..issues import IssueStore
+            recover_issue_starts(IssueStore(self.store), self)
+            from .basegeneration import BaseGeneration
+            from . import startorder
+            unreadable_starts = set()
+            for card in self.journal.cards():
+                if any(e["type"].startswith("order.") for e in self.journal.read(card)):
+                    try:
+                        startorder.events(self, card)
+                    except (OSError, ValueError):
+                        unreadable_starts.add(card)
+                        continue
                 try:
-                    startorder.events(self, card)
-                except (OSError, ValueError):
-                    unreadable_starts.add(card)
+                    BaseGeneration(self).recover(card)
+                except Exception as exc:
+                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
+                self._project_base(card, read)
+                current = self.journal.state(card)
+                if not baseproposal.blocked(current):
+                    self._recover_started_steps(card, current, history=history)
+            boxstep.recover_network(self, history=history)
+            # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
+            running_local = {s["step"]: s for card in self.journal.cards()
+                             for s in self.journal.state(card).running() if s.get("local")}
+            for name in set(self._local_claims) - set(running_local):
+                self._release_local(name)
+            for name, step in running_local.items():
+                if name not in self._local_claims:
+                    self._local_claims[name] = model_queue.shared().claim_step(
+                        self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
+                        recovering=True)
+            hidden_ids, hidden_places, busy = set(), set(), set()
+            guarded: set[str] = set()
+            for card in self.journal.cards():
+                if card in unreadable_starts:
                     continue
-            try:
-                BaseGeneration(self).recover(card)
-            except Exception as exc:
-                print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
-            self._project_base(card, read)
-            current = self.journal.state(card)
-            if not baseproposal.blocked(current):
-                self._recover_started_steps(card, current, history=history)
-        boxstep.recover_network(self, history=history)
-        # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
-        running_local = {s["step"]: s for card in self.journal.cards()
-                         for s in self.journal.state(card).running() if s.get("local")}
-        for name in set(self._local_claims) - set(running_local):
-            self._release_local(name)
-        for name, step in running_local.items():
-            if name not in self._local_claims:
-                self._local_claims[name] = model_queue.shared().claim_step(
-                    self.store.root + ":" + name, endpoint=step.get("routeUrl") or "", model=step.get("model") or "",
-                    recovering=True)
-        hidden_ids, hidden_places, busy = set(), set(), set()
-        guarded: set[str] = set()
-        for card in self.journal.cards():
-            if card in unreadable_starts:
-                continue
-            warning = self.journal.check(card)
-            if warning:
-                self._warnings[card] = warning
-                print(f"tide-daemon: przepływ karty: {warning}", flush=True)
-            st = self.journal.state(card)
-            for step in [*st.steps.values(), *st.caretakers.values()]:
-                hidden_ids.add(str(step.get("session") or ""))
-                if step.get("worktree"):
-                    hidden_places.add(os.path.realpath(step["worktree"]))
-            try:
-                repo = (st.started or {}).get("repo") or ""
-                if repo and repo not in guarded:
-                    guarded.add(repo)
-                    self._main_branches[repo] = self.git.main_branch(repo)
-                    worktree_guard(repo, self._worktree_heads)
-            except Exception as exc:
-                print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
-            try:
-                self._tick_card(card, st, read, history)
-            except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
-                print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
-            try:
-                self._guard_card(card, read)
-                self._queue_notices(card, read)
-            except Exception as exc:
-                print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
-            st = self.journal.state(card)
-            busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
-            busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
-                     s.get("mode") == "interactive" and not s.get("consoleClosed")}
-            if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
-                busy.add(ticket_of(st)["cardWorktree"])
-        self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
-        self._busy = tuple(sorted(busy))
-        self._queue = self._queue_view()
-        boxstep.lifecycle.tick(self)
+                warning = self.journal.check(card)
+                if warning:
+                    self._warnings[card] = warning
+                    print(f"tide-daemon: przepływ karty: {warning}", flush=True)
+                st = self.journal.state(card)
+                for step in [*st.steps.values(), *st.caretakers.values()]:
+                    hidden_ids.add(str(step.get("session") or ""))
+                    if step.get("worktree"):
+                        hidden_places.add(os.path.realpath(step["worktree"]))
+                try:
+                    repo = (st.started or {}).get("repo") or ""
+                    if repo and repo not in guarded:
+                        guarded.add(repo)
+                        self._main_branches[repo] = self.git.main_branch(repo)
+                        worktree_guard(repo, self._worktree_heads)
+                except Exception as exc:
+                    print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
+                try:
+                    self._tick_card(card, st, read, history)
+                except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
+                    print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+                try:
+                    self._guard_card(card, read)
+                    self._queue_notices(card, read)
+                except Exception as exc:
+                    print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                st = self.journal.state(card)
+                busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
+                busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
+                         s.get("mode") == "interactive" and not s.get("consoleClosed")}
+                if st.started is not None and not st.card_finished and ticket_of(st)["cardWorktree"]:
+                    busy.add(ticket_of(st)["cardWorktree"])
+            self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
+            self._busy = tuple(sorted(busy))
+            self._queue = self._queue_view()
+            boxstep.lifecycle.tick(self)
+        finally:
+            self._tick_read = None
 
     def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:
         """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty.

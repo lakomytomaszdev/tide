@@ -28,6 +28,15 @@ function maxTickets(text) {
     return number >= 1 && number <= 6 ? number : null
 }
 
+// Priorytet karty (PT-377): wartości klucza `priority` (UpdateCard) w kolejności od najwyższego i ich etykiety.
+var PRIORITIES = ["high", "normal", "low"]
+var PRIORITY_LABELS = { high: "Wysoki", normal: "Normalny", low: "Niski" }
+
+// Etykieta priorytetu albo "" dla wartości spoza listy.
+function priorityLabel(value) {
+    return PRIORITY_LABELS.hasOwnProperty(value) ? PRIORITY_LABELS[value] : ""
+}
+
 // Akcje karty: {id, label, effect, danger, input}. `label` nazywa skutek, `effect` to zdanie pod przyciskiem;
 // `input` — akcja z polem (YouTrack, gałąź), `danger` — archiwizacja. Reguły przenoszenia podaje Tablica:
 // `targets` — kolumny, do których wolno przenieść kartę (Logic.settingTargets), `canArchive` — czy wolno ją
