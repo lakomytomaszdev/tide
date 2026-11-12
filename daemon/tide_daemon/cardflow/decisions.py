@@ -48,7 +48,7 @@ from . import mergecheck
 from . import baseproposal
 from . import findings as review_findings
 from .labels import kind_label
-from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of
+from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of, plan_approval
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
@@ -739,6 +739,8 @@ def _plan_decision(st: FlowState) -> dict | None:
                 "freeText": False, "reply": None, "fault": "provider", "technical": technical}
     if st.approval_requested and (st.started or {}).get("trackerProject"):
         return None
+    if plan_approval(st)[0]:
+        return None   # PT-407: zatwierdzanie trwa w tle — nie ma czego zatwierdzać drugi raz
     verdict = review.get("verdict") if review.get("verdict") in ("APPROVE", "REQUEST_CHANGES") else ""
     changes = verdict == "REQUEST_CHANGES"
     counts = review_findings.counts(listed)

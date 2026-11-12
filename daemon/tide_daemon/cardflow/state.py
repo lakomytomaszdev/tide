@@ -33,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
 
-from .baseproposal import pending
+from .baseproposal import blocked as base_blocked, pending
 from . import consent
 from . import mergecheck
 from .faults import cause_label, of_finished
@@ -1392,6 +1392,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         elif not st.plan_approved and st.approval_requested and st.started.get('trackerProject'):
             return _fill(out, 'backlog' if st.paused else 'progress',
                          tracker_reason or 'YouTrack: zatwierdzenie planu czeka na zgłoszenia')
+        elif not st.plan_approved and plan_approval(st)[0]:
+            return _fill(out, "progress", "zatwierdzanie planu w tle")
         elif not st.plan_approved:
             out["question"] = "Zatwierdzić plan?"
             return _fill(out, "waiting", "plan do zatwierdzenia")
@@ -1536,6 +1538,29 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     return _fill(out, "progress", f"{ident} · zlecenie")
 
 
+BASE_HELD_APPROVAL = "Zatwierdzanie wstrzymane: czeka decyzja o bazie karty"
+
+
+def plan_approval(st: FlowState) -> tuple[bool, str]:
+    """PT-407: (`approving`, `approvalError`) z dziennika. Zatwierdzanie trwa, gdy bieżąca propozycja ma
+    `plan.approval_requested`, nie ma `plan.approved`, rezerwacja numerów jej nie zawiodła (nowszy nieudany wynik
+    `reserve` tej propozycji) i karta nie stoi na wstrzymanej decyzji o bazie (PT-208). Zatwierdzanie różnicy planu
+    nie zapisuje `plan.approval_requested`, więc tu zawsze `False` (chroni je zbiór w monitorze)."""
+    request, proposal = st.approval_requested, st.plan_proposed or {}
+    if not request or st.plan_approved or not proposal or request.get("proposal") != proposal.get("seq"):
+        return False, ""
+    if base_blocked(st):
+        return False, BASE_HELD_APPROVAL
+    prefix = f"plan:{proposal.get('seq')}:"
+    failed = [r for (action, key), r in st.results.items()
+              if action == "reserve" and str(key).startswith(prefix) and not r.get("ok")
+              and int(r.get("seq") or 0) > int(request.get("seq") or 0)]
+    if failed:
+        last = max(failed, key=lambda r: int(r.get("seq") or 0))
+        return False, str(last.get("error") or "rezerwacja numeru nie powiodła się")
+    return True, ""
+
+
 def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
     """Tickety, fale i plan karty z planowaniem (`tickets`, `flow.plan`, `waveLabel`, postęp). Liczone przed gałęzią
     limitu i błędu YouTracka, żeby pełna karta (PT-128) widziała fale także wtedy, gdy krok stoi na limicie."""
@@ -1579,6 +1604,7 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
     out["tickets"].sort(key=lambda ticket: ticket["wave"])
     out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
     from . import planappend
+    approving, approval_error = plan_approval(st)
     out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
                            "fingerprint": planappend.fingerprint(st), "canAppend": planappend.available(st),
                            "planner": (proposal.get("reviewAuthor") if revision_pending else "") or proposal.get("planner") or "",
@@ -1594,7 +1620,8 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                            "rows": rows, "waves": waves,
                            # Projekty zlecenia ze źródłem numerów (K-33 #4); pusta lista — jeden projekt.
                            "projects": proposal.get("projects") or [],
-                           "errors": plan_errors(st)}
+                           "errors": plan_errors(st),
+                           "approving": approving, "approvalError": approval_error}
     return rows, finished_ids
 
 
