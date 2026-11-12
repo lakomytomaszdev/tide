@@ -832,9 +832,13 @@ Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, ni
 w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i raportem próbnika zapisywanym przez usługę.
 
 1. Po `make install` i restarcie usługi (nie w trakcie pracy agentów): `/usr/bin/python3 scripts/measure_idle_prod.py
-   --out ~/pomiar-k105-box-<false|true>.json`. Skrypt sprawdza loadavg i brak kroków w toku jednym odczytem, czeka do
-   10 min na postój (`--wait-idle-min`) albo przyjmuje czas postoju właściciela (`--owner-idle-min`, zapisywany w wyniku),
-   rozgrzewka, 10 okien CPU `MainPID` na czystym postoju, potem osobno próbnik 60 s (przez plik żądania usługi) i seria
+   --out ~/pomiar-k105-box-<false|true>.json`. Skrypt sprawdza loadavg i **wymaga ciągłego postoju bez kroków w toku przez
+   10 min** (`--wait-idle-min`, kryterium M0) przed rozgrzewką: odpytuje tylko odczyty kroków (bez żądań do usługi), a każdy
+   krok zeruje licznik. Kroki szuka na hoście (`systemctl --user`) i — przy `box.enabled=true` — w uruchomionych
+   pudełkach (`incus exec … systemctl --user`, jak usługa); błąd odczytu unieważnia pomiar, nie oznacza „bez kroków”.
+   Czas postoju podany przez właściciela (`--owner-idle-min`, zapisywany w wyniku jako niezweryfikowany) zalicza się do
+   wymaganych 10 min (skraca czekanie tylko o tyle, nie je zastępuje). Po `--max-wait-min` (domyślnie 30) bez osiągnięcia
+   postoju wynik jest nieważny. Dalej rozgrzewka, 10 okien CPU `MainPID` na czystym postoju, potem osobno próbnik 60 s (przez plik żądania usługi) i seria
    `Snapshot`. Wynik JSON: okna, średnia, maksimum, pamięć przed i po, bieżące `box.enabled` odczytane z konfiguracji,
    ocena (próg CPU każdego okna ≤ 30 %, `Snapshot` p95 < 1 s). Kod wyjścia 0 — w progach, 1 — ponad próg, 2 — nieważny.
 2. **Oba ustawienia `box.enabled`.** Właściciel przełącza je sam (zwykłym sposobem ustawień usługi, restartuje usługę

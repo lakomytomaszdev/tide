@@ -6,8 +6,8 @@ uruchomieniowym i raport próbnika, który zapisuje sama usługa.
 
 Tryby (jawnie nazwane):
 
-  idle (domyślny)   sprawdza ważność (loadavg, brak kroków w toku jednym odczytem przed rozgrzewką), czeka do
-                    `--wait-idle-min` (10) min na postój bez kroków albo przyjmuje `--owner-idle-min` i go zapisuje,
+  idle (domyślny)   sprawdza ważność (loadavg, brak kroków w toku jednym odczytem przed rozgrzewką), wymaga
+                    ciągłego postoju bez kroków przez `--wait-idle-min` (10) min (zalicza `--owner-idle-min`, zapisany),
                     rozgrzewka `--warmup` s, potem 10 okien po 60 s CPU procesu `MainPID` jednostki (utime + stime
                     wszystkich wątków, bez dzieci) na czystym postoju — bez żądań do usługi. Dopiero po oknach: osobne okno
                     próbnika usługi (60 s) z serią 60 wywołań `Snapshot` co 0,5 s. Pamięć przed i po oknach CPU
@@ -54,6 +54,10 @@ def forbidden_output(path):
     return next((b for b in blocked if real == b or real.startswith(b + os.sep)), None)
 
 
+class HostReadError(RuntimeError):
+    """Odczyt stanu kroków się nie powiódł — nigdy nie oznacza „brak kroków”."""
+
+
 class SystemHost:
     """Odczyty produkcji: `systemctl --user show`, `systemctl --user list-units`, konfiguracja, magistrala sesji."""
 
@@ -76,11 +80,48 @@ class SystemHost:
         return int(value) if value.isdigit() and int(value) not in NOT_SET else None
 
     def active_steps(self):
-        """Jednostki kroków i poleceń `outside` w toku (tylko odczyt systemd, bez wywołań usługi)."""
-        done = subprocess.run(["systemctl", "--user", "list-units", "--plain", "--no-legend",
-                               "--state=active,activating", "tide-step-*", "tide-outside-*"],
-                              capture_output=True, text=True, timeout=30)
-        return [line.split()[0] for line in done.stdout.splitlines() if line.strip()]
+        """Jednostki kroków i poleceń `outside` w toku (tylko odczyt, bez wywołań usługi): na hoście `systemctl --user`,
+        a przy `box.enabled=true` także w pudełkach (`incus exec … systemctl --user`, jak usługa). Błąd odczytu
+        zgłasza `HostReadError` — pomiar jest wtedy nieważny, a nie „bez kroków”."""
+        steps = self._list_units(["systemctl"], "host")
+        if self.box_enabled():
+            steps += self._box_steps()
+        return steps
+
+    def _list_units(self, prefix, label):
+        argv = [*prefix, "--user", "list-units", "--plain", "--no-legend", "--state=active,activating",
+                "tide-step-*", "tide-outside-*"]
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HostReadError(f"odczyt kroków ({label}) nie powiódł się: {exc}")
+        if done.returncode != 0:
+            raise HostReadError(f"odczyt kroków ({label}): kod {done.returncode}: {done.stderr.strip()[:200]}")
+        return [f"{label}:{line.split()[0]}" for line in done.stdout.splitlines() if line.strip()]
+
+    def _box_steps(self):
+        sys.path.insert(0, os.path.join(REPO, "daemon"))
+        from tide_daemon.box import settings            # noqa: E402
+        cfg = settings.load()
+        binary = os.environ.get("TIDE_INCUS_BIN") or "incus"
+        try:
+            listed = subprocess.run([binary, "list", "--project", cfg.project, "--format", "json"],
+                                    capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            instances = json.loads(listed.stdout) if listed.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise HostReadError(f"odczyt pudełek nie powiódł się: {exc}")
+        if not isinstance(instances, list):
+            raise HostReadError(f"incus list: kod {listed.returncode}: {listed.stderr.strip()[:200]}")
+        steps = []
+        for item in instances:
+            name = item.get("name") if isinstance(item, dict) else None
+            if not name or str(item.get("status", "")).lower() != "running":
+                continue
+            prefix = [binary, "exec", "--project", cfg.project, name, "-T", "--user", str(cfg.agent_uid),
+                      "--group", str(cfg.agent_gid), "--", "/usr/bin/env", "-i",
+                      f"XDG_RUNTIME_DIR=/run/user/{cfg.agent_uid}", "systemctl"]
+            steps += self._list_units(prefix, "box:" + name)
+        return steps
 
     def box_enabled(self):
         sys.path.insert(0, os.path.join(REPO, "daemon"))
@@ -137,17 +178,40 @@ class ProdService:
         return {"profileWindow": window, "snapshot": series.result()}
 
 
-def wait_idle(host, wait_s, owner_idle_min=None, poll_s=POLL_S):
-    """Ważność „brak kroków w toku”: jeden odczyt; gdy są kroki, czeka do `wait_s` na postój. `owner_idle_min`
-    (czas postoju podany przez właściciela) zastępuje czekanie i jest zapisywany."""
+def wait_idle(host, need_s, owner_idle_min=None, max_wait_s=None, poll_s=POLL_S):
+    """Ciągły postój bez kroków przez `need_s` przed rozgrzewką — odpytywany tylko odczytami kroków (bez żądań do
+    usługi). Czas podany przez właściciela (`owner_idle_min`) zalicza się do postoju (niezweryfikowany, zapisany);
+    obecność kroku zeruje licznik. Po `max_wait_s` bez osiągnięcia postoju `reached=False` (wynik nieważny);
+    błąd odczytu (`HostReadError`) też, z `readError`."""
+    max_wait_s = max_wait_s if max_wait_s is not None else need_s + 20 * 60.0
+    credit = max(0.0, (owner_idle_min or 0.0) * 60.0)
     started = host.clock()
-    steps = host.active_steps()
-    while steps and owner_idle_min is None and host.clock() - started < wait_s:
+    idle_since, steps, error, resets = None, [], None, 0
+    while True:
+        now = host.clock()
+        try:
+            steps = host.active_steps()
+        except HostReadError as exc:
+            error = str(exc)
+            break
+        if steps:
+            idle_since, credit, resets = None, 0.0, resets + 1     # krok w toku: postój liczy się od nowa
+        elif idle_since is None:
+            idle_since = now
+        idle_s = credit + (now - idle_since if idle_since is not None else 0.0)
+        if idle_since is not None and idle_s >= need_s:
+            break
+        if now - started >= max_wait_s:
+            break
         host.sleep(poll_s)
-        steps = host.active_steps()
-    return {"stepsAtCheck": steps, "waitedS": round(host.clock() - started, 1), "ownerIdleMinutes": owner_idle_min,
-            "ownerIdleNote": "czas postoju podany przez właściciela, niezweryfikowany" if owner_idle_min is not None
-            else None}
+    now = host.clock()
+    idle_s = credit + (now - idle_since if idle_since is not None else 0.0)
+    reached = error is None and not steps and idle_since is not None and idle_s >= need_s
+    return {"stepsAtCheck": steps, "waitedS": round(now - started, 1), "requiredIdleS": need_s,
+            "idleS": round(idle_s, 1), "reached": reached, "stepResets": resets, "readError": error,
+            "ownerIdleMinutes": owner_idle_min,
+            "ownerIdleNote": "czas postoju podany przez właściciela, niezweryfikowany; zaliczony do wymaganego postoju"
+            if owner_idle_min is not None else None}
 
 
 def write_result(path, data):
@@ -163,12 +227,14 @@ def run_idle(args, host, out=print):
     if not pid:
         out(f"jednostka {getattr(host, 'unit', UNIT)} nie ma MainPID (usługa nie działa)")
         return 2, None
-    idle = wait_idle(host, args.wait_idle_min * 60.0, args.owner_idle_min)
+    idle = wait_idle(host, args.wait_idle_min * 60.0, args.owner_idle_min,
+                     max_wait_s=(args.max_wait_min * 60.0 if args.max_wait_min else None))
     extra = []
-    if idle["stepsAtCheck"] and args.owner_idle_min is None:
-        extra.append(f"kroki w toku po {idle['waitedS']} s czekania: {', '.join(idle['stepsAtCheck'])}")
-    elif idle["stepsAtCheck"]:
-        extra.append("kroki w toku mimo podanego postoju: " + ", ".join(idle["stepsAtCheck"]))
+    if idle["readError"]:
+        extra.append("nie da się sprawdzić kroków w toku: " + idle["readError"])
+    elif not idle["reached"]:
+        extra.append(f"brak ciągłego postoju {args.wait_idle_min} min bez kroków po {idle['waitedS']} s czekania"
+                     + (": " + ", ".join(idle["stepsAtCheck"]) if idle["stepsAtCheck"] else ""))
     box = host.box_enabled()
     result = {"tool": "scripts/measure_idle_prod.py", "mode": "idle", "unit": getattr(host, "unit", UNIT),
               "sha": perf.git_sha(REPO), "boxEnabled": box, "idle": idle, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -225,7 +291,10 @@ def build_parser():
     parser.add_argument("--windows", type=int, default=cpuwin.WINDOWS)
     parser.add_argument("--wait-idle-min", type=float, default=DEFAULT_WAIT_IDLE_MIN)
     parser.add_argument("--owner-idle-min", type=float, default=None,
-                        help="czas postoju bez kroków podany przez właściciela (zapisywany w wyniku)")
+                        help="czas postoju bez kroków podany przez właściciela — zalicza się do --wait-idle-min "
+                             "(zapisywany w wyniku)")
+    parser.add_argument("--max-wait-min", type=float, default=None,
+                        help="najdłuższe czekanie na postój (domyślnie --wait-idle-min + 20); po nim wynik nieważny")
     parser.add_argument("--card", default="", help="approve-plan: karta z planem do zatwierdzenia")
     parser.add_argument("--allow-small-plan", action="store_true",
                         help="approve-plan: zgoda właściciela na plan < 18 wierszy (wynik „poza kryterium”)")

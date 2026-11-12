@@ -6,8 +6,10 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from . import perf_cpu_windows as cw
 
@@ -431,6 +433,54 @@ class ProductionScriptTest(Base):
         self.assertEqual(host.service_obj.calls, [])
         self.assertEqual(sim.t >= 3, True)                                          # czekał na postój (wirtualnie)
 
+    def test_windows_start_no_earlier_than_ten_minutes_after_the_last_step(self):
+        sim = Sim(self.root, rate=lambda t: 5.0)
+        host = FakeHost(sim, self.root)
+        step_end = 100.0
+        host.active_steps = lambda: ["tide-step-K-1-PT-1.service"] if sim.t < step_end else []
+        code, text = self.run_script(["--out", os.path.join(self.root, "w.json"), "--warmup", "30"], host)
+        self.assertEqual(code, 0, text)
+        # pierwsze żądanie do usługi dopiero po: postój 600 s + rozgrzewka 30 s + 10 okien po 60 s
+        self.assertGreaterEqual(host.service_obj.calls[0][0], step_end + 600 + 30 + 600)
+
+    def test_a_step_during_the_wait_resets_the_idle_counter(self):
+        sim = Sim(self.root)
+        host = FakeHost(sim, self.root)
+        host.active_steps = lambda: ["tide-step-K-1-PT-1.service"] if 300 <= sim.t < 330 else []
+        idle = prod.wait_idle(host, 600.0)
+        self.assertTrue(idle["reached"])
+        self.assertGreaterEqual(sim.t, 330 + 600)
+        self.assertEqual(idle["stepResets"], 2)
+
+    def test_idle_not_reached_within_the_wait_limit_is_invalid(self):
+        sim = Sim(self.root)
+        host = FakeHost(sim, self.root, steps=["tide-step-K-1-PT-1.service"])
+        code, text = self.run_script(["--out", os.path.join(self.root, "w.json"), "--warmup", "30",
+                                      "--wait-idle-min", "10", "--max-wait-min", "15"], host)
+        self.assertEqual(code, 2)
+        self.assertEqual(host.service_obj.calls, [])
+
+    def test_owner_idle_shorter_than_required_does_not_skip_the_wait(self):
+        sim = Sim(self.root)
+        host = FakeHost(sim, self.root)
+        idle = prod.wait_idle(host, 600.0, owner_idle_min=1.0)
+        self.assertTrue(idle["reached"])
+        self.assertGreaterEqual(sim.t, 540)                                         # brakujące 9 min odmierzone
+
+    def test_step_read_error_is_invalid_not_idle(self):
+        sim = Sim(self.root)
+        host = FakeHost(sim, self.root)
+
+        def broken():
+            raise prod.HostReadError("incus exec: kod 1")
+        host.active_steps = broken
+        target = os.path.join(self.root, "w.json")
+        code, _ = self.run_script(["--out", target, "--warmup", "30", "--wait-idle-min", "0"], host)
+        self.assertEqual(code, 2)
+        self.assertEqual(host.service_obj.calls, [])
+        with open(target, encoding="utf-8") as fh:
+            self.assertIn("incus exec", json.load(fh)["invalidExtra"][0])
+
     def test_owner_idle_time_is_recorded(self):
         sim = Sim(self.root)
         host = FakeHost(sim, self.root)
@@ -480,6 +530,59 @@ class ProductionScriptTest(Base):
         self.assertTrue(prod.SystemHost().box_enabled())
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), before)
+
+    def _system_host(self, box_enabled, runner):
+        host = prod.SystemHost()
+        host.box_enabled = lambda: box_enabled
+        patch = mock.patch.object(prod.subprocess, "run", side_effect=runner)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return host
+
+    @staticmethod
+    def _done(stdout="", code=0):
+        return subprocess.CompletedProcess([], code, stdout, "")
+
+    def test_step_only_inside_the_box_is_seen_when_box_is_enabled(self):
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "systemctl":                                              # host: pusto
+                return self._done("")
+            if argv[1] == "list":
+                return self._done(json.dumps([{"name": "tide-box-1", "status": "Running"},
+                                              {"name": "stara", "status": "Stopped"}]))
+            return self._done("tide-step-K-1-PT-1.service loaded active running krok\n")
+        host = self._system_host(True, runner)
+        self.assertEqual(host.active_steps(), ["box:tide-box-1:tide-step-K-1-PT-1.service"])
+        self.assertTrue(any("exec" in c and "tide-box-1" in c and "systemctl" in c for c in calls))
+        self.assertFalse(any("stara" in c for c in calls))
+
+    def test_box_is_not_queried_when_box_is_disabled(self):
+        host = self._system_host(False, lambda argv, **kw: self._done(""))
+        self.assertEqual(host.active_steps(), [])
+        self.assertEqual(prod.subprocess.run.call_count, 1)
+
+    def test_box_read_failure_raises_instead_of_reporting_no_steps(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "systemctl":
+                return self._done("")
+            return self._done("", code=1)
+        host = self._system_host(True, runner)
+        with self.assertRaises(prod.HostReadError):
+            host.active_steps()
+
+    def test_exec_failure_in_one_box_raises(self):
+        def runner(argv, **kwargs):
+            if argv[0] == "systemctl":
+                return self._done("")
+            if argv[1] == "list":
+                return self._done(json.dumps([{"name": "b", "status": "Running"}]))
+            return self._done("", code=1)
+        host = self._system_host(True, runner)
+        with self.assertRaises(prod.HostReadError):
+            host.active_steps()
 
 
 if __name__ == "__main__":
