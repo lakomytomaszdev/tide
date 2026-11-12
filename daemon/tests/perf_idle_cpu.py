@@ -43,8 +43,12 @@ kilka aktywnych bez kroku w toku (2–3 z czekającą decyzją „uruchom poza p
 i kontrolę tożsamości procesów. W oknie próbnika seria 60 wywołań `Snapshot` (co 0,5 s, p95 nearest-rank). Wynik dodatkowo:
 `flowThread` (wątek workera przepływu z `threads`), `tick` (udział i próbki `engine.tick`/s), `snapshot`, `memory`
 (`VmRSS` na początku i końcu okna CPU, `VmHWM`), `scale` (liczba kart i rozmiar zmierzone na dysku), `boxEnabled`.
-Ocena „przed”/„po”: `perf_idle_scale.py evaluate`. Pomiar jest wskaźnikiem — rozstrzyga pomiar produkcji. Bez `--scale`
-tryb PT-346 działa bez zmian.
+Ocena jednookienkowa `perf_idle_scale.py evaluate` jest bez progów i bez werdyktu (PT-458: „tryb jednego okna — bez
+oceny progu; rozstrzyga tryb 10 okien”). Bez `--scale` tryb PT-346 działa bez zmian.
+
+Tryb 10 okien (`--scale prod --windows 10`, K-105 PT-458; opis i ocena: `perf_cpu_windows.py`): rozgrzewka (`--warmup`)
+i 10 okien po `--window` s mierzą CPU całego procesu usługi bez żadnych żądań do usługi; próbnik i seria `Snapshot` idą w
+osobnym oknie po nich. Ocena: każde okno ≤ 30 %. `--data-dir` bierze dane z `perf_k105_queue.py build-data`.
 
 Skrypt niczego nie zapisuje poza katalogiem tymczasowym (usuwany na końcu) i plikiem `--out`.
 Testy jednostkowe nie mierzą czasu; ten skrypt jest wyłącznie narzędziem pomiaru.
@@ -65,9 +69,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
-    from . import perf_idle_scale as scale_mode          # import z testów (pakiet)
+    from . import perf_cpu_windows as cpuwin             # import z testów (pakiet)
+    from . import perf_idle_scale as scale_mode
 except ImportError:
-    import perf_idle_scale as scale_mode                  # uruchomienie jako skrypt
+    import perf_cpu_windows as cpuwin                     # uruchomienie jako skrypt
+    import perf_idle_scale as scale_mode
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = os.path.dirname(os.path.dirname(HERE))
@@ -341,11 +347,13 @@ def parse_profile(text):
             "frames": {frame: total.get(frame, 0) for _key, frame in CATEGORIES}}
 
 
-def profile_window(base, pid, seconds, series=None):
-    """Okno próbnika; `series` (SnapshotSeries) wywołuje `Snapshot` co 0,5 s w pętli okna (tryb skali)."""
-    state = os.path.join(base, "state", "tide")
+def profile_window(base, pid, seconds, series=None, state=None, request=None):
+    """Okno próbnika; `series` (SnapshotSeries) wywołuje `Snapshot` co 0,5 s w pętli okna (tryb skali).
+
+    `state` i `request` (skrypt produkcji): katalog raportów usługi i plik żądania zamiast izolowanych katalogów."""
+    state = state or os.path.join(base, "state", "tide")
     before = set(glob.glob(os.path.join(state, "profile-*.txt")))
-    request = os.path.join(base, "run", "tide-daemon-profile")
+    request = request or os.path.join(base, "run", "tide-daemon-profile")
     with open(request, "w", encoding="utf-8") as fh:
         fh.write(f"{int(seconds)}\n")
     if series is None:
@@ -433,6 +441,64 @@ def snapshot_caller(bus):
     return call
 
 
+def mirror_key(base):
+    return hashlib.sha1(os.path.realpath(os.path.join(base, "board")).encode("utf-8")).hexdigest()[:12]
+
+
+def relocate(old_base, new_base):
+    """Po skopiowaniu danych do nowego katalogu: ścieżki bazowe w plikach (dzienniki, tablica, konfiguracje git) i klucz
+    katalogu kopii dzienników (skrót ścieżki Tablicy). Obiekty git (`objects/`) są pomijane — nie zawierają ścieżek."""
+    old_b, new_b = old_base.encode("utf-8"), new_base.encode("utf-8")
+    for root, dirs, files in os.walk(new_base):
+        dirs[:] = [name for name in dirs if name != "objects"]
+        for name in files:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                continue
+            with open(path, "rb") as fh:
+                data = fh.read()
+            if old_b in data:
+                mode = os.stat(path).st_mode
+                os.chmod(path, mode | 0o200)                 # część plików jest tylko do odczytu
+                with open(path, "wb") as fh:
+                    fh.write(data.replace(old_b, new_b))
+                os.chmod(path, mode)
+    old_dir = os.path.join(new_base, "state", "tide", "cardflow", mirror_key(old_base))
+    new_dir = mirror_dir(new_base)
+    if os.path.isdir(old_dir) and old_dir != new_dir:
+        os.rename(old_dir, new_dir)
+
+
+def copy_data(data_dir, base, box=True):
+    """Kopia danych zbudowanych przez `build-data` do świeżego katalogu `base` (nie czyta niczego z danych
+    właściciela); zwraca manifest. `box.enabled` w `cardflow.json` ustawiany jest na `box` (dane są wspólne dla obu
+    ustawień — jedyną różnicą konfiguracji jest ten plik)."""
+    with open(os.path.join(data_dir, "manifest.json"), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    shutil.copytree(os.path.join(data_dir, "base"), base, symlinks=True, dirs_exist_ok=True)
+    relocate(manifest["basePath"], base)
+    settings = os.path.join(base, "config", "tide", "cardflow.json")
+    os.makedirs(os.path.dirname(settings), exist_ok=True)
+    with open(settings, "w", encoding="utf-8") as fh:
+        json.dump({"autoConsent": False, **({"box": {"enabled": True}} if box else {})}, fh)
+    return manifest
+
+
+class _WindowsDone(Exception):
+    """Koniec trybu 10 okien: przechodzi do sprzątania, pomijając pomiar jednego okna."""
+
+
+class ReproService:
+    """Jedyne wywołania usługi reproduktora w trybie 10 okien: osobne okno diagnostyki PO oknach CPU."""
+
+    def __init__(self, base, pid, bus):
+        self.base, self.pid, self.bus = base, pid, bus
+
+    def diagnostics(self, seconds):
+        series = scale_mode.SnapshotSeries(snapshot_caller(self.bus))
+        return {"profileWindow": profile_window(self.base, self.pid, seconds, series), "snapshot": series.result()}
+
+
 def scale_result(result, series, window, memory):
     """Pola trybu skali: wątek przepływu, `engine.tick`, `Snapshot`, pamięć, `box.enabled`."""
     cpu = result.get("cpuWindow") or {}
@@ -445,23 +511,31 @@ def scale_result(result, series, window, memory):
     result["snapshot"] = series.result()
 
 
-def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None):
+def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None, windows=0, data_dir=None,
+            on_window=None, deadline=None):
+    """`windows` > 0: tryb 10 okien CPU całego procesu (K-105, PT-458; wymaga skali produkcji). `data_dir`: dane
+    zbudowane przez `build-data` (kopiowane do świeżego katalogu zamiast budowy); `on_window` — zapis przyrostowy
+    po każdym oknie; `deadline` — czas zegara monotonicznego, po którym próba jest nieważna."""
     from PyQt6.QtCore import QCoreApplication
     from PyQt6.QtDBus import QDBusConnection
     QCoreApplication.instance() or QCoreApplication([])
     base = os.path.realpath(tempfile.mkdtemp(prefix="tide-perf-idle-"))
-    scaled = journal_mb is not None
+    scaled = journal_mb is not None or data_dir is not None
     result = {"tool": "daemon/tests/perf_idle_cpu.py", "sha": sha or git_sha(src), "src": src,
               "params": {"box": box, "sessions": sessions, "cards": cards, "warmupS": warmup, "windowS": window,
                          "processes": True, "krunner": True,
-                         **({"scale": "prod", "journalMbTarget": journal_mb} if scaled else {})},
+                         **({"scale": "prod", "journalMbTarget": journal_mb} if scaled else {}),
+                         **({"windows": windows} if windows else {})},
               "cpuCount": os.cpu_count(), "loadavgBefore": loadavg(), "procCount": proc_count()}
     series = memory = None
     bus_proc = daemon = embed = None
     try:
         with open(os.path.join(base, "gitconfig"), "w", encoding="utf-8") as fh:
             fh.write("[user]\n\tname = Perf\n\temail = perf@example.invalid\n[init]\n\tdefaultBranch = master\n")
-        data = prepare_board(base, src, box, cards, journal_mb)
+        if data_dir is not None:
+            data = copy_data(data_dir, base, box).get("scale")
+        else:
+            data = prepare_board(base, src, box, cards, journal_mb)
         if scaled:
             result["scale"] = data
         write_incus(base)
@@ -493,6 +567,18 @@ def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None):
         else:
             raise RuntimeError("usługa nie zarejestrowała się na magistrali")
         result["krunnerRegistered"] = bool(bus.interface().isServiceRegistered(KRUNNER).value())
+        if windows:
+            # 10 okien CPU całego procesu: rozgrzewka i okna bez żądań do usługi, diagnostyka w osobnym oknie po nich.
+            result["daemonPid"] = daemon.pid
+            result.update(cpuwin.run_idle_measurement(daemon.pid, ReproService(base, daemon.pid, bus),
+                                                      warmup_s=warmup, windows=windows, window_s=window,
+                                                      on_window=on_window, deadline=deadline,
+                                                      cpu_count=result["cpuCount"]))
+            result["boxEnabled"] = box
+            result["daemonAlive"] = daemon.poll() is None
+            result["scale"] = {**(data or {}), "disk": scale_mode.disk_stats(os.path.join(base, "board"),
+                                                                              mirror_dir(base))}
+            raise _WindowsDone
         time.sleep(warmup)
         index_file = os.path.join(base, "data", "tide", "search", "sessions.json")
         result["indexFileAfterWarmup"] = os.path.getsize(index_file) if os.path.exists(index_file) else None
@@ -514,6 +600,8 @@ def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None):
             start_data = result.get("scale") or {}
             result["scale"] = {**start_data, "diskAtStart": start_data.get("disk"),
                                "disk": scale_mode.disk_stats(os.path.join(base, "board"), mirror_dir(base))}
+    except _WindowsDone:
+        pass
     finally:
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
@@ -540,7 +628,7 @@ def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None):
     finally:
         if embed is not None:
             embed.close()
-        result["loadavgAfter"] = loadavg()
+        result.setdefault("loadavgAfter", loadavg())          # tryb 10 okien: odczyt tuż po oknach CPU zostaje
         shutil.rmtree(base, ignore_errors=True)
     return result
 
@@ -588,18 +676,31 @@ def build_parser():
     parser.add_argument("--cards", type=int, default=None, help="liczba kart (domyślnie 30, w skali prod 46)")
     parser.add_argument("--journal-mb", type=float, default=60.0,
                         help="skala prod: docelowy łączny rozmiar dzienników (kopia usługi + Tablica) w MB")
+    parser.add_argument("--windows", type=int, default=0,
+                        help="K-105 PT-458: tryb 10 okien CPU całego procesu (wymaga --scale prod); domyślnie 0 = "
+                             "pomiar jednego okna")
+    parser.add_argument("--data-dir", default=None,
+                        help="dane zbudowane przez `perf_k105_queue.py build-data` (kopiowane do katalogu tymczasowego)")
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     scaled = args.scale == "prod"
+    if args.windows and not scaled:
+        raise SystemExit("--windows wymaga --scale prod")
     cards = args.cards if args.cards is not None else (46 if scaled else 30)
     result = measure(os.path.realpath(args.src), args.sha, args.box == "on", args.sessions, args.warmup, args.window,
-                     cards=cards, journal_mb=args.journal_mb if scaled else None)
+                     cards=cards, journal_mb=args.journal_mb if scaled else None, windows=args.windows,
+                     data_dir=args.data_dir)
+    if args.windows:
+        result["evaluation"] = cpuwin.evaluate(result)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
         fh.write("\n")
+    if args.windows:
+        print(cpuwin.evaluation_text(result["evaluation"]), flush=True)
+        return 0 if result["evaluation"]["valid"] else 2
     print(scale_summary(result) if scaled else summary(result), flush=True)
     return 0 if result.get("daemonAlive") else 1
 

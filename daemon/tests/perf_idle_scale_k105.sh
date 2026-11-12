@@ -6,8 +6,9 @@
 #
 # Ważność (reguła PT-362/PT-346): /proc/loadavg przed i po próbie; próba ważna tylko przy 1-min obciążeniu
 # < liczba rdzeni / 2 w obu odczytach. Najwyżej 3 próby, jedna naraz; rozstrzyga pierwsza ważna (bez wybierania
-# najlepszej). Po rozstrzygającej próbie ocena `perf_idle_scale.py evaluate` (progi „po” na wątku workera przepływu
-# i udziale engine.tick; z `--before` także porównanie z pomiarem „przed” i wzrost VmRSS).
+# najlepszej). Po rozstrzygającej próbie ocena `perf_idle_scale.py evaluate` (od PT-458 jednookienkowa, bez progów
+# i bez werdyktu: tylko ważność; z `--before` także porównanie z pomiarem „przed” i wzrost VmRSS). Rozstrzyga tryb
+# 10 okien: `perf_k105_queue.py` (docs/tide-daemon.md, „Wydajność postoju”).
 #
 # Użycie: bash daemon/tests/perf_idle_scale_k105.sh <katalog wyniku> <SHA kodu> [on|off] [przed.json]
 #   on|off — `box.enabled` (domyślnie on); przed.json — wynik „przed” do porównania (pomiar „po”).
@@ -52,7 +53,7 @@ for attempt in 1 2 3; do
   tail -n 1 "$dir/box-$box.log" | sed "s/^/attempt-$attempt box-$box /" >> "$out/run.txt"
   after=$(cat /proc/loadavg)
   echo "attempt-$attempt loadavg-after $after" >> "$out/run.txt"
-  # Ocena na wyniku próby: kod 2 = nieważna (loadavg w oknie pomiaru), 0/1 = ważna (pass/fail progów).
+  # Ocena na wyniku próby: kod 2 = nieważna (loadavg w oknie pomiaru), 0 = ważna (bez progów, PT-458).
   evaluated=2
   if [ -f "$dir/box-$box.json" ]; then
     args=(evaluate --after "$dir/box-$box.json" --out "$dir/evaluation.json")
