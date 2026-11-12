@@ -3336,7 +3336,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         try:
             # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
             # może wyprzedzić rozpoznania niepełnej historii po restarcie.
-            for card in self.journal.cards_complete():
+            registered = self.journal.cards_complete()
+            # K-105 #2: pamięć ścisłego odczytu nie trzyma kart, których już nie ma w rejestrze.
+            self.journal.forget_except(registered)
+            for card in registered:
                 trialhold.read_process_history(self.journal, card, history)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"

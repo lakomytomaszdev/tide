@@ -50,7 +50,10 @@ class HistoryPhase:
       w międzyczasie (także spoza procesu) daje odmowę bez skutku.
 
     Błąd odczytu albo nieznana tożsamość jest zapamiętany na tę wersję historii i rzucany przy każdym użyciu —
-    unknown nie znika w obrębie fazy. Dziennik bez licznika zapisów (atrapa) — bez pamięci, zawsze świeży odczyt."""
+    unknown nie znika w obrębie fazy. Dziennik bez licznika zapisów (atrapa) — bez pamięci, zawsze świeży odczyt.
+
+    Zdarzenia z fazy (`cached`) to te same obiekty co w pamięci ścisłego odczytu dziennika (K-105 #2): nowa lista,
+    słowniki tylko do odczytu."""
 
     def __init__(self, journal):
         self.journal = journal
@@ -84,9 +87,11 @@ class HistoryPhase:
         return list(hit[1])
 
     def unchanged(self, card, events) -> bool:
-        """Świeży pełny odczyt przed mutacją: True, gdy historia karty jest dokładnie `events` (odczytem decyzji)."""
+        """Świeży pełny odczyt przed mutacją: True, gdy historia karty jest dokładnie `events` (odczytem decyzji).
+        Z pominięciem pamięci ścisłego odczytu dziennika (`Journal.read_fresh`, K-105 #2)."""
+        fresh = getattr(self.journal, "read_fresh", None) or self.journal.read_complete
         try:
-            return self.journal.read_complete(card) == list(events)
+            return fresh(card) == list(events)
         except (OSError, ValueError, TypeError, KeyError):
             return False
 

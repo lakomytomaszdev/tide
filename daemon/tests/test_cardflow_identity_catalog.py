@@ -384,7 +384,8 @@ BARRIERS = {
         consumers=[("cardflow/state.py", "fold"), ("cardflow/trialhold.py", "preserves_project"),
                    ("cardflow/trialhold.py", "read_process_history"),
                    ("cardflow/journal.py", "_validate_process_identity"),
-                   ("cardflow/journal.py", "Journal.read_complete"),
+                   # K-105 #2: ścisła reguła `read_complete` (z pamięcią) i `read_fresh` (bramki) — jeden parser.
+                   ("cardflow/journal.py", "_parse_strict"),
                    # PT-295: audyt historii (osobny proces, tylko odczyt); odmowa modelu to błąd read-rejected.
                    ("cardflow/historyaudit_driver.py", "read_cards")],
         denial="read_process_history: ValueError; fold: _identityHeld", effect="wspólny wynik redukcji",

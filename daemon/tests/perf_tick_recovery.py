@@ -17,7 +17,9 @@ kroków są prawdziwymi procesami) buduje usługę w procesie, uruchamia trzy ka
 Potem nowy silnik (jak po restarcie usługi, bez procesów w pamięci) wykonuje `--ticks` ticków w wątku pomiaru:
 pierwszy to tick restartu (odzyskiwanie), kolejne to ciepłe ticki. Dla każdego ticku wynik podaje:
 
-- `readComplete` — liczbę pełnych ścisłych odczytów historii (`Journal.read_complete`), w tym `mutationReads`
+- `readComplete` — liczbę pełnych ścisłych odczytów historii (granica `Journal._read_strict` od K-105 #2: pełny odczyt
+  `read_complete` i świeży `read_fresh`, bez trafień i przyrostów pamięci; na starszym kodzie `Journal.read_complete`),
+  w tym `mutationReads`
   (odczyty wewnątrz `Journal.append`/`append_complete`, czyli świeży odczyt przed zapisem),
 - dla `read_process_history`, `process_identities`, `_recover_started_steps`, `recover_network`: liczbę wywołań,
   czas (ms, włącznie z zagnieżdżonymi) i pełne odczyty wykonane w ich trakcie,
@@ -159,7 +161,10 @@ class Instrument:
     def install(self):
         from tide_daemon.cardflow import boxstep, processidentity, trialhold
         engine, journal, store = self.engine, self.engine.journal, self.engine.store
-        real_read = journal.read_complete
+        # Granica pełnego ścisłego odczytu: od K-105 #2 `Journal._read_strict` (pełny odczyt `read_complete` i świeży
+        # `read_fresh`; trafienie i przyrost pamięci się nie liczą), na starszym kodzie `Journal.read_complete`.
+        boundary = "_read_strict" if hasattr(journal, "_read_strict") else "read_complete"
+        real_read = getattr(journal, boundary)
 
         def read_complete(card):
             counters = self.current
@@ -170,7 +175,7 @@ class Instrument:
                 if depth:
                     counters.reads_in[name] += 1
             return real_read(card)
-        self._set(journal, "read_complete", read_complete)
+        self._set(journal, boundary, read_complete)
         for attr in ("append", "append_complete"):
             real = getattr(journal, attr)
 

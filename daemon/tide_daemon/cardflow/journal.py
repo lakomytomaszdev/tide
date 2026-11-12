@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 import re
 import stat
 import threading
+import time
 from copy import copy
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from .processidentity import CARD_STEP_KINDS, TICKET_STEP_KINDS, start_error
 from .state import FlowState, fold
@@ -28,6 +31,35 @@ SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
+# K-105 #2: najdłuższy czas, przez który pamięć ścisłego odczytu karty (trafienie, przyrost) zastępuje pełny odczyt
+# pliku. Ta sama stała i zegar (`Journal.monotonic`) co okres kontroli pełnej kart w spoczynku (K-105 #3).
+FULL_READ_PERIOD = 600.0
+
+
+class JournalVersion(NamedTuple):
+    """Wersja dziennika karty ze ścisłego odczytu (K-105 #2): stan otwartego pliku (`fstat`), licznik zapisów tego
+    procesu i ostatni `seq`. Wartość do porównania — równa wersja oznacza tę samą historię dla odczytów bez skutku;
+    bramki przed skutkiem i tak czytają świeżo (`Journal.read_fresh`)."""
+    source: str
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    generation: int
+    seq: int
+
+
+class _Remembered:
+    """Wpis pamięci ścisłego odczytu karty. Bez tekstu wierszy: ostatni wiersz pamiętany jako położenie i skrót."""
+    __slots__ = ("version", "events", "tail", "digest", "full_at")
+
+    def __init__(self, version, events, tail, digest, full_at):
+        self.version = version     # JournalVersion odczytanych bajtów (rozmiar = liczba przeczytanych bajtów)
+        self.events = events       # zdarzenia tylko do odczytu; wywołujący dostają nową listę tych samych obiektów
+        self.tail = tail           # początek ostatniego wiersza w bajtach albo None (przyrost niedozwolony)
+        self.digest = digest       # sha256 ostatniego wiersza (b"" przy pustym pliku)
+        self.full_at = full_at     # chwila ostatniego pełnego odczytu (`Journal.monotonic`); przyrost jej nie zmienia
 
 
 class StrictReadInPresentation(RuntimeError):
@@ -63,10 +95,13 @@ def mirror_root(board_root: str, env=None) -> str:
 
 
 class Journal:
-    def __init__(self, board_root: str, mirror: str | None = None, clock=None):
+    def __init__(self, board_root: str, mirror: str | None = None, clock=None, monotonic=None):
         self.root = os.path.abspath(board_root)
         self.mirror = mirror or mirror_root(self.root)
         self.clock = clock
+        # K-105 #2: zegar okresu pełnego odczytu (wstrzykiwalny w testach); pamięć ścisłego odczytu: karta → wpis.
+        self.monotonic = monotonic or time.monotonic
+        self._strict_memory: dict[str, _Remembered] = {}
         self.lock = threading.RLock()
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
@@ -213,35 +248,132 @@ class Journal:
         return key, events
 
     def read_complete(self, card: str) -> list[dict]:
-        """Odczyt dla bramki: błąd lub brak historii nie jest pustą historią.
+        """Ścisły odczyt historii karty: błąd lub brak historii nie jest pustą historią.
 
-        Bez tolerancyjnego parsera/cache i bez naprawiania plików. Istniejąca
-        kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
-        OSError/ValueError oznaczają dla wywołującego stan unknown.
-        """
+        Bez tolerancyjnego parsera i bez naprawiania plików. Istniejąca kopia hostowa jest autorytatywna także wtedy,
+        gdy nie da się jej odczytać. OSError/ValueError oznaczają dla wywołującego stan unknown.
+
+        K-105 #2: wynik jest pamiętany dla wersji dziennika (`read_complete_version`). Zdarzenia są tylko do odczytu
+        (wspólne z pamięcią) — wywołujący dostaje nową listę tych samych obiektów. Do odczytów bez skutku; porównania
+        przed zapisem i zapisy bramek czytają świeżo (`read_fresh`)."""
+        return self.read_complete_version(card)[1]
+
+    def version(self, card: str) -> JournalVersion:
+        """Wersja dziennika karty ze ścisłego odczytu (K-105 #2); błąd odczytu propaguje unknown."""
+        return self.read_complete_version(card)[0]
+
+    def read_fresh(self, card: str) -> list[dict]:
+        """Świeży pełny ścisły odczyt dla bramek przed skutkiem (K-105 #2): ta sama reguła co `read_complete`, ale
+        z pominięciem pamięci — ani jej nie czyta, ani nie zapisuje. Porównania przed zapisem (`unchanged`) i zapisy
+        (`append`, `append_complete`) czytają historię tylko tak."""
         with self._strict():
-            source = self.mirror_path(card)
-            try:
-                os.lstat(source)
-            except FileNotFoundError:
-                source = self.path(card)
-            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, encoding="utf-8") as fh:
-                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                    raise ValueError("dziennik nie jest zwykłym plikiem")
-                events = []
-                for line in fh:
-                    if not line.endswith("\n"):
-                        raise ValueError("niepełny zapis zdarzenia")
-                    event = json.loads(line)
-                    if (not isinstance(event, dict) or type(event.get("v")) is not int
-                            or event["v"] != SCHEMA or type(event.get("seq")) is not int
-                            or event["seq"] != len(events) + 1 or event.get("card") != card
-                            or not isinstance(event.get("type"), str) or not event["type"]):
-                        raise ValueError("niepełna lub nieznana historia zdarzeń")
-                    _validate_process_identity(event)
-                    events.append(event)
-                return events
+            return self._read_strict(card)[0]
+
+    def read_complete_version(self, card: str) -> tuple[JournalVersion, list[dict]]:
+        """Ścisły odczyt z pamięcią według wersji dziennika (K-105 #2).
+
+        - trafienie: to samo źródło i i-węzeł, ten sam rozmiar, `st_mtime_ns`, `st_ctime_ns` (z `fstat` otwartego
+          deskryptora) i `generation` — bez czytania pliku, nowa lista tych samych zdarzeń,
+        - przyrost: ten sam i-węzeł, większy rozmiar i niezmieniony ostatni zapamiętany wiersz (skrót bajtów w tym
+          samym miejscu) — doczytuje tylko nowe bajty i waliduje je tą samą regułą co pełny odczyt,
+        - każda inna zmiana, zapis tego procesu (`generation`) albo upływ `FULL_READ_PERIOD` od ostatniego pełnego
+          odczytu wpisu — pełny odczyt (`_read_strict`).
+
+        Ograniczenie przyrostu: edycja wcześniejszych wierszy w miejscu połączona z dopisaniem nie jest wykrywana do
+        najbliższego pełnego odczytu; bramki przed skutkiem czytają świeżo, więc zapis oparty na takiej historii jest
+        odmówiony (`HistoryChanged`). Błąd odczytu (pełnego albo przyrostu) usuwa wpis — nie zostaje jako historia."""
+        with self._strict():
+            entry = self._strict_memory.pop(card, None)
+            if entry is not None and (entry.version.generation != self.generation(card)
+                                      or self.monotonic() - entry.full_at >= FULL_READ_PERIOD):
+                entry = None
+            if entry is not None:
+                done = self._remembered(card, entry)
+                if done is not None:
+                    return done
+            events, entry = self._read_strict(card)
+            if entry is not None:
+                self._strict_memory[card] = entry
+                return entry.version, list(entry.events)
+            return self._loose_version(card, events), events
+
+    def forget_except(self, cards) -> None:
+        """Usuwa wpisy pamięci ścisłego odczytu kart spoza `cards` (K-105 #2: początek ticku, karta usunięta)."""
+        keep = set(cards)
+        with self.lock:
+            for card in [c for c in self._strict_memory if c not in keep]:
+                del self._strict_memory[card]
+
+    def _strict_open(self, card: str):
+        source = self.mirror_path(card)
+        try:
+            os.lstat(source)
+        except FileNotFoundError:
+            source = self.path(card)
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError("dziennik nie jest zwykłym plikiem")
+        except BaseException:
+            os.close(fd)
+            raise
+        return source, fd, st
+
+    def _read_strict(self, card: str):
+        """Pełny ścisły odczyt historii karty — granica liczenia pełnych odczytów (K-105 #2). Zwraca zdarzenia i wpis
+        pamięci albo None, gdy plik zmienił się w trakcie czytania (wynik jest poprawny, ale bez stałej wersji)."""
+        generation = self.generation(card)
+        source, fd, before = self._strict_open(card)
+        try:
+            data = _pread_all(fd, 0)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        events = _parse_strict(data, card, 0)
+        if not _same_state(before, after) or len(data) != after.st_size:
+            return events, None
+        tail, digest = _last_line(data, 0)
+        return events, _Remembered(_version(source, after, generation, events), events, tail, digest,
+                                   self.monotonic())
+
+    def _remembered(self, card: str, entry: _Remembered):
+        """Trafienie albo przyrost dla wpisu pamięci; None, gdy potrzebny jest pełny odczyt. Błąd przyrostu
+        propaguje (wpis jest już usunięty z pamięci przez wywołującego)."""
+        old = entry.version
+        source, fd, st = self._strict_open(card)
+        try:
+            if source != old.source or st.st_dev != old.dev or st.st_ino != old.ino:
+                return None
+            if (st.st_size == old.size and st.st_mtime_ns == old.mtime_ns
+                    and st.st_ctime_ns == old.ctime_ns):
+                self._strict_memory[card] = entry
+                return old, list(entry.events)
+            if entry.tail is None or st.st_size <= old.size:
+                return None
+            if hashlib.sha256(os.pread(fd, old.size - entry.tail, entry.tail)).digest() != entry.digest:
+                return None
+            data = _pread_all(fd, old.size)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if not data or b"\r" in data:
+            return None          # wyścig z ucięciem albo inne końce wierszy: rozstrzyga pełny odczyt
+        added = _parse_strict(data, card, len(entry.events))
+        if not _same_state(st, after) or old.size + len(data) != after.st_size:
+            events = entry.events + added        # poprawny wynik bez stałej wersji: bez pamięci
+            return self._loose_version(card, events), events
+        tail, digest = _last_line(data, old.size)
+        entry.events.extend(added)       # wywołujący mają własne listy; pamięć dokłada tylko nowe zdarzenia
+        entry.version = _version(source, after, old.generation, entry.events)
+        entry.tail, entry.digest = tail, digest
+        self._strict_memory[card] = entry
+        return entry.version, list(entry.events)
+
+    def _loose_version(self, card, events) -> JournalVersion:
+        """Wersja wyniku czytanego w trakcie zmiany pliku: nie pasuje do żadnego stanu pliku (rozmiar -1)."""
+        seq = events[-1]["seq"] if events else 0
+        return JournalVersion("", 0, 0, -1, 0, 0, self.generation(card), seq)
 
     # --- zapis -----------------------------------------------------------------------------------
 
@@ -251,6 +383,7 @@ class Journal:
 
     def _invalidate(self, card: str) -> None:
         self._generations[card] = self._generations.get(card, 0) + 1
+        self._strict_memory.pop(card, None)
         self._cache.pop(card, None)
         self._states.pop(card, None)
 
@@ -259,22 +392,22 @@ class Journal:
             # Tolerancyjny odczyt służy prezentacji, nigdy odbudowie kopii przy
             # zapisie. Inaczej dowolne późniejsze zdarzenie usuwa dowód unknown.
             exists = os.path.lexists(self.mirror_path(card)) or os.path.lexists(self.path(card))
-            events = self.read_complete(card) if exists else []
+            events = self.read_fresh(card) if exists else []
             return self._append(card, kind, events, data)
 
     def append_complete(self, card: str, kind: str, /, **data) -> dict:
-        """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
+        """Zapis bramki tylko na pełnej historii (świeży ścisły odczyt), bez tolerancyjnego odtworzenia."""
         with self.lock:
-            return self._append(card, kind, self.read_complete(card), data)
+            return self._append(card, kind, self.read_fresh(card), data)
 
     @contextlib.contextmanager
     def unchanged(self, card: str, basis: list):
         """Zapis decyzji podjętej na wcześniejszym odczycie `basis` (K-98 #3): blok trzyma blokadę dziennika, a na
         wejściu świeży pełny ścisły odczyt musi być równy `basis`. Dopisanie, ucięcie albo podmiana dziennika lub
         kopii po odczycie daje `HistoryChanged` przed blokiem — bez zapisu. Zapisy w bloku (`append_complete`)
-        czytają historię ponownie pod tą samą blokadą."""
+        czytają historię ponownie pod tą samą blokadą. Porównanie zawsze z pominięciem pamięci (`read_fresh`)."""
         with self.lock:
-            if self.read_complete(card) != list(basis):
+            if self.read_fresh(card) != list(basis):
                 raise HistoryChanged(f"{card}: historia zmieniła się po odczycie — zapis odmówiony")
             yield
 
@@ -394,6 +527,53 @@ def _mkdir(path):
     except FileExistsError:
         pass
     _sync_dir(parent)
+
+
+def _pread_all(fd: int, offset: int) -> bytes:
+    chunks = []
+    while True:
+        chunk = os.pread(fd, 1 << 20, offset)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _parse_strict(data: bytes, card: str, before: int) -> list[dict]:
+    """Ścisła reguła odczytu historii (pełny odczyt i przyrost): pełne wiersze UTF-8 (końce wierszy jak w trybie
+    tekstowym), schemat, kolejny `seq` od `before + 1`, ta sama karta, znana tożsamość startu procesu."""
+    events = []
+    for line in io.StringIO(data.decode("utf-8"), newline=None):
+        if not line.endswith("\n"):
+            raise ValueError("niepełny zapis zdarzenia")
+        event = json.loads(line)
+        if (not isinstance(event, dict) or type(event.get("v")) is not int
+                or event["v"] != SCHEMA or type(event.get("seq")) is not int
+                or event["seq"] != before + len(events) + 1 or event.get("card") != card
+                or not isinstance(event.get("type"), str) or not event["type"]):
+            raise ValueError("niepełna lub nieznana historia zdarzeń")
+        _validate_process_identity(event)
+        events.append(event)
+    return events
+
+
+def _same_state(a, b) -> bool:
+    return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns) == \
+        (b.st_dev, b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns)
+
+
+def _version(source, st, generation, events) -> JournalVersion:
+    return JournalVersion(source, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, generation,
+                          events[-1]["seq"] if events else 0)
+
+
+def _last_line(data: bytes, offset: int):
+    """Położenie (od `offset`) i skrót ostatniego wiersza przeczytanych bajtów; (None, None), gdy przyrost nie jest
+    bezpieczny (znak \\r: końce wierszy trybu tekstowego mogą łączyć się przez granicę przyrostu)."""
+    if b"\r" in data:
+        return None, None
+    start = data.rfind(b"\n", 0, len(data) - 1) + 1 if data else 0
+    return offset + start, hashlib.sha256(data[start:]).digest()
 
 
 def _parse(text: str) -> list[dict]:
