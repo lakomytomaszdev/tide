@@ -69,21 +69,23 @@ class BusClient:
         done = subprocess.run(argv, capture_output=True, text=True, check=False)
         return done.returncode, done.stdout, done.stderr
 
-    def _busctl(self, *args):
-        code, out, err = self.runner(["busctl", "--user", "--json=short", f"--timeout={self.timeout}", *args])
+    def _busctl(self, *args, json_output=True):
+        flags = ["--json=short"] if json_output else []
+        code, out, err = self.runner(["busctl", "--user", *flags, f"--timeout={self.timeout}", *args])
         if code != 0:
             raise CaptureError(f"busctl {args[0]} nie powiodło się ({code}): {err.strip()[:300]}")
         return out
 
     def methods(self) -> set:
-        """Nazwy metod `/Board` z introspekcji."""
-        out = self._busctl("introspect", SERVICE, BOARD_PATH, BOARD_IFACE)
-        try:
-            items = json.loads(out)
-        except ValueError as exc:
-            raise CaptureError(f"introspekcja: odpowiedź nie jest JSON ({exc})") from None
-        return {str(item.get("name", "")).lstrip(".") for item in items
-                if isinstance(item, dict) and item.get("type") == "method"}
+        """Nazwy metod `/Board` z introspekcji. `busctl introspect` nie ma wyjścia JSON — czytamy tabelę:
+        `.NazwaMetody  method  <sygnatura>  <wynik>  <flagi>`."""
+        out = self._busctl("introspect", SERVICE, BOARD_PATH, BOARD_IFACE, json_output=False)
+        found = set()
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].startswith(".") and parts[1] == "method":
+                found.add(parts[0][1:])
+        return found
 
     def call(self, member: str, *args: str) -> dict:
         if member not in READ_ONLY_CALLS:

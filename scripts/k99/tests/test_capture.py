@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -88,10 +89,14 @@ class BusClientTest(unittest.TestCase):
         self.assertEqual(client.calls, [("PreviewCardMerge", "K-3")])
 
     def test_introspection_lists_methods_and_missing_one_is_an_error(self):
-        listing = json.dumps([{"name": ".Snapshot", "type": "method"}, {"name": ".ListCardBranches", "type": "method"},
-                              {"name": ".Changed", "type": "signal"}])
-        client, _ = self.fake(out=listing)
+        listing = ("NAME                      TYPE      SIGNATURE RESULT/VALUE FLAGS\n"
+                   "org.tide.Daemon.Board     interface -         -            -\n"
+                   ".Snapshot                 method    -         s            -\n"
+                   ".ListCardBranches         method    ss        s            -\n"
+                   ".Changed                  signal    -         -            -\n")
+        client, argvs = self.fake(out=listing)
         self.assertEqual(client.methods(), {"Snapshot", "ListCardBranches"})
+        self.assertNotIn("--json=short", argvs[0])  # introspect nie ma wyjścia JSON
         with self.assertRaises(cap.CaptureError) as caught:
             cap.require_methods(client)
         self.assertIn("PreviewCardMerge", str(caught.exception))
@@ -290,13 +295,18 @@ class MeasureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             board = {"projects": [{"slug": "p", "name": "p", "repo": root}], "cards": {}}
             host = cap.Host(Journal(root, mirror=os.path.join(root, "mirror")), board)
+            # Pusty dziennik liczy się szybciej, niż `add_done_callback` zdąży się podpiąć (wtedy odpowiedź wraca
+            # synchronicznie — własność puli, nie błąd); przy prawdziwych danych liczenie trwa dłużej.
+            compute = host.monitor._branch_map
+            host.monitor._branch_map = lambda *args: (time.sleep(0.05), compute(*args))[1]
             try:
                 run = cap.time_branch_map(host, json.dumps({"project": "p", "limit": 500}))
             finally:
                 host.close()
         self.assertTrue(run["response"]["ok"], run["response"])
         self.assertEqual(run["response"]["total"], 0)
-        self.assertTrue(run["returnedBeforeReply"] and run["replyOnCallingThread"] and run["computedOffCallingThread"])
+        self.assertEqual({k: run[k] for k in ("returnedBeforeReply", "replyOnCallingThread", "computedOffCallingThread")},
+                         {"returnedBeforeReply": True, "replyOnCallingThread": True, "computedOffCallingThread": True})
 
     def test_fewer_than_five_repeats_is_refused(self):
         self.assertEqual(measure.main(["--repeats", "4"]), 1)
