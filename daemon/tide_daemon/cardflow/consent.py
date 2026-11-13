@@ -119,7 +119,7 @@ def deny_queued(engine, card, name, request):
     """Odmowa człowieka po automatycznej zgodzie outside (PT-311): przed `outside.started` unieważnia zgodę
     i zapisuje odmowę; po starcie `already-started`, a proces działa dalej. Kontrola i zapis są pod blokadą
     dziennika, pod którą `_start_outside` sprawdza decyzję i zapisuje start."""
-    from .engine import FlowError
+    from .errors import FlowError
     answer = str(request.get("answer") or "").strip()
     instead = str(request.get("instead") or "").strip()
     if len(answer) > 4000 or len(instead) > 4000:
@@ -178,7 +178,7 @@ def before_start(engine, card, step, done, decision):
 
 
 def revoke(engine, card_id, request):
-    from .engine import FlowError
+    from .errors import FlowError
     from .state import fold
     from ..board.model import BoardError, card_num
     try:

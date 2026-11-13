@@ -12,18 +12,31 @@ from tools.test_dependencies import ENGINE, ImportGraph, import_chain
 
 # Statyczny import każdego sprawdzanego modułu: dobór testów (make test-changed) wybiera ten moduł,
 # gdy któryś z nich się zmieni. Nie zastępować importlib z nazwą ze zmiennej — to nierozstrzygalny import.
-from tide_daemon.cardflow import heavyqueue, ticketlimit
+from tide_daemon import cardflow
+from tide_daemon.cardflow import (
+    basechange, basegeneration, baseproposal, basesuggestions, boxaccess, boxcontrol, boxstep, boxwait,
+    caretaker, caretakerchat, caretakerctx, consent, decisions, envconsent, environment, errors, evidence,
+    execution, faults, filesuggestions, findings, fullcard, gitops, guard, handoff, heavyqueue, history,
+    historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
+    mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,
+    projectconsent, queueview, rest, reviewgate, riskview, startorder, state, stepnotes, stepqueue,
+    targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Lista startowa wyznaczona narzędziem (python3 tools/test_dependencies.py): moduły cardflow/ bez drogi do
-# silnika, które celowo są jego zależnościami wejściowymi, a nie odbiorcami. stepqueue.py zostaje poza listą:
-# dziś sięga silnika przez baseproposal.py → gitops.py → … → envconsent.py → engine.py.
-ENGINE_FREE_MODULES = (
-    "daemon/tide_daemon/cardflow/heavyqueue.py",
-    "daemon/tide_daemon/cardflow/ticketlimit.py",
-)
-IMPORTED_MODULES = (heavyqueue, ticketlimit)
+# PT-461: lista z wyniku narzędzia (python3 tools/test_dependencies.py) po wyniesieniu wyjątków do errors.py:
+# wszystkie moduły cardflow/ poza engine.py i rollback.py. rollback.py importuje FlowEngine (punkt wejścia
+# narzędzia wiersza poleceń), więc sięga silnika z założenia: rollback.py → engine.py.
+IMPORTED_MODULES = (
+    cardflow, basechange, basegeneration, baseproposal, basesuggestions, boxaccess, boxcontrol, boxstep, boxwait,
+    caretaker, caretakerchat, caretakerctx, consent, decisions, envconsent, environment, errors, evidence,
+    execution, faults, filesuggestions, findings, fullcard, gitops, guard, handoff, heavyqueue, history,
+    historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
+    mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,
+    projectconsent, queueview, rest, reviewgate, riskview, startorder, state, stepnotes, stepqueue,
+    targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
+ENGINE_FREE_MODULES = tuple(sorted(Path(module.__file__).resolve().relative_to(ROOT).as_posix()
+                                   for module in IMPORTED_MODULES))
 
 
 def engine_dependency_chains(graph, modules, engine=ENGINE):
@@ -49,9 +62,17 @@ class EngineBoundaryTest(unittest.TestCase):
         # Bez katalogów testów: reguła dotyczy tylko kodu usługi, a graf powstaje wielokrotnie szybciej.
         assert_engine_free(self, ImportGraph(ROOT, []), ENGINE_FREE_MODULES)
 
-    def test_list_matches_imported_modules(self):
-        self.assertEqual(sorted(Path(module.__file__).resolve().relative_to(ROOT).as_posix()
-                                for module in IMPORTED_MODULES), sorted(ENGINE_FREE_MODULES))
+    def test_list_covers_every_cardflow_module_except_engine_and_rollback(self):
+        # Nowy moduł cardflow/ musi trafić na listę albo świadomie zostać poza nią (wtedy dopisz go tu z łańcuchem).
+        every = {p.relative_to(ROOT).as_posix() for p in (ROOT / "daemon/tide_daemon/cardflow").glob("*.py")}
+        outside = {ENGINE, "daemon/tide_daemon/cardflow/rollback.py"}
+        self.assertEqual(sorted(every - outside), sorted(ENGINE_FREE_MODULES))
+
+    def test_rollback_is_the_only_module_reaching_engine(self):
+        graph = ImportGraph(ROOT, [])
+        every = sorted(p for p in graph.dependencies if p.startswith("daemon/tide_daemon/cardflow/") and p != ENGINE)
+        self.assertEqual(sorted(engine_dependency_chains(graph, every)),
+                         ["daemon/tide_daemon/cardflow/rollback.py"])
 
 
 class EngineBoundaryLogicTest(unittest.TestCase):

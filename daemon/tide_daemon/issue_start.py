@@ -6,7 +6,7 @@ import uuid
 from . import issue_acceptance as acceptance
 from .issues import VersionConflict, validate, fail
 from .cardflow import startorder
-from .cardflow.engine import FlowError
+from .cardflow.errors import FlowError
 
 INTENTS = ".git/tide-issue-starts"
 RESULTS = ".git/tide-issue-start-results"

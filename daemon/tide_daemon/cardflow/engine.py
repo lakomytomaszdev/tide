@@ -98,6 +98,7 @@ from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, ticket_waits, _epoch, _bookkeeping, approval_live)
 from .tracker import TrackerOutbox
+from .errors import FlowDeferred, FlowError  # noqa: F401  (te same obiekty co w errors.py; dotychczasowe nazwy)
 
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
@@ -191,10 +192,6 @@ def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
     chosen = st.reviewer_overrides.get(step.get("ticket") or "") or {}
     newer = chosen.get("seq", 0) > max(step.get("seq", 0), decision.get("seq", 0) or 0)
     return chosen.get("reviewer") or "" if newer and chosen.get("reviewer") not in ("", None, current) else ""
-
-class FlowDeferred(Exception):
-    """Krok czeka na wolne miejsce; nie jest to błąd karty."""
-
 
 class _ProviderOnly:
     """Wybór wykonawcy sprowadzony do dostawcy: wpis kolejki innej karty (`stepqueue`) przy sprawdzaniu rezerwacji
@@ -362,13 +359,6 @@ def review_question(ticket: str, round_no: int, review_md: str) -> str:
     return (f"{ticket}: po {round_no} rundach review zostały uwagi:\n{listed}\n"
             "Zwykle: „Ponów poprawki”, gdy uwagi dotyczą kodu. „Scal mimo uwag” tylko gdy dotyczą środowiska "
             "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
-
-class FlowError(Exception):
-    def __init__(self, code: str, message: str, data: dict | None = None):
-        super().__init__(message)
-        self.code = code
-        self.data = data or {}     # dodatkowe pola odpowiedzi (np. `reviews` przy `ambiguous-review`)
-
 
 class _CaretakerPort:
     """Port silnika dla `caretaker.ACTIONS[…].apply` (PT-143): jedyne miejsca, w których akcja opiekuna zmienia

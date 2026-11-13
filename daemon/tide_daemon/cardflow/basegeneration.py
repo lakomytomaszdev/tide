@@ -28,7 +28,7 @@ class BaseGeneration:
         self.journal = engine.journal
 
     def resolve(self, card, request):
-        from .engine import FlowError
+        from .errors import FlowError
         if (set(request) - {"choice", "baseRef", "baseCommit", "previewId", "step"} or
                 not isinstance(request.get("previewId"), str) or not request["previewId"] or
                 not isinstance(request.get("baseRef"), str)):
