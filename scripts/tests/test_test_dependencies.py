@@ -453,7 +453,8 @@ def _segments(node, absorbed):
         return _segments(node.left, absorbed) + _segments(node.right, absorbed)
     if isinstance(node, ast.Call) and _is_chain(node):
         absorbed.update(id(arg) for arg in node.args)
-        own = [_const(arg) for arg in node.args]
+        own = [seg for arg in node.args
+               for seg in (_segments(arg, absorbed) if _is_chain(arg) else [_const(arg)])]
         if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
             absorbed.add(id(node.func.value))
             return _segments(node.func.value, absorbed) + own
@@ -541,6 +542,8 @@ class CoordinationExtractorTest(unittest.TestCase):
             "posixpath_join": 'posixpath.join(ROOT, "docs/agents", "plans", "x.md")',
             "path_args": 'Path("docs", "agents", "plans", "x.md")',
             "joinpath": 'repo.joinpath("docs", "agents", "plans", "x.md")',
+            "path_of_chain": 'Path(ROOT / "docs" / "agents" / "plans" / "x.md")',
+            "join_with_chain_arg": 'os.path.join(ROOT / "docs" / "agents" / "plans", "x.md")',
             "plain_string": '"docs/agents/plans/x.md"',
             "shell_text": """'cp "$src/../docs/agents/plans/x.md" "$dst"'""",
             "absolute_data": '"/r/docs/agents/plans/x.md"',
