@@ -25,7 +25,7 @@ nie leczy przyczyn i — mierzony liniami — nagradza przenoszenie, nie odsprz�
 - **Nowy moduł nie importuje `engine`.**
 - **Miara: zależności testów, nie linie.** Kryterium w kartce: liczba modułów testów wybieranych dla zmiany w nowym
   module < liczba dla `engine.py` — pomiar `tools/test_dependencies.py` w notce (kolumna „sięga silnika” raportu
-  zależności z PT-460); linie `engine.py` po scaleniu podajemy tylko informacyjnie.
+  zależności); linie `engine.py` po scaleniu podajemy tylko informacyjnie.
 - **Kto co wydziela:**
 
   | Karta | Odpowiedzialność | Moduł |
@@ -51,8 +51,8 @@ nie leczy przyczyn i — mierzony liniami — nagradza przenoszenie, nie odsprz�
 1. pomocnicy importujący `FlowError`/`FlowDeferred` i odczyt wyniku kroku z silnika — znika w oknie porządkowym
    (K-112);
 2. `_outside*` i `_merge_check*` w silniku — K-109 (M2);
-3. `_caretaker*` i `_guard*` w silniku — K-79 (M3);
-4. `_recover*` w silniku — K-108 (M2);
+3. `_recover*` w silniku — K-108 (M2);
+4. `_caretaker*` i `_guard*` w silniku — K-79 (M3);
 5. jądro, `plan*`, kod K-38 i `coordination/` w silniku — K-76 po odbiorze v1.
 
 ## Karta wykonawcza i kamień

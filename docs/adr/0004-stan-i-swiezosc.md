@@ -26,8 +26,8 @@ usługi i jego lustro na Tablicy, `FlowState`/`Snapshot`, plan w kilku miejscach
 
 ## Konsekwencje
 
-PT-411, PT-415, PT-416 i PT-412 opierają się na jednej wersji dziennika karty; nowa pamięć stanu nie dokłada własnej
-wersji. Nowe widoki nie rozszerzają istniejących metod D-Bus, tylko dostają osobne.
+PT-411, PT-415 i PT-416 korzystają z jednej wersji; PT-412 (karta w spoczynku poza pętlą) jest osobną zmianą.
+Nowe widoki idą przez osobne metody D-Bus.
 
 **Co temu dziś przeczy:** trzy ścisłe odczyty na kartę na tick — znikają z K-105 (M0).
 
