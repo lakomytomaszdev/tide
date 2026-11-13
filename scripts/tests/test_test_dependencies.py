@@ -1,8 +1,11 @@
 """PT-258: rzeczywiste pliki fixture, kierunek zależności i bezpieczne wyjścia selektora."""
 from contextlib import redirect_stdout
+import ast
 import io
 from pathlib import Path
 import json
+import posixpath
+import re
 import subprocess
 import tempfile
 import unittest
@@ -410,6 +413,180 @@ class CoordinationSelectionTest(unittest.TestCase):
             self.assertEqual(runner.main(runner.ROOT), 0)
         self.assertIn("Wybrane moduły: 0", output.getvalue())
         self.assertIn("Pominięte ścieżki koordynacji: 2", output.getvalue())
+
+
+JOIN_FUNCTIONS = {"os.path.join", "posixpath.join", "path.join"}
+PATH_CLASSES = {"Path", "PurePath", "PurePosixPath", "PosixPath"}
+
+
+def _dotted(node):
+    names = []
+    while isinstance(node, ast.Attribute):
+        names.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        names.append(node.id)
+        return ".".join(reversed(names))
+    return ""
+
+
+def _const(node):
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _is_chain(node):
+    if isinstance(node, ast.BinOp):
+        return isinstance(node.op, ast.Div)
+    if isinstance(node, ast.Call):
+        name = _dotted(node.func)
+        return (name in JOIN_FUNCTIONS or name.rsplit(".", 1)[-1] in PATH_CLASSES
+                or (isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath"))
+    return False
+
+
+def _segments(node, absorbed):
+    """Stałe segmenty wyrażenia ścieżkowego, None w miejscu bazy lub wartości niestałej."""
+    if _const(node) is not None:
+        return [node.value]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        absorbed.update((id(node.left), id(node.right)))
+        return _segments(node.left, absorbed) + _segments(node.right, absorbed)
+    if isinstance(node, ast.Call) and _is_chain(node):
+        absorbed.update(id(arg) for arg in node.args)
+        own = [_const(arg) for arg in node.args]
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+            absorbed.add(id(node.func.value))
+            return _segments(node.func.value, absorbed) + own
+        return own
+    return [None]
+
+
+def coordination_candidates(source, prefixes=COORDINATION_PATHS):
+    """Ścieżki pod prefiksami koordynacji, które źródło składa jako napis albo ciąg segmentów."""
+    start = r"(?:^|(?<=[^\w.-]))"
+    pattern = re.compile(start + "((?:" + "|".join(re.escape(p) for p in prefixes) + r")[^\s\"']*)")
+    found = set()
+
+    def scan(text):
+        found.update(posixpath.normpath(match.group(1)) for match in pattern.finditer(text))
+
+    absorbed = set()
+    for node in ast.walk(ast.parse(source)):
+        if _const(node) is not None:
+            scan(node.value)
+        elif _is_chain(node) and id(node) not in absorbed:
+            run = []
+            for part in _segments(node, absorbed):
+                if part is None and run:
+                    break
+                if part is not None:
+                    run.append(part)
+            if run:
+                scan(posixpath.join(*run))
+    return found
+
+
+# (moduł testu, ścieżka): fałszywe trafienia skanu, czyli nazwy istniejących planów użyte
+# w danych albo w repozytorium tymczasowym. Pozycja, która przestała być trafieniem,
+# wywala test, więc krotka nie puchnie po cichu.
+COORDINATION_SCAN_EXCEPTIONS = (
+    # l. ~241, ~259: "/r/docs/…" w danych parsera planu; l. ~279: os.path.join(repo, …) w repozytorium tymczasowym.
+    ("daemon/tests/test_coordination_core.py", "docs/agents/plans/2026-10-27-local-models.md"),
+    # l. ~243: "/r/docs/…" w danych parsera planu.
+    ("daemon/tests/test_coordination_core.py", "docs/agents/plans/2026-10-27-board-and-docker.md"),
+    # l. ~145: "/repo/docs/…" jako ścieżka w sztucznym zdarzeniu, plik nie jest otwierany.
+    ("daemon/tests/test_cardflow_plans.py", "docs/agents/plans/2026-10-27-board-and-docker.md"),
+    # l. ~62, ~64, ~627: "/ws/…/docs/…" i "/r/docs/…" w danych numeracji; pliki powstają w katalogu tymczasowym.
+    ("daemon/tests/test_coordination_numbering.py", "docs/agents/plans/2026-10-27-local-models.md"),
+    ("daemon/tests/test_coordination_numbering.py", "docs/agents/plans/2026-10-27-board-and-docker.md"),
+    ("daemon/tests/test_coordination_numbering.py", "docs/agents/plans/2026-10-27-vivaldi.md"),
+    # Ten moduł: ścieżki kluczy FILE_TEST_MODULES i plików diffu przekazywane selektorowi (l. ~346-349, ~408),
+    # nikt ich tu nie otwiera.
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/plans/followups/replay-code.md"),
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/plans/2026-11-05-k-50-flow.md"),
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/interwencje/dziennik.tsv"),
+    # l. ~494-510: te same nazwy planów w samej krotce wyjątków.
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/plans/2026-10-27-vivaldi.md"),
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/plans/2026-10-27-local-models.md"),
+    ("scripts/tests/test_test_dependencies.py", "docs/agents/plans/2026-10-27-board-and-docker.md"),
+)
+
+
+def scan_coordination_reads():
+    """{(moduł testu, ścieżka)}: istniejące, śledzone pliki koordynacji wskazane w testach."""
+    listing = subprocess.check_output(["git", "ls-files", "-z"], cwd=runner.ROOT)
+    tracked = set(filter(None, listing.decode("utf-8", "surrogateescape").split("\0")))
+    hits = set()
+    for directory in sorted({d for pairs in SUITES.values() for d, _ in pairs}):
+        for file in sorted((runner.ROOT / directory).rglob("*.py")):
+            relative = file.relative_to(runner.ROOT).as_posix()
+            for path in coordination_candidates(file.read_text(encoding="utf-8")):
+                if path in tracked:
+                    hits.add((relative, path))
+    return hits
+
+
+class CoordinationExtractorTest(unittest.TestCase):
+    """PT-476: ekstraktor ścieżek koordynacji na syntetycznych źródłach."""
+    TARGET = "docs/agents/plans/x.md"
+
+    def test_every_shape_yields_the_normalized_path(self):
+        cases = {
+            "slash_string": 'repo / "docs/agents/plans/x.md"',
+            "slash_segments": 'ROOT / "docs" / "agents" / "plans" / "x.md"',
+            "parents_base": 'Path(__file__).parents[2] / "docs" / "agents" / "plans" / "x.md"',
+            "call_base": 'Path(__file__).resolve() / "docs/agents/plans/x.md"',
+            "os_join": 'os.path.join(ROOT, "docs", "agents", "plans", "x.md")',
+            "os_join_const_first": 'os.path.join("docs", "agents", "plans", "x.md")',
+            "posixpath_join": 'posixpath.join(ROOT, "docs/agents", "plans", "x.md")',
+            "path_args": 'Path("docs", "agents", "plans", "x.md")',
+            "joinpath": 'repo.joinpath("docs", "agents", "plans", "x.md")',
+            "plain_string": '"docs/agents/plans/x.md"',
+            "shell_text": """'cp "$src/../docs/agents/plans/x.md" "$dst"'""",
+            "absolute_data": '"/r/docs/agents/plans/x.md"',
+            "fstring_const_part": 'f"{root}/docs/agents/plans/x.md"',
+            "fstring_leading": 'f"docs/agents/plans/x.md {extra}"',
+            "dotdot": '"docs/agents/plans/sub/../x.md"',
+        }
+        for name, source in cases.items():
+            with self.subTest(shape=name):
+                self.assertEqual(coordination_candidates(source), {self.TARGET})
+
+    def test_paths_outside_the_list_are_not_candidates(self):
+        for source in ('"docs/agents/pt-288/catalog.md"', '"docs/agents/masterplan-old/x.json"',
+                       'ROOT / "docs" / "agents" / "pt-288" / "catalog.md"',
+                       'os.path.join(ROOT, "docs", "agents", "plans-old", "x.md")',
+                       '"not-docs/agents/plans/x.md"', '"docs/testing.md"', '"plans"'):
+            with self.subTest(source=source):
+                self.assertEqual(coordination_candidates(source), set())
+
+    def test_other_prefixes_and_multiple_hits(self):
+        source = 'a = "docs/agents/masterplan/a.json"\nb = repo / "docs" / "agents" / "interwencje" / "d.tsv"'
+        self.assertEqual(coordination_candidates(source),
+                         {"docs/agents/masterplan/a.json", "docs/agents/interwencje/d.tsv"})
+
+    def test_run_of_constants_stops_at_a_non_constant_segment(self):
+        self.assertEqual(coordination_candidates('repo / "docs" / "agents" / "plans" / name / "x.md"'), set())
+
+
+class CoordinationReadsAreMappedTest(unittest.TestCase):
+    """PT-476: lista koordynacji nie ukrywa pliku, który test czyta z prawdziwego repozytorium."""
+
+    def test_every_scanned_read_is_a_key_with_its_module_among_receivers(self):
+        exceptions = set(COORDINATION_SCAN_EXCEPTIONS)
+        self.assertEqual(len(exceptions), len(COORDINATION_SCAN_EXCEPTIONS), "powtórzona pozycja wyjątku")
+        for module, path in sorted(scan_coordination_reads() - exceptions):
+            with self.subTest(module=module, path=path):
+                self.assertIn(module, FILE_TEST_MODULES.get(path, ()),
+                              f"{module} czyta {path}: dopisz wpis w FILE_TEST_MODULES (tools/test_suites.py) "
+                              "albo, gdy to dane, pozycję w COORDINATION_SCAN_EXCEPTIONS")
+
+    def test_exceptions_are_still_hits_and_are_not_mapped_reads(self):
+        hits = scan_coordination_reads()
+        for module, path in COORDINATION_SCAN_EXCEPTIONS:
+            with self.subTest(module=module, path=path):
+                self.assertIn((module, path), hits, "wyjątek przestał być trafieniem: usuń go z krotki")
+                self.assertNotIn(module, FILE_TEST_MODULES.get(path, ()))
 
 
 class SelectionBenchmarkTest(unittest.TestCase):
