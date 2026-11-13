@@ -1,7 +1,8 @@
 // Okno scalania (K-99, PT-390, #6): wspólny komponent obok widoku diffa, osadzany jako nakładka na całe okno gospodarza
 // (Tablica dziś, Worktrees w K-99 #10). Daje strefę celu z wyborem (domyślny cel, skróty i wyszukiwanie lokalnych
-// gałęzi przez wspólny BranchPicker), minimalny podgląd z odpowiedzi `PreviewCardMerge` i rząd przycisków, który
-// zawsze jest widoczny. Pełne sekcje podglądu dokłada K-99 #18.
+// gałęzi przez wspólny BranchPicker), czytelny podgląd z odpowiedzi `PreviewCardMerge` w nazwanych sekcjach
+// (MergeSection: blokady zdaniami, konflikty, kolizje z lokalną pracą, przygotowanie celu, commity, pliki, ostrzeżenia,
+// zwinięte „Szczegóły” z SHA i kodami; długie listy przewijają się w sekcji) i rząd przycisków, który zawsze jest widoczny.
 //
 // Cel. `open(card, ref, branch)` z pustym `ref` nie zakłada celu: okno prosi o listę (`branchesRequested(text)`),
 // a z odpowiedzi `ListCardBranches` (`receiveBranches(tag, odpowiedź)`) bierze wyłącznie `defaultTargetRef`, `mainRef`
@@ -224,63 +225,150 @@ FocusScope {
         if (r.canMerge === true) return "Można scalić"
         const conflicts = conflictPaths(r).length || Number(r.conflictCount) || 0
         if (conflicts > 0) return conflicts === 1 ? "Konflikt w 1 pliku" : "Konflikty w " + conflicts + " plikach"
-        return "Scalenie zablokowane"
+        const first = blockedLines(r)[0]
+        return first ? "Scalenie zablokowane: " + first : "Scalenie zablokowane"
     }
 
-    function conflictPaths(r) {
-        return r && Array.isArray(r.conflicts) ? r.conflicts.map(p => String(p)) : []
+    // Znane kody `blockedReasons`/`reason` z `PreviewCardMerge` (docs/tide-daemon.md) jako zdania po polsku. Test
+    // porównuje tę listę z kodami w usłudze, więc nowy kod bez zdania zatrzyma testy.
+    readonly property var reasonSentences: ({
+        "conflict": "Zmiany karty kolidują z celem — rozwiąż konflikty w plikach z listy.",
+        "unrelated-history": "Karta i cel nie mają wspólnej historii, więc nie da się ich scalić.",
+        "git-capability": "Zainstalowany git nie obsługuje podglądu scalenia (merge-tree).",
+        "git-error": "Git nie zdołał przygotować podglądu — spróbuj odświeżyć albo sprawdź repozytorium.",
+        "no-sandbox": "Piaskownica gita jest niedostępna, więc podglądu nie da się bezpiecznie przygotować.",
+        "state-changed": "Stan repozytorium zmienił się podczas odczytu — kliknij „Odśwież”.",
+        "base-decision": "Najpierw rozstrzygnij pytanie o bazę karty.",
+        "not-closed": "Karta nie ma aktualnego domknięcia.",
+        "active-step": "Trwa krok karty — poczekaj na jego koniec.",
+        "plan-change": "Zmiana planu czeka na zakończenie lub decyzję.",
+        "base-change": "Po korekcie bazy karta wymaga nowego domknięcia.",
+        "pending-action": "Trwa akcja karty, korekta bazy albo scalanie ticketu — poczekaj na jej koniec.",
+        "card-target": "Celem nie może być gałąź tej karty.",
+        "protected-target": "Ten cel należy do innej karty albo jej czynnego kroku — wybierz inny.",
+        "no-target-worktree": "Zarejestrowany checkout celu jest niedostępny.",
+        "target-path-occupied": "Katalog planowanego worktree celu jest zajęty — wybierz inny cel.",
+        "target-name-occupied": "Nazwa nowego celu koliduje z istniejącą gałęzią — wybierz inną nazwę albo lokalny cel.",
+        "source-dirty": "Checkout gałęzi karty ma niezapisane zmiany albo nie istnieje.",
+        "git-operation": "W checkoucie trwa operacja gita albo indeks jest zablokowany.",
+        "local-collision": "Lokalna praca w celu koliduje ze ścieżkami scalenia.",
+        "local-unassessed": "Nie udało się potwierdzić stanu checkoutów — odśwież podgląd."
+    })
+    readonly property string unknownReasonSentence: "Scalenie jest zablokowane z powodu, którego to okno nie zna — szczegóły (kod) są niżej."
+
+    function reasonSentence(code) {
+        const known = typeof code === "string" && reasonSentences.hasOwnProperty(code)
+        return known ? reasonSentences[code] : unknownReasonSentence
+    }
+
+    // Zdania blokad: z `blockedReasons`, a bez nich z pojedynczego `reason` (odmowa odczytu). Bez powtórzeń.
+    function reasonCodes(r) {
+        const codes = []
+        const add = code => { if (typeof code === "string" && code !== "" && codes.indexOf(code) < 0) codes.push(code) }
+        for (const b of (r && Array.isArray(r.blockedReasons) ? r.blockedReasons : [])) if (b) add(b.reason)
+        if (r && r.canMerge !== true) add(r.reason)
+        return codes
     }
 
     function blockedLines(r) {
         const out = []
-        if (r && r.canMerge !== true && r.message) out.push(String(r.message))
-        for (const b of (r && Array.isArray(r.blockedReasons) ? r.blockedReasons : []))
-            if (b && (b.message || b.reason)) out.push(String(b.message || b.reason))
+        if (!r || r.canMerge === true) return out
+        for (const code of reasonCodes(r)) {
+            const sentence = reasonSentence(code)
+            if (out.indexOf(sentence) < 0) out.push(sentence)
+        }
         return out
+    }
+
+    function conflictPaths(r) {
+        return r && Array.isArray(r.conflicts) ? r.conflicts.map(p => plain(p)) : []
     }
 
     function warningLines(r) {
         return r && Array.isArray(r.warnings) ? r.warnings.map(w => String(w)) : []
     }
 
-    // „Szczegóły”: SHA źródła i celu, drzewo wyniku, kody oraz reszta dotychczasowej treści podglądu
-    // (przygotowanie celu, kolizje lokalne, commity, pliki). Czytelne sekcje zamiast tego tekstu dokłada K-99 #18.
+    // Ścieżki z gita mogą zawierać tabulator i nowy wiersz: pokazujemy je jako \t i \n, żeby jedna ścieżka była jednym wierszem.
+    function plain(text) {
+        return String(text === undefined || text === null ? "" : text).replace(/\\/g, "\\\\")
+            .replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
+    }
+
+    function countOf(count, list) {
+        return typeof count === "number" && count >= list.length ? count : list.length
+    }
+
+    function commitRows(r) {
+        return r && Array.isArray(r.commits) ? r.commits.map(c => plain(String(c.sha || "").slice(0, 7)) + "  " + plain(c.subject)) : []
+    }
+
+    function filePath(f) {
+        return f.oldPath && f.newPath && f.oldPath !== f.newPath
+            ? plain(f.oldPath) + " → " + plain(f.newPath) : plain(f.newPath || f.oldPath)
+    }
+
+    function fileRows(r) {
+        return r && Array.isArray(r.files) ? r.files.map(f => plain(f.status) + "  " + filePath(f)) : []
+    }
+
+    // „Kolizje z lokalną pracą”: nagłówek grupy (staged / unstaged / untracked), pod nim wpisy ze ścieżkami scalenia.
+    function collisionRows(r) {
+        const out = []
+        const groups = r && r.localCollisions && typeof r.localCollisions === "object" ? r.localCollisions : null
+        if (!groups) return out
+        const labels = { staged: "Staged (w indeksie)", unstaged: "Unstaged (poza indeksem)", untracked: "Untracked (nieśledzone)" }
+        for (const kind of ["staged", "unstaged", "untracked"]) {
+            const entries = Array.isArray(groups[kind]) ? groups[kind] : []
+            if (entries.length === 0) continue
+            out.push(labels[kind] + " (" + entries.length + "):")
+            for (const e of entries)
+                out.push("   " + plain(e.status) + "  " + (e.paths || []).map(plain).join(" ← ")
+                         + ((e.mergePaths || []).length ? " · scalenie: " + e.mergePaths.map(plain).join(", ") : ""))
+        }
+        return out
+    }
+
+    function collisionCount(r) {
+        const groups = r && r.localCollisions && typeof r.localCollisions === "object" ? r.localCollisions : null
+        if (!groups) return 0
+        let n = 0
+        for (const kind of ["staged", "unstaged", "untracked"]) n += Array.isArray(groups[kind]) ? groups[kind].length : 0
+        return n
+    }
+
+    // „Po zgodzie Tide przygotuje”: nowy ref i nowy worktree dla celu bez lokalnej gałęzi albo bez checkoutu.
+    function preparationRows(r) {
+        const out = []
+        const p = r && r.targetPreparation && typeof r.targetPreparation === "object" ? r.targetPreparation : null
+        if (!p) return out
+        if (p.createRef) out.push("Nowa gałąź " + plain(r.targetRef || targetRef) + (p.remoteRef ? " od " + plain(p.remoteRef) : ""))
+        if (p.createWorktree) out.push("Nowy worktree " + plain(p.path))
+        return out
+    }
+
+    // „Szczegóły” (domyślnie zwinięte): SHA źródła i celu, drzewo wyniku, worktree celu i kody blokad.
     function detailsText(r) {
         if (!r) return ""
-        const lines = ["Źródło: " + (r.sourceRef || ""), "SHA źródła: " + (r.sourceCommit || ""),
-                       "Cel: " + (r.targetRef || targetRef), "SHA celu: " + (r.targetCommit || ""),
+        const lines = ["Źródło: " + plain(r.sourceRef), "SHA źródła: " + (r.sourceCommit || ""),
+                       "Cel: " + plain(r.targetRef || targetRef), "SHA celu: " + (r.targetCommit || ""),
                        "Drzewo wyniku: " + (r.resultTree || "nieprzygotowane"),
-                       "Worktree celu: " + (r.targetWorktree || "") + (r.targetWorktreeExists === false
+                       "Worktree celu: " + plain(r.targetWorktree) + (r.targetWorktreeExists === false
                                                                       ? " (jeszcze nie istnieje)" : "")]
         if (r.reason) lines.push("Kod: " + r.reason)
-        for (const b of r.blockedReasons || []) lines.push("Blokada: " + b.message + " [" + b.reason + "]")
+        for (const b of r.blockedReasons || [])
+            lines.push("Blokada: [" + (b && b.reason) + "]" + (b && b.message ? " " + plain(b.message) : ""))
+        if (r.canMerge !== true && r.message && !(r.blockedReasons || []).length) lines.push("Komunikat usługi: " + plain(r.message))
         lines.push(r.localCollisions && typeof r.localCollisions === "object"
-                   ? "Lokalne kolizje: " + r.localCollisionCount + ". " + (r.canMerge
+                   ? "Lokalne kolizje: " + collisionCount(r) + ". " + (r.canMerge === true
                      ? "Odczyt nie wykazał blokad scalenia." : "Scalenie jest zablokowane.")
                    : "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione.")
         if (r.targetPreparation) {
             const p = r.targetPreparation
-            lines.push("", "Commit startu celu: " + p.startCommit)
-            if (p.createRef) lines.push("Po zgodzie: utwórz " + (r.targetRef || targetRef) + " od " + p.remoteRef,
-                                        "SHA remote: " + p.remoteCommit)
-            if (p.createWorktree) lines.push("Po zgodzie: utwórz własny worktree " + p.path)
+            lines.push("", "Commit startu celu: " + (p.startCommit || ""))
+            if (p.createRef) lines.push("Po zgodzie: utwórz " + plain(r.targetRef || targetRef) + " od " + plain(p.remoteRef),
+                                        "SHA remote: " + (p.remoteCommit || ""))
+            if (p.createWorktree) lines.push("Po zgodzie: utwórz własny worktree " + plain(p.path))
         }
-        if (r.localCollisions && typeof r.localCollisions === "object") {
-            const labels = { staged: "staged (indeks)", unstaged: "unstaged (poza indeksem)",
-                             untracked: "untracked (nieśledzone)" }
-            for (const kind of ["staged", "unstaged", "untracked"]) {
-                const entries = r.localCollisions[kind] || []
-                lines.push("", "Kolizje " + labels[kind] + " (" + entries.length + "):")
-                for (const entry of entries)
-                    lines.push(entry.status + "  " + entry.paths.join(" ← ") + " · scalenie: " + entry.mergePaths.join(", "))
-            }
-        }
-        lines.push("", "Wnoszone commity (" + (r.commitCount || 0) + ") — cel..karta:")
-        for (const c of r.commits || []) lines.push(c.sha + "  " + c.subject)
-        lines.push("", "Zmiany plików względem drzewa celu (" + (r.fileCount || 0) + "):")
-        for (const f of r.files || [])
-            lines.push(f.status + "  " + (f.oldPath && f.newPath && f.oldPath !== f.newPath
-                       ? f.oldPath + " → " + f.newPath : f.newPath || f.oldPath))
         return lines.join("\n")
     }
 
@@ -448,41 +536,55 @@ FocusScope {
                         font.pointSize: Tide.Tokens.fontSizePt
                         wrapMode: Text.Wrap
                     }
-                    Text {
+                    MergeSection {
+                        objectName: "mergeWindowBlocked"
+                        Layout.fillWidth: true
+                        title: "Dlaczego nie można scalić"
+                        rows: win.blockedLines(win.result)
+                        maxListHeight: 200
+                    }
+                    MergeSection {
                         objectName: "mergeWindowConflicts"
                         Layout.fillWidth: true
                         readonly property var paths: win.conflictPaths(win.result)
-                        visible: paths.length > 0
-                        text: "Pliki w konflikcie:\n" + paths.join("\n")
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                        wrapMode: Text.WrapAnywhere
+                        title: "Konflikty (" + win.countOf(win.result ? win.result.conflictCount : undefined, paths) + ")"
+                        rows: paths
+                        rowColor: Tide.Tokens.negative
                     }
-                    Text {
-                        objectName: "mergeWindowBlocked"
+                    MergeSection {
+                        objectName: "mergeWindowCollisions"
                         Layout.fillWidth: true
-                        readonly property var reasons: win.blockedLines(win.result)
-                        visible: reasons.length > 0
-                        text: reasons.join("\n")
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                        wrapMode: Text.WrapAnywhere
+                        title: "Kolizje z lokalną pracą (" + win.collisionCount(win.result) + ")"
+                        rows: win.collisionRows(win.result)
                     }
-                    Text {
+                    MergeSection {
+                        objectName: "mergeWindowPreparation"
+                        Layout.fillWidth: true
+                        title: "Po zgodzie Tide przygotuje"
+                        rows: win.preparationRows(win.result)
+                    }
+                    MergeSection {
+                        objectName: "mergeWindowCommits"
+                        Layout.fillWidth: true
+                        readonly property var items: win.commitRows(win.result)
+                        title: "Wnoszone commity (" + win.countOf(win.result ? win.result.commitCount : undefined, items) + ")"
+                        rows: items
+                    }
+                    MergeSection {
+                        objectName: "mergeWindowFiles"
+                        Layout.fillWidth: true
+                        readonly property var items: win.fileRows(win.result)
+                        title: "Pliki (" + win.countOf(win.result ? win.result.fileCount : undefined, items) + ")"
+                        rows: items
+                    }
+                    MergeSection {
                         objectName: "mergeWindowWarnings"
                         Layout.fillWidth: true
-                        readonly property var lines: win.warningLines(win.result)
-                        visible: lines.length > 0
-                        text: lines.join("\n")
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.butter
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt
-                        wrapMode: Text.WrapAnywhere
+                        title: "Ostrzeżenia"
+                        titleColor: Tide.Tokens.butter
+                        rowColor: Tide.Tokens.butter
+                        rows: win.warningLines(win.result)
+                        maxListHeight: 120
                     }
                     Text {
                         objectName: "mergeWindowConsent"

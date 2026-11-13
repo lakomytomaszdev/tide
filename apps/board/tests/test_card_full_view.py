@@ -703,9 +703,14 @@ for index, result in enumerate(variants):
     until(lambda: not obj("mergeWindow").property("busy"))
     out["texts"].append(obj("mergeWindowDetails").property("text"))
     out["states"].append(obj("mergeWindowState").property("text"))
-    out["conflicts"].append([obj("mergeWindowConflicts").property("visible"), obj("mergeWindowConflicts").property("text")])
-    out["blocked"].append([obj("mergeWindowBlocked").property("visible"), obj("mergeWindowBlocked").property("text")])
-    out["warnings"].append(obj("mergeWindowWarnings").property("text"))
+    def section(name):
+        engine.rootContext().setContextProperty("probeTarget", obj(name))
+        return [obj(name).property("visible"), obj(name).property("title"),
+                json.loads(js("JSON.stringify(probeTarget.rows)"))]
+    out["conflicts"].append(section("mergeWindowConflicts"))
+    out["blocked"].append(section("mergeWindowBlocked"))
+    out["warnings"].append(section("mergeWindowWarnings")[2])
+    out.setdefault("lists", []).append([section("mergeWindowCommits"), section("mergeWindowFiles")])
     out["enabled"].append(obj("mergeWindowMerge").property("enabled"))
     if index % 2:
         key(Qt.Key.Key_Escape)
@@ -723,19 +728,24 @@ out["calls"] = calls()
             self.assertIn(result["sourceRef"], text)
             self.assertIn(result["targetRef"], text)
             self.assertIn("Lokalne kolizje: nieocenione", text)
-        self.assertIn("commit 45", out["texts"][0])
-        self.assertIn("file-464.txt", out["texts"][0])
-        # Minimalny podgląd (PT-390): stan zdaniem, pliki w konflikcie i powody blokady jako zwykły tekst.
-        self.assertEqual(out["states"], ["Można scalić", "Konflikty w 2 plikach", "Scalenie zablokowane",
+        # Sekcje podglądu (PT-403): pełne listy commitów i plików, stan zdaniem, konflikty i zdania blokad.
+        (commits, files) = out["lists"][0]
+        self.assertEqual([commits[1], files[1]], ["Wnoszone commity (46)", "Pliki (465)"])
+        self.assertEqual(commits[2][-1], "0000000  commit 45")
+        self.assertEqual(files[2][-1], "A  file-464.txt")
+        self.assertEqual(out["states"], ["Można scalić", "Konflikty w 2 plikach",
+                                         "Scalenie zablokowane: Karta i cel nie mają wspólnej historii, więc nie da się ich scalić.",
                                          "Można scalić"])
-        self.assertEqual(out["conflicts"][1], [True, "Pliki w konflikcie:\nconflict-a.txt\nconflict-b.txt"])
+        self.assertEqual(out["conflicts"][1], [True, "Konflikty (2)", ["conflict-a.txt", "conflict-b.txt"]])
         self.assertFalse(out["conflicts"][0][0])
-        self.assertEqual(out["blocked"][2], [True, "Brak wspólnej historii"])
+        self.assertEqual(out["blocked"][2][2], ["Karta i cel nie mają wspólnej historii, więc nie da się ich scalić."])
+        self.assertTrue(out["blocked"][2][0])
         self.assertFalse(out["blocked"][0][0])
         self.assertIn("Kod: unrelated-history", out["texts"][2])
-        self.assertEqual(out["warnings"][0], "Lokalne kolizje nie zostały ocenione.")
+        self.assertEqual(out["warnings"][0], ["Lokalne kolizje nie zostały ocenione."])
         self.assertEqual(out["enabled"], [False] * 4, "bez previewToken przycisk scalenia jest nieaktywny")
-        self.assertIn("Wnoszone commity (0)", out["texts"][3])
+        self.assertFalse(out["lists"][3][0][0], "puste listy: sekcja commitów znika")
+        self.assertFalse(out["lists"][3][1][0], "puste listy: sekcja plików znika")
 
     def test_merge_preview_shows_local_collisions_and_allows_unrelated_staged(self):
         data = full_d(self.data)
@@ -771,6 +781,10 @@ for result in variants:
     out["texts"].append(obj("mergeWindowDetails").property("text"))
     out["consents"].append(obj("mergeWindowConsent").property("text"))
     out["enabled"].append(obj("mergeWindowMerge").property("enabled"))
+    engine.rootContext().setContextProperty("probeTarget", obj("mergeWindowCollisions"))
+    out.setdefault("collisions", []).append([obj("mergeWindowCollisions").property("visible"),
+                                             obj("mergeWindowCollisions").property("title"),
+                                             json.loads(js("JSON.stringify(probeTarget.rows)"))])
     click(named("mergeWindowClose"))
 out["calls"] = calls()
 ''', data)
@@ -780,11 +794,14 @@ out["calls"] = calls()
         for text, consent in zip(out["texts"], out["consents"]):
             self.assertIn("Nie stanowi zgody", consent)
             self.assertNotIn("odcisk-stanu", text + consent)
-        self.assertIn("Kolizje staged (indeks) (1)", out["texts"][0])
-        self.assertIn("Kolizje unstaged (poza indeksem) (1)", out["texts"][0])
-        self.assertIn("Kolizje untracked (nieśledzone) (1)", out["texts"][0])
+        visible, title, rows = out["collisions"][0]
+        self.assertTrue(visible)
+        self.assertEqual(title, "Kolizje z lokalną pracą (3)")
+        self.assertEqual([r for r in rows if not r.startswith("   ")],
+                         ["Staged (w indeksie) (1):", "Unstaged (poza indeksem) (1):", "Untracked (nieśledzone) (1):"])
         for path in ("index.txt", "work.txt", "new.txt"):
-            self.assertIn(path, out["texts"][0])
+            self.assertTrue(any(path in row for row in rows), path)
+        self.assertFalse(out["collisions"][1][0], "bez kolizji sekcja znika (staged niezwiązane nie blokują)")
         self.assertIn("Lokalne kolizje: 0", out["texts"][1])
         self.assertIn("Odczyt nie wykazał blokad", out["texts"][1])
 

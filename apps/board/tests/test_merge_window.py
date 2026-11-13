@@ -88,7 +88,7 @@ def item(name):
     """Tekst, widoczność i aktywność elementu po objectName (także niewidocznego)."""
     text = js("(function () { const all = " + ALL.replace("it.visible", "true") + "; "
               "const it = all(loader.item, " + json.dumps(name) + ")[0]; return it ? JSON.stringify("
-              "{text: it.text, visible: it.visible, enabled: it.enabled}) : '' })()")
+              "{text: it.text, visible: it.visible, enabled: it.enabled, title: it.title, rows: it.rows}) : '' })()")
     return json.loads(text) if text else None
 
 def open_window(card="K-12", ref="refs/heads/master", branch="master"):
@@ -124,6 +124,18 @@ def open_choosing(base=""):
     js("loader.item.contextKey = 'K-12:p:/repo'")
     open_window(ref="", branch="")
     wait(60)
+
+def non_plain_texts():
+    """objectName-y elementów tekstowych całego okna (także wierszy list), które nie są zwykłym tekstem."""
+    return json.loads(js("(function () { const out = []; (function walk(it) { if (!it) return; "
+                         "if (typeof it.textFormat === 'number' && it.textFormat !== 0) out.push(it.objectName || '?'); "
+                         "for (const c of it.children) walk(c); if (it.contentItem) walk(it.contentItem) })(loader.item); "
+                         "return JSON.stringify(out) })()"))
+
+def section_rows(name):
+    """Wiersze, tytuł i widoczność sekcji podglądu po objectName (także niewidocznej)."""
+    found = item(name)
+    return found and {"visible": found["visible"], "title": found["title"], "rows": found["rows"]}
 
 def visible_texts():
     return json.loads(js("(function () { const out = []; (function walk(it) { if (!it) return; "
@@ -491,10 +503,7 @@ for fixture in fixtures:
                                                        "mergeWindowWarnings", "mergeWindowDetails", "mergeWindowConsent")})
 click("mergeWindowDetailsToggle")
 out["detailsOpen"] = item("mergeWindowDetails")["visible"]
-out["formats"] = js("(function () { const all = " + ALL.replace("it.visible", "true") + "; const names = "
-    "['mergeWindowTarget', 'mergeWindowStart', 'mergeWindowState', 'mergeWindowError', 'mergeWindowConflicts', "
-    "'mergeWindowBlocked', 'mergeWindowWarnings', 'mergeWindowConsent', 'mergeWindowDetails']; "
-    "return JSON.stringify(names.map(n => all(loader.item, n)[0].textFormat)) })()")
+out["formats"] = non_plain_texts()
 ''')
         self.assertEqual(out["header"], ["K-12 → release/<b>x", "Scal do release/<b>x"])
         self.assertEqual(out["loading"], "Przygotowuję podgląd…")
@@ -502,22 +511,22 @@ out["formats"] = js("(function () { const all = " + ALL.replace("it.visible", "t
         self.assertEqual(clean_row["mergeWindowState"]["text"], "Można scalić")
         self.assertFalse(clean_row["mergeWindowConflicts"]["visible"])
         self.assertFalse(clean_row["mergeWindowBlocked"]["visible"])
-        self.assertEqual(clean_row["mergeWindowWarnings"]["text"], "Lokalne kolizje nie zostały ocenione.")
+        self.assertEqual(clean_row["mergeWindowWarnings"]["rows"], ["Lokalne kolizje nie zostały ocenione."])
         self.assertFalse(clean_row["mergeWindowDetails"]["visible"], "„Szczegóły” są domyślnie zwinięte")
         for sha in ("a" * 40, "b" * 40, "c" * 40):
             self.assertIn(sha, clean_row["mergeWindowDetails"]["text"])
         self.assertIn("Nie stanowi zgody", clean_row["mergeWindowConsent"]["text"])
         self.assertNotIn("token-1", json.dumps(clean_row))
         self.assertEqual(conflict_row["mergeWindowState"]["text"], "Konflikty w 3 plikach")
-        self.assertEqual(conflict_row["mergeWindowConflicts"]["text"],
-                         "Pliki w konflikcie:\na/<b>x</b>.txt\nb.txt\nc.txt")
+        self.assertEqual(conflict_row["mergeWindowConflicts"]["title"], "Konflikty (3)")
+        self.assertEqual(conflict_row["mergeWindowConflicts"]["rows"], ["a/<b>x</b>.txt", "b.txt", "c.txt"])
         self.assertIn("Kod: conflict", conflict_row["mergeWindowDetails"]["text"])
         self.assertEqual(single_row["mergeWindowState"]["text"], "Konflikt w 1 pliku")
-        self.assertEqual(blocked_row["mergeWindowState"]["text"], "Scalenie zablokowane")
-        self.assertEqual(blocked_row["mergeWindowBlocked"]["text"],
-                         "Cel należy do czynnego kroku\nW worktree celu są zmiany")
+        generic = "Scalenie jest zablokowane z powodu, którego to okno nie zna — szczegóły (kod) są niżej."
+        self.assertEqual(blocked_row["mergeWindowState"]["text"], "Scalenie zablokowane: " + generic)
+        self.assertEqual(blocked_row["mergeWindowBlocked"]["rows"], [generic], "nieznane kody: jedno ogólne zdanie")
         self.assertTrue(out["detailsOpen"])
-        self.assertEqual(json.loads(out["formats"]), [0] * 9, "wszystkie teksty z gita jako PlainText")
+        self.assertEqual(out["formats"], [], "wszystkie teksty z gita jako PlainText")
 
     def test_start_line_target_tooltip_and_changes_signal(self):
         out = self.probe(r'''
@@ -554,6 +563,211 @@ out["geometry"] = json.loads(js("(function () { const all = " + ALL + "; const w
         for name in ("merge", "close"):
             self.assertGreaterEqual(geometry[name][0], geometry["scroll"][1] - 1, name)
             self.assertLessEqual(geometry[name][1], geometry["height"], name)
+
+
+SECTION_NAMES = ("mergeWindowBlocked", "mergeWindowConflicts", "mergeWindowCollisions", "mergeWindowPreparation",
+                 "mergeWindowCommits", "mergeWindowFiles", "mergeWindowWarnings")
+GENERIC_REASON = "Scalenie jest zablokowane z powodu, którego to okno nie zna — szczegóły (kod) są niżej."
+ENGINE = os.path.join(REPO, "daemon", "tide_daemon", "cardflow", "engine.py")
+GITOPS = os.path.join(REPO, "daemon", "tide_daemon", "cardflow", "gitops.py")
+# Kody `reason`/`blockedReasons` z `PreviewCardMerge` (docs/tide-daemon.md, „PreviewCardMerge”; PT-199, PT-204, PT-206, PT-210).
+KNOWN_CODES = ("conflict", "unrelated-history", "git-capability", "git-error", "no-sandbox", "state-changed",
+               "base-decision", "not-closed", "active-step", "plan-change", "base-change", "pending-action",
+               "card-target", "protected-target", "no-target-worktree", "target-path-occupied", "target-name-occupied",
+               "source-dirty", "git-operation", "local-collision", "local-unassessed")
+
+RICH = {**PREVIEW, "canMerge": False, "previewToken": "", "reason": "conflict", "message": "Konflikty",
+        "targetRef": "refs/heads/release/<b>x", "targetBranch": "release/<b>x",
+        "blockedReasons": [{"reason": "conflict", "message": "Konflikty"},
+                           {"reason": "active-step", "message": "Krok karty jest jeszcze czynny."},
+                           {"reason": "local-collision", "message": "Lokalna praca koliduje."}],
+        "commits": [{"sha": "1234567" + "a" * 33, "subject": "Dodaj <b>okno</b> & %s"},
+                    {"sha": "7654321" + "b" * 33, "subject": "Druga zmiana"}], "commitCount": 2,
+        "files": [{"status": "M", "oldPath": "a.txt", "newPath": "a.txt"},
+                  {"status": "R100", "oldPath": "old/<i>n</i>.txt", "newPath": "new/n.txt"},
+                  {"status": "A", "oldPath": "", "newPath": "we ird\tna\nme%s&amp;.txt"}], "fileCount": 3,
+        "conflicts": ["a.txt", "<u>b</u>.txt"], "conflictCount": 2,
+        "localCollisions": {"staged": [{"status": "M ", "paths": ["x.txt"], "mergePaths": ["x.txt"]}],
+                            "unstaged": [],
+                            "untracked": [{"status": "??", "paths": ["u\tv.txt"], "mergePaths": ["u\tv.txt", "w.txt"]}]},
+        "localCollisionCount": 2,
+        "targetPreparation": {"createRef": True, "createWorktree": True, "startCommit": "d" * 40,
+                              "remoteRef": "refs/remotes/team/f", "remoteCommit": "d" * 40, "path": "/tmp/wt <1>"},
+        "warnings": ["Uwaga <b>1</b>"]}
+
+
+class SectionsTest(MergeWindowCase):
+    def test_sections_show_for_fixtures_with_data_and_vanish_for_empty_lists(self):
+        out = self.probe("rich = " + repr(RICH) + "\nnames = " + repr(SECTION_NAMES) + r'''
+open_window(ref="refs/heads/release/<b>x", branch="")
+answer(last("preview")[1], rich)
+out["rich"] = {n: section_rows(n) for n in names}
+out["state"] = item("mergeWindowState")["text"]
+out["formats"] = non_plain_texts()
+click("mergeWindowDetailsToggle")
+out["details"] = item("mergeWindowDetails")["text"]
+win("refresh()")
+answer(last("preview")[1], {**PREVIEW, "targetRef": "refs/heads/release/<b>x"})
+out["empty"] = {n: section_rows(n)["visible"] for n in names}
+out["emptyState"] = item("mergeWindowState")["text"]
+''')
+        rich = out["rich"]
+        self.assertEqual(out["state"], "Konflikty w 2 plikach")
+        self.assertEqual(rich["mergeWindowCommits"]["title"], "Wnoszone commity (2)")
+        self.assertEqual(rich["mergeWindowCommits"]["rows"], ["1234567  Dodaj <b>okno</b> & %s", "7654321  Druga zmiana"])
+        self.assertEqual(rich["mergeWindowFiles"]["title"], "Pliki (3)")
+        self.assertEqual(rich["mergeWindowFiles"]["rows"],
+                         ["M  a.txt", "R100  old/<i>n</i>.txt → new/n.txt", "A  we ird\\tna\\nme%s&amp;.txt"])
+        self.assertEqual(rich["mergeWindowConflicts"]["title"], "Konflikty (2)")
+        self.assertEqual(rich["mergeWindowConflicts"]["rows"], ["a.txt", "<u>b</u>.txt"])
+        self.assertEqual(rich["mergeWindowCollisions"]["title"], "Kolizje z lokalną pracą (2)")
+        self.assertEqual(rich["mergeWindowCollisions"]["rows"],
+                         ["Staged (w indeksie) (1):", "   M   x.txt · scalenie: x.txt",
+                          "Untracked (nieśledzone) (1):", "   ??  u\\tv.txt · scalenie: u\\tv.txt, w.txt"])
+        self.assertEqual(rich["mergeWindowPreparation"]["title"], "Po zgodzie Tide przygotuje")
+        self.assertEqual(rich["mergeWindowPreparation"]["rows"],
+                         ["Nowa gałąź refs/heads/release/<b>x od refs/remotes/team/f", "Nowy worktree /tmp/wt <1>"])
+        self.assertEqual(rich["mergeWindowWarnings"]["rows"], ["Uwaga <b>1</b>"])
+        self.assertEqual(rich["mergeWindowBlocked"]["rows"],
+                         ["Zmiany karty kolidują z celem — rozwiąż konflikty w plikach z listy.",
+                          "Trwa krok karty — poczekaj na jego koniec.",
+                          "Lokalna praca w celu koliduje ze ścieżkami scalenia."])
+        for name in SECTION_NAMES:
+            self.assertTrue(rich[name]["visible"], name)
+        self.assertEqual(out["formats"], [], "teksty z gita (także z <b> i znakami specjalnymi) jako PlainText")
+        for expected in ("SHA źródła: " + "a" * 40, "SHA celu: " + "b" * 40, "Drzewo wyniku: " + "c" * 40,
+                         "[conflict]", "[active-step]", "[local-collision]"):
+            self.assertIn(expected, out["details"])
+        self.assertNotIn("1234567", out["details"], "commity i pliki są w sekcjach, nie w „Szczegółach”")
+        self.assertEqual(out["empty"], {name: False for name in SECTION_NAMES}, "puste listy: sekcje znikają")
+        self.assertEqual(out["emptyState"], "Można scalić")
+
+    def test_conflict_preview_has_no_conflict_task_button_or_properties(self):
+        out = self.probe("rich = " + repr(RICH) + r'''
+open_window()
+answer(last("preview")[1], {**rich, "targetRef": "refs/heads/master"})
+out["state"] = item("mergeWindowState")["text"]
+out["texts"] = visible_texts()
+out["props"] = json.loads(js("(function () { const out = []; for (const k in loader.item) out.push(k); "
+                             "return JSON.stringify(out) })()"))
+''')
+        self.assertEqual(out["state"], "Konflikty w 2 plikach")
+        self.assertIn("canConfirm", out["props"], "kontrola: wyliczanie właściwości komponentu działa")
+        self.assertEqual([t for t in out["texts"] if "Zleć" in t or "rozwiązanie konfliktów" in t.lower()], [])
+        self.assertEqual([k for k in out["props"] if k.lower().startswith("conflicttask")], [])
+
+    def test_collision_and_preparation_sections_follow_their_own_data(self):
+        out = self.probe("rich = " + repr(RICH) + r'''
+open_window(ref="refs/heads/release/<b>x", branch="")
+only_ref = {**rich, "localCollisions": {"staged": [], "unstaged": [], "untracked": []}, "localCollisionCount": 0,
+            "targetPreparation": {"createRef": True, "createWorktree": False, "startCommit": "d" * 40,
+                                  "remoteRef": "", "remoteCommit": "", "path": ""}}
+answer(last("preview")[1], only_ref)
+out["refOnly"] = [section_rows("mergeWindowPreparation")["rows"], section_rows("mergeWindowCollisions")["visible"]]
+win("refresh()")
+answer(last("preview")[1], {**only_ref, "targetPreparation": {"createRef": False, "createWorktree": True,
+                                                                "path": "/tmp/own"}})
+out["worktreeOnly"] = section_rows("mergeWindowPreparation")["rows"]
+win("refresh()")
+answer(last("preview")[1], {k: v for k, v in only_ref.items() if k not in ("localCollisions", "targetPreparation")})
+out["none"] = [section_rows("mergeWindowPreparation")["visible"], section_rows("mergeWindowCollisions")["visible"]]
+''')
+        self.assertEqual(out["refOnly"], [["Nowa gałąź refs/heads/release/<b>x"], False])
+        self.assertEqual(out["worktreeOnly"], ["Nowy worktree /tmp/own"])
+        self.assertEqual(out["none"], [False, False])
+
+    def test_every_known_blocked_code_has_a_polish_sentence_and_unknown_code_is_generic(self):
+        out = self.probe("codes = " + repr(list(KNOWN_CODES) + ["nowy-kod-z-przyszlosci"]) + r'''
+open_window()
+out["rows"] = {}
+for code in codes:
+    win("refresh()")
+    answer(last("preview")[1], {**PREVIEW, "canMerge": False, "previewToken": "", "reason": code, "message": "Usługa: " + code,
+                                "blockedReasons": [{"reason": code, "message": "Usługa: " + code}]})
+    click("mergeWindowDetailsToggle") if not item("mergeWindowDetails")["visible"] else None
+    out["rows"][code] = [section_rows("mergeWindowBlocked")["rows"], item("mergeWindowState")["text"],
+                         item("mergeWindowDetails")["text"]]
+''')
+        for code in KNOWN_CODES:
+            rows, state, details = out["rows"][code]
+            self.assertEqual(len(rows), 1, code)
+            self.assertNotEqual(rows[0], GENERIC_REASON, code)
+            self.assertTrue(rows[0].endswith("."), code)
+            self.assertNotIn(code, rows[0], "kod tylko w „Szczegółach”")
+            self.assertIn("[" + code + "]", details)
+            if code != "conflict":
+                self.assertEqual(state, "Scalenie zablokowane: " + rows[0], code)
+        rows, state, details = out["rows"]["nowy-kod-z-przyszlosci"]
+        self.assertEqual(rows, [GENERIC_REASON])
+        self.assertNotIn("nowy-kod", rows[0] + state)
+        self.assertIn("[nowy-kod-z-przyszlosci]", details)
+
+    def test_known_codes_match_the_codes_the_service_can_return(self):
+        # Docs (`tide-daemon.md`) opisują tylko 7 kodów; pełną listę gwarantuje porównanie z kodem usługi poniżej.
+        found = set()
+        with open(ENGINE, encoding="utf-8") as fh:
+            engine = fh.read()
+        with open(GITOPS, encoding="utf-8") as fh:
+            gitops = fh.read()
+        def between(text, start, end):
+            head = text.index(start)
+            return text[head:text.index(end, head + len(start))]
+
+        # Tylko kod, który buduje podgląd scalenia: kwalifikacja domknięcia i celu, przygotowanie celu oraz merge-tree.
+        engine = (between(engine, "    def _merge_target_blocks(", "    def ") + "\n"
+                  + between(engine, "    def _card_merge_blocks(", "    def request_card_base_change(") + "\n"
+                  + between(engine, "    def preview_card_merge(", "    def merge_card("))
+        gitops = between(gitops, "    def prepare_merge_tree(", "    def repository_key(")
+        found.update(re.findall(r'\bblock\("([a-z-]+)"', engine))
+        found.update(re.findall(r'reasons\.append\(\("([a-z-]+)"', engine))
+        found.update(re.findall(r'"reason": "([a-z-]+)"', engine))
+        found.update(re.findall(r'\breason ?= ?"([a-z-]+)"', engine + gitops))
+        found.update(re.findall(r'"([a-z-]+)" if \w+\.code', gitops))
+        found.update(re.findall(r'else "([a-z-]+)"', gitops))
+        self.assertEqual(sorted(found - set(KNOWN_CODES)), [], "kod usługi bez zdania w oknie scalania")
+        for code in KNOWN_CODES:
+            self.assertIn('"' + code + '"', engine + gitops, code)
+        with open(os.path.join(REPO, "docs", "tide-daemon.md"), encoding="utf-8") as fh:
+            docs = fh.read()
+        for code in ("conflict", "unrelated-history", "git-capability", "git-error", "no-sandbox", "local-collision",
+                     "no-target-worktree"):
+            self.assertIn(code, docs, code)
+        with open(WINDOW_QML, encoding="utf-8") as fh:
+            source = fh.read()
+        for code in KNOWN_CODES:
+            self.assertIn('"' + code + '":', source, code)
+
+    def test_long_file_and_commit_lists_scroll_inside_their_sections_and_buttons_stay_visible(self):
+        big = {**PREVIEW, "files": [{"status": "M", "oldPath": "dir/plik-%d.txt" % i, "newPath": "dir/plik-%d.txt" % i}
+                                    for i in range(500)], "fileCount": 500,
+               "commits": [{"sha": ("%07x" % i) + "0" * 33, "subject": "Commit %d" % i} for i in range(500)],
+               "commitCount": 500}
+        out = self.probe("big = " + repr(big) + r'''
+open_window()
+answer(last("preview")[1], big)
+wait(150)
+out["geometry"] = json.loads(js("(function () { const all = " + ALL + "; const w = loader.item; "
+    "const f = n => { const it = all(w, n)[0]; const p = it.mapToItem(w, 0, 0); return [p.y, p.y + it.height] }; "
+    "const lists = n => { const it = all(w, n)[0]; return [it.height, it.contentHeight, it.count] }; "
+    "return JSON.stringify({merge: f('mergeWindowMerge'), close: f('mergeWindowClose'), refresh: f('mergeWindowRefresh'), "
+    "height: w.height, scroll: f('mergeWindowScroll'), files: lists('mergeWindowFilesList'), "
+    "commits: lists('mergeWindowCommitsList')}) })()"))
+out["merge"] = item("mergeWindowMerge")
+out["titles"] = [section_rows("mergeWindowFiles")["title"], section_rows("mergeWindowCommits")["title"]]
+''')
+        geometry = out["geometry"]
+        for name in ("merge", "close", "refresh"):
+            self.assertGreaterEqual(geometry[name][0], geometry["scroll"][1] - 1, name)
+            self.assertLessEqual(geometry[name][1], geometry["height"], name)
+        self.assertTrue(out["merge"]["visible"])
+        self.assertTrue(out["merge"]["enabled"], "długie listy nie zmieniają warunków aktywności „Scal do”")
+        self.assertEqual(out["merge"]["text"], "Scal do master")
+        self.assertEqual(out["titles"], ["Pliki (500)", "Wnoszone commity (500)"])
+        for name in ("files", "commits"):
+            height, content, count = geometry[name]
+            self.assertLessEqual(height, 160 + 1, name + ": lista ma górną granicę wysokości")
+            self.assertGreater(content, height, name + ": reszta wierszy przewija się w sekcji")
+            self.assertGreater(count, 0, name)
 
 
 class SourceTest(unittest.TestCase):
