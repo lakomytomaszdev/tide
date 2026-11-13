@@ -1,0 +1,581 @@
+{
+  "capturedAt": "2026-11-13T19:28:23Z",
+  "card": "K-99",
+  "cardBranch": {
+    "name": "card/k-99-git-tide-mapa-galezi",
+    "sha": "0e246b51b251bbc560eddc9e819421311a866cfa"
+  },
+  "dbusCalls": [
+    [
+      "Snapshot",
+      ""
+    ],
+    [
+      "ListCardBranches",
+      "K-34"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-34"
+    ],
+    [
+      "ListCardBranches",
+      "K-37"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-37"
+    ],
+    [
+      "ListCardBranches",
+      "K-69"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-69"
+    ],
+    [
+      "ListCardBranches",
+      "K-78"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-78"
+    ],
+    [
+      "ListCardBranches",
+      "K-88"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-88"
+    ],
+    [
+      "ListCardBranches",
+      "K-91"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-91"
+    ],
+    [
+      "ListCardBranches",
+      "K-92"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-92"
+    ],
+    [
+      "ListCardBranches",
+      "K-97"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-97"
+    ],
+    [
+      "ListCardBranches",
+      "K-56"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-56"
+    ],
+    [
+      "ListCardBranches",
+      "K-99"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-99"
+    ],
+    [
+      "ListCardBranches",
+      "K-100"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-100"
+    ],
+    [
+      "ListCardBranches",
+      "K-104"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-104"
+    ],
+    [
+      "ListCardBranches",
+      "K-107"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-107"
+    ],
+    [
+      "ListCardBranches",
+      "K-112"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-112"
+    ],
+    [
+      "ListCardBranches",
+      "K-33"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-33"
+    ],
+    [
+      "ListCardBranches",
+      "K-35"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-35"
+    ],
+    [
+      "ListCardBranches",
+      "K-36"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-36"
+    ],
+    [
+      "ListCardBranches",
+      "K-38"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-38"
+    ],
+    [
+      "ListCardBranches",
+      "K-39"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-39"
+    ],
+    [
+      "ListCardBranches",
+      "K-50"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-50"
+    ],
+    [
+      "ListCardBranches",
+      "K-54"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-54"
+    ],
+    [
+      "ListCardBranches",
+      "K-55"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-55"
+    ],
+    [
+      "ListCardBranches",
+      "K-59"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-59"
+    ],
+    [
+      "ListCardBranches",
+      "K-60"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-60"
+    ],
+    [
+      "ListCardBranches",
+      "K-62"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-62"
+    ],
+    [
+      "ListCardBranches",
+      "K-64"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-64"
+    ],
+    [
+      "ListCardBranches",
+      "K-67"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-67"
+    ],
+    [
+      "ListCardBranches",
+      "K-68"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-68"
+    ],
+    [
+      "ListCardBranches",
+      "K-71"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-71"
+    ],
+    [
+      "ListCardBranches",
+      "K-73"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-73"
+    ],
+    [
+      "ListCardBranches",
+      "K-98"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-98"
+    ],
+    [
+      "ListCardBranches",
+      "K-101"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-101"
+    ],
+    [
+      "ListCardBranches",
+      "K-102"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-102"
+    ],
+    [
+      "ListCardBranches",
+      "K-103"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-103"
+    ],
+    [
+      "ListCardBranches",
+      "K-105"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-105"
+    ],
+    [
+      "ListCardBranches",
+      "K-113"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-113"
+    ],
+    [
+      "ListCardBranches",
+      "K-114"
+    ],
+    [
+      "PreviewCardMerge",
+      "K-114"
+    ]
+  ],
+  "gitStatus": {
+    "board": {
+      "after": [],
+      "before": [
+        " M flow/K-112/journal.jsonl",
+        " M flow/K-99/journal.jsonl",
+        "?? flow/K-112/steps/K-112-PT-464-19/",
+        "?? flow/K-99/steps/K-99-PT-471-2/"
+      ],
+      "unchanged": false
+    },
+    "repo": {
+      "after": [
+        " M widgets/lib/ScenesCard.qml",
+        " M widgets/stream/desk/contents/ui/motion/README.md",
+        " M widgets/stream/desk/contents/ui/motion/alert.webp",
+        " M widgets/stream/desk/contents/ui/motion/peek.webp",
+        " M widgets/stream/desk/contents/ui/motion/raid.webp",
+        " M widgets/stream/desk/contents/ui/motion/transition.webp",
+        "?? docs/public-release-grill-brief.md"
+      ],
+      "before": [
+        " M widgets/lib/ScenesCard.qml",
+        " M widgets/stream/desk/contents/ui/motion/README.md",
+        " M widgets/stream/desk/contents/ui/motion/alert.webp",
+        " M widgets/stream/desk/contents/ui/motion/peek.webp",
+        " M widgets/stream/desk/contents/ui/motion/raid.webp",
+        " M widgets/stream/desk/contents/ui/motion/transition.webp",
+        "?? docs/public-release-grill-brief.md"
+      ],
+      "unchanged": true
+    }
+  },
+  "listCardBranches": {
+    "branches": 100,
+    "defaultTargetRef": "refs/heads/master",
+    "request": {
+      "limit": 100,
+      "purpose": "merge"
+    }
+  },
+  "mapNodes": {
+    "base": 1,
+    "card": 37,
+    "ticket": 261,
+    "unknown-base": 1
+  },
+  "mapTotal": 298,
+  "mapTruncated": false,
+  "preview": {
+    "blockedReasons": [
+      {
+        "message": "Konflikty w drzewie scalenia.",
+        "reason": "conflict"
+      },
+      {
+        "message": "Karta nie ma aktualnego domknięcia.",
+        "reason": "not-closed"
+      },
+      {
+        "message": "Krok karty jest jeszcze czynny.",
+        "reason": "active-step"
+      },
+      {
+        "message": "Zmiana planu czeka na zakończenie lub decyzję.",
+        "reason": "plan-change"
+      }
+    ],
+    "canMerge": false,
+    "commitCount": 102,
+    "conflictCount": 2,
+    "fileCount": 65
+  },
+  "previewRequest": {
+    "targetRef": "refs/heads/master"
+  },
+  "project": "plasma-tide",
+  "request": {
+    "limit": 500,
+    "project": "plasma-tide"
+  },
+  "selection": {
+    "card": "K-99",
+    "fileCount": 65,
+    "reviewed": [
+      {
+        "card": "K-34",
+        "error": "merge-preview"
+      },
+      {
+        "canMerge": false,
+        "card": "K-37",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-69",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-78",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-88",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-91",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-92",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-97",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-56",
+        "fileCount": 15
+      },
+      {
+        "canMerge": false,
+        "card": "K-99",
+        "fileCount": 65
+      },
+      {
+        "canMerge": false,
+        "card": "K-100",
+        "fileCount": 45
+      },
+      {
+        "canMerge": false,
+        "card": "K-104",
+        "fileCount": 16
+      },
+      {
+        "canMerge": false,
+        "card": "K-107",
+        "fileCount": 20
+      },
+      {
+        "canMerge": false,
+        "card": "K-112",
+        "fileCount": 32
+      },
+      {
+        "card": "K-33",
+        "error": "merge-preview"
+      },
+      {
+        "card": "K-35",
+        "error": "merge-preview"
+      },
+      {
+        "canMerge": true,
+        "card": "K-36",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-38",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-39",
+        "fileCount": 0
+      },
+      {
+        "card": "K-50",
+        "error": "merge-preview"
+      },
+      {
+        "canMerge": false,
+        "card": "K-54",
+        "fileCount": 0
+      },
+      {
+        "card": "K-55",
+        "error": "merge-preview"
+      },
+      {
+        "canMerge": false,
+        "card": "K-59",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-60",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-62",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-64",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-67",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-68",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-71",
+        "fileCount": 0
+      },
+      {
+        "canMerge": false,
+        "card": "K-73",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-98",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-101",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-102",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-103",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-105",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-113",
+        "fileCount": 0
+      },
+      {
+        "canMerge": true,
+        "card": "K-114",
+        "fileCount": 0
+      }
+    ],
+    "step": 3,
+    "threshold": 100
+  },
+  "target": "refs/heads/master",
+  "worktreeHead": "b714f31a741d28e02377827b4394023d6eb38406"
+}
