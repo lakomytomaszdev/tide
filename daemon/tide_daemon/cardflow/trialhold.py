@@ -98,6 +98,43 @@ def process_state(journal, card, phase=None, *, fresh=False):
     return events, copy_state(st)
 
 
+NETWORK = "network"     # nazwa pamięci filtra prób uzgadniania sieci (`Journal.derive_events`, K-113 PT-466)
+
+
+def _network_filter(events, whole):
+    """Filtr prób K-38 uzgadniania sieci pudełek: (zdarzenia bez wstrzymanych prób i chronionych tożsamości, stan z nich
+    złożony). Bez pominiętych zdarzeń stan to stan procesu karty `whole`; nowe złożenie tylko dla historii z próbami."""
+    protected = {name for name, identity in whole.process_identities.items()
+                 if identity.held and isinstance(name, str)}
+    kept = tuple(e for e in events if not held(e) and e.get("step") not in protected
+                 and e.get("key") not in protected)
+    return kept, (whole if len(kept) == len(events) else fold(list(kept)))
+
+
+def network_state(journal, card, phase=None, *, fresh=False):
+    """Historia karty dla uzgadniania sieci pudełek (K-113 PT-466): (zdarzenia historii ścisłej, zdarzenia bez prób K-38
+    i chronionych tożsamości, `FlowState` z nich złożony).
+
+    Bez `fresh` wynik filtra jest pamiętany według wersji dziennika karty — ten sam klucz i mechanizm co stan procesu
+    karty (`Journal.derive_events`, osobna pamięć `NETWORK`), więc dopisanie (także spoza procesu), ucięcie, podmiana
+    pliku, własny zapis i usunięcie karty z rejestru dają nowe wyliczenie. Filtr jest liczony zawsze z dokładnie tych
+    zdarzeń, które wołający dostaje jako pierwszą pozycję (odczyt fazy ticku albo pamięć historii procesów), bez
+    dodatkowego odczytu dziennika. Błąd odczytu i nieznana tożsamość propagują i nie trafiają do pamięci (w fazie ticku
+    zostają błędem tej fazy). Wołający dostaje własne listy i kopię stanu (`copy_state`); zdarzenia i wartości
+    zagnieżdżone są tylko do odczytu. Pamięć niczego nie autoryzuje: mutacje porównują historię świeżo
+    (`HistoryPhase.unchanged`). `fresh=True` — świeży pełny odczyt i nowe wyliczenie bez pamięci."""
+    if fresh or getattr(type(journal), "derive_events", None) is None:
+        events, whole = process_state(journal, card, phase, fresh=fresh)
+        kept, st = _network_filter(events, whole)
+        return events, list(kept), st
+    if phase is not None:
+        events, whole = phase.history(card, lambda: _remembered(journal, card))
+    else:
+        events, whole = _remembered(journal, card)
+    kept, st = journal.derive_events(card, events, lambda current: _network_filter(current, whole), slot=NETWORK)
+    return list(events), list(kept), copy_state(st)
+
+
 class HistoryPhase:
     """Jedna niezmienna faza odczytu historii procesów w ticku (K-98 #3, PT-344).
 

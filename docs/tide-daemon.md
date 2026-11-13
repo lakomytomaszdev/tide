@@ -885,6 +885,68 @@ Wnioski z reproduktora (nie są oceną produkcji):
 - **Niespełniony próg to ważny wynik, nie błąd pomiaru**: nie daje domknięcia z akceptacją i jest otwartym blokerem M0,
   dopóki pomiar produkcji nie pokaże ≤ 30 % w każdym oknie w obu ustawieniach `box.enabled`.
 
+### Zmiany K-113 i wyniki przed/po K-113 (PT-468, 13.11.2026)
+
+K-113 usuwa z ciepłego ticku dwa koszty wskazane przez PT-414 (filtr prób sieci i wczytanie Tablicy). Krótki spis,
+opisy pełne w akapitach „Przepływ karty: „Od razu” (PT-58)” i w sekcji o odczytach w ticku:
+
+- **PT-466 (K-113 #2) — pamięć filtra prób uzgadniania sieci** (`trialhold.network_state`, `Journal.derive_events(…,
+  slot="network")`): `boxstep.recover_network` nie przelicza `trialpolicy.blocked_event` co tick; akapit „Pamięć filtra
+  prób uzgadniania sieci (K-113 PT-466)”.
+- **PT-467 (K-113 #3) — pamięć wczytania Tablicy w kontekście ticku** (`BoardStore.load_for_tick`, odcisk wejść): ten
+  sam `Board` przy niezmienionych wejściach, bez transakcji i bez parsowania; akapit „Pamięć wczytania Tablicy
+  w kontekście ticku (K-113 #3, PT-467)”.
+- **PT-469 (K-113 #5) — odczyty ticku na pamięci wczytania**: odczyty bez skutku czytają z kontekstu ticku, bramki
+  i wejścia skutku zostają świeże; akapit „Odczyty Tablicy w ticku: kontekst ticku i świeże bramki (K-113 #5, PT-469)”.
+
+Pomiar „po” (PT-468) to ta sama procedura co w PT-414: `build-data`, potem `measure after false` i `measure after true`,
+każde osobnym poleceniem w oknie ciszy. Strona „po”: SHA `e399342c7381684afb2dba10927c6f2bbd1687eb` (gałąź karty z PT-466,
+PT-467 i PT-469). Dane: 46 kart, 63,2 MB, budowa 52,9 s. „Przed” pochodzi z `docs/agents/masterplan/2026-11-13/pomiar-k113-przed.json`
+(PT-465, strona „przed” `b6e65ce030f9a930d72f856bddf111b403a617cc`, pierwsza ważna próba): nie mierzono go ponownie.
+Próg: **każde okno ≤ 30 %** rdzenia (16 rdzeni, limit loadavg 8,0). Wynik reproduktora jest wskaźnikiem.
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed K-113, `box.enabled=false` | 1 | ważna | 45,12; 44,87; 53,48; 44,02; 44,68; 44,52; 53,30; 45,33; 46,13; 46,65 | 46,81 / 53,48 | **niespełniony** (10 z 10 okien) |
+| przed K-113, `box.enabled=true` | 2 (1 nieważna: loadavg po 16,55) | ważna | 48,60; 48,55; 46,67; 48,47; 49,45; 49,92; 46,17; 48,30; 49,40; 46,55 | 48,21 / 49,92 | **niespełniony** (10 z 10 okien) |
+| po K-113, `box.enabled=false` | 1 | ważna | 10,48; 10,68; 10,23; 10,47; 10,48; 10,03; 10,83; 10,05; 10,12; 12,70 | 10,61 / 12,70 | **spełniony** (0 z 10 okien ponad 30 %) |
+| po K-113, `box.enabled=true` | 2 (1 nieważna: loadavg po 21,57) | ważna | 10,73; 10,45; 10,13; 10,72; 10,70; 10,23; 10,15; 10,22; 10,43; 13,02 | 10,68 / 13,02 | **spełniony** (0 z 10 okien ponad 30 %) |
+
+Spadek CPU całego procesu: `false` 46,81 → 10,61 % (−36,2 pkt, ok. −77 %), `true` 48,21 → 10,68 % (−37,5 pkt, ok. −78 %).
+Względem „po” K-105 z tabeli PT-414 (45,55 % i 45,33 %) różnica to ok. −35 pkt w obu ustawieniach.
+
+Diagnostyka bez progu (osobne okno po oknach CPU):
+
+| Konfiguracja | `engine.tick` (udział / próbki na s) | CPU wątku przepływu | `Snapshot` p95 | `RssAnon` przed → po | `VmHWM` |
+|---|---|---|---|---|---|
+| przed K-113, `false` | 0,090 / 31,0 | 46,1 % | 190 ms | 559,7 → 615,2 MB | 694,9 MB |
+| przed K-113, `true` | 0,105 / 34,5 | 47,4 % | 273 ms | 571,9 → 566,1 MB | 602,4 MB |
+| po K-113, `false` | 0,024 / 9,3 | 10,1 % | 10,6 ms | 538,4 → 578,7 MB | 654,4 MB |
+| po K-113, `true` | 0,026 / 9,3 | 10,2 % | 11,6 ms | 553,0 → 624,0 MB | 679,4 MB |
+
+- **`blocked_event` zniknęło z ciepłego ticku.** Przed K-113 `boxstep.recover_network › trialhold.held ›
+  trialpolicy.blocked_event` zajmowało 1330 (`false`) i 1484 (`true`) z 1860 i 2071 próbek `engine.tick` (ok. 72 %);
+  po K-113 `recover_network` ma 14 i 13 próbek z 560 i 558 (ok. 2,5 %), a `trialpolicy.blocked_event` i `re.search` nie
+  pojawiają się wśród najcięższych ramek raportu próbnika (listy czasu własnego i łącznego, najczęstsze stosy).
+- **`store.load` nie zniknęło.** Liczba próbek jest ta sama co przed K-113 (373 i 362 wobec 360 i 407), ale po spadku
+  całego ticku to teraz jego główna ścieżka: ok. 67 % (`false`) i 65 % (`true`) próbek `engine.tick` wobec ok. 19–20 %.
+  To zgodne z opisem PT-469: bramki `_plan_next`, `_planning_branch` i `_plan_on_board` czytają Tablicę świeżo.
+  Dalsza optymalizacja tej ścieżki nie jest potrzebna do progu w reproduktorze; to kandydat na osobny ticket,
+  jeśli pomiar produkcji pokaże koszt.
+- **Próbnik procesów** (`processes.probe`, przy `true` ok. 5 % próbek przed K-113) nie występuje wśród najcięższych ramek „po”.
+- **Pamięć** (bez progu): w oknie diagnostyki `RssAnon` rośnie o 40 MB (`false`) i 71 MB (`true`); jedna próba nie
+  wystarcza do wniosku o trendzie, a pamięć nie jest progiem.
+- **Reproduktor nie zastępuje produkcji.** Spełniony próg w reproduktorze nie oznacza „Gotowe (M0)”.
+
+### Procedura produkcji po instalacji K-113 (właściciel)
+
+Po `make install` gałęzi karty K-113 właściciel powtarza pomiar produkcji tak samo jak po K-105 (kroki 1–5 niżej):
+`/usr/bin/python3 scripts/measure_idle_prod.py --out ~/pomiar-k113-box-<false|true>.json` **dla obu wartości
+`box.enabled`**, przełączanych przez właściciela (skrypt ich nie zmienia). **Domknięcie karty K-113 kończy się pytaniem
+do właściciela o wynik produkcji.** Wynik ponad progiem (okno ponad 30 % w którymkolwiek ustawieniu, `Snapshot` p95
+≥ 1 s albo zatwierdzenie planu ≥ 10 s) jest **otwartym blokerem M0**, także gdy reproduktor pokazał ≤ 30 %. Ocena
+reproduktora (wyżej) nie zastępuje tego wyniku.
+
 ### Procedura produkcji po instalacji (właściciel)
 
 Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, nie zmienia konfiguracji (także
@@ -2668,8 +2730,8 @@ historia, ani jako „brak zmian”. Wpisy znikają razem z pamięcią ścisłą
 `Journal.state`, wspólna funkcja `state.copy_state`). Z pamięci korzystają wyłącznie odczyty bez skutku: faza ticku
 (`HistoryPhase` jest widokiem jednego ticku nad pamięcią; zapamiętany błąd fazy nadal rzucany w obrębie fazy),
 bariera `_outside_history(card)`, inwentaryzacja K-38, `_recover_started_steps` z fazy (zapis przez `Journal.unchanged`),
-`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; nowy `fold`
-tylko dla historii z pominiętymi próbami K-38; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
+`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; filtr prób
+K-38 z pamięci według wersji dziennika od K-113 PT-466, akapit niżej; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
 przy `box.enabled=true` (`box/lifecycle.tick`, `active_steps`, `packs.cleanup` — ta sama pamięć ścisła PT-411 co przed
 PT-415, teraz bez nowego `fold` co tick), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`,
 `_recover_console_openings`) oraz czekanie na polecenie outside i próbę testów po scaleniu (`_outside_ready`,
@@ -2685,6 +2747,25 @@ Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.h
 inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
 Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
+
+**Pamięć filtra prób uzgadniania sieci (K-113 PT-466).** `boxstep.recover_network` bierze z
+`trialhold.network_state` wynik filtra prób K-38 karty: zdarzenia bez wstrzymanych prób (`trialhold.held`) i bez
+chronionych tożsamości oraz stan z nich złożony (nowy `fold` tylko, gdy coś pominięto). Wynik jest pamiętany w osobnej
+pamięci wartości wyliczonych (`Journal.derive_events(…, slot="network")`) według tej samej wersji dziennika co pamięć
+PT-411/PT-415 (wpis pamięci ścisłego odczytu i jego `JournalVersion`: dev/ino/rozmiar/mtime/ctime/`generation`/seq) —
+nie według samego licznika zapisów procesu. Filtr jest liczony zawsze z dokładnie tych zdarzeń, które dała faza ticku,
+bez dodatkowego odczytu dziennika; zdarzenia innej wersji niż bieżący wpis pamięci ścisłej dają wyliczenie bez zapisu.
+Granice unieważnienia: dopisanie (także spoza procesu, np. inna kopia usługi albo Tablica), ucięcie i podmiana pliku
+(nowy i-węzeł, inny rozmiar lub `ctime`), zapis tego procesu, okresowy pełny odczyt i usunięcie karty z rejestru
+(`forget_except`) dają nowe wyliczenie tylko dla tej karty. Błąd odczytu i nieznana tożsamość nie trafiają do pamięci
+(w fazie zostają błędem tej fazy): karta nie dostaje zwolnień, refguard ani polityk sieci w tym i kolejnych tickach,
+dopóki historia jest zła. Pamięć niczego nie autoryzuje — każda mutacja (porty, refguard, zasoby kroku, polityka sieci)
+dalej wymaga świeżego porównania `HistoryPhase.unchanged`; wywołanie bez fazy (odtworzenie zamiaru startu) czyta
+świeżo bez pamięci. Wołający dostaje własne listy i kopię stanu (`copy_state`). Uzgadnianie nie jest wyłączane flagą
+`box.enabled`: kroki pudełka sprzed wyłączenia dostają zwolnienie zasobów i refguard jak dotąd. Rozpoznanie próby
+(`trialpolicy.blocked_event`) to jedno wyrażenie skompilowane przy wczytaniu modułu (alternatywa numerów
+`LEGACY | EXCLUDED`, te same granice co dawna reguła); moduł nadal nie importuje pakietu usługi, bo launcher Konsoli
+wczytuje go przez `runpy`. Rozgrzany tick bez zmian w dziennikach nie ocenia prób w uzgadnianiu sieci dla żadnej karty.
 
 **Pętla odtwarzania na początku ticku (K-105 PT-459).** `FlowEngine._replay_starts` obejmuje każdą kartę z dziennikiem
 (także zakończoną) i bierze jej historię oraz stan procesu karty z fazy ticku (`trialhold.process_state` z
@@ -4619,6 +4700,40 @@ Tablicę (kontrakt #1). Ścieżki ze skutkiem ubocznym (`moved`, start i wznowie
 świeżo jak dotąd. Pomiar: `daemon/tests/perf_tick_recovery.py` (restart z żywym właścicielem, martwym procesem
 i stanem unknown; liczniki pełnych odczytów i wczytań Tablicy; porównanie bazy z HEAD:
 `daemon/tests/perf_tick_recovery_compare.sh`).
+
+**Pamięć wczytania Tablicy w kontekście ticku (K-113 #3, PT-467).** Kontekst ticku wczytuje Tablicę przez
+`BoardStore.load_for_tick`: gdy **odcisk wejść** `load()` jest równy odciskowi ostatniego udanego wczytania tą drogą,
+zwraca ten sam `Board` (tylko do odczytu, dzielony przez kolejne ticki) bez transakcji, bez czytania treści plików
+i bez parsowania. Odcisk (`_load_fingerprint`) obejmuje `store.generation` (zapis w tym procesie), `realpath` katalogu
+Tablicy, plik znacznika `board.md`, nazwy w `tags/`, `projects/` i `cards/`, `lstat` tych katalogów i każdego
+czytanego pliku (`st_dev`, `st_ino`, typ i prawa, właściciel, `st_size`, `st_mtime_ns`, `st_ctime_ns`; dla dowiązania
+także `realpath` i `stat` celu — od nich zależy granica „tylko pliki wewnątrz Tablicy”), katalog i
+`projects/<slug>/box.yaml` każdego projektu, ścieżkę i metadane magazynu zatwierdzeń kontraktów testów (plik
+i katalog) oraz błędy magazynu zatwierdzeń z kroków (`approval_for_step`, stan w pamięci). Odcisk nie czyta treści
+i nie robi `realpath` dla zwykłych plików. Podmiana pliku przy tym samym rozmiarze i przestawionym z powrotem mtime
+zmienia `st_ctime_ns` (zapis w miejscu) albo `st_ino` (podmiana przez rename). Pamięć jest pomijana (zwykłe `load()`
+w każdym ticku), gdy czeka nieodtworzona intencja akceptacji zgłoszenia (`.git/tide-acceptances/*.json` — odtwarza ją
+transakcja `load()`), gdy `lstat` daje błąd inny niż brak pliku, albo gdy któryś wpis zmienił się (ctime) w ostatnich
+50 ms (`_RACY_NS`): kolejna zmiana w tej samej ziarnistości znaczników czasu mogłaby nie zmienić odcisku — jak
+„racily clean” w gicie. Pola projektu wyliczane ze stanu spoza Tablicy (brak repozytorium, domyślne `ai-docs`
+z `docs/agents`) są sprawdzane przy każdym trafieniu; różnica daje świeże wczytanie. Inny odcisk albo brak pamięci
+to zwykłe `load()`: ta sama transakcja (z odtworzeniem intencji), te same błędy i granica `_inside` przy każdym
+świeżym wczytaniu; wpis pamięci dostaje odcisk sprzed wczytania (zmiana w trakcie wczytania daje kolejne wczytanie),
+a błąd wczytania nie jest pamiętany. Każda zmiana Tablicy — GUI, `git`, ręczna edycja, zapis w procesie — daje
+świeże wczytanie w następnym kontekście ticku. Publiczne `load()`, transakcje zapisu i kontekst odświeżenia
+`Snapshot` (#1) pamięci nie używają.
+
+**Odczyty Tablicy w ticku: kontekst ticku i świeże bramki (K-113 #5, PT-469).** Z kontekstu ticku (pamięć #3) czytają
+odczyty w `tick`/`_tick_card` bez skutku: wykrycie ruchu karty (sam zapis `moved` czyta świeżo), `_project_read` przed
+wznowieniem startu, `_project_base` (gdy pola bazy już są), `_queue_notices`, `_guard_card`, `_caretake`,
+`_tracker_notes`, `RestMemory.begin` i kolejność kroków (`_order_board`). Świeże `store.load()` (przez `_project` bez
+kontekstu) zostają jako bramki albo wejścia skutku: `_plan_next` (limit ticketów, repozytorium dla commita planu,
+gałęzi ticketu i `_launch`), `_planning_branch` (nazwa gałęzi karty dla `card-branch`), `_plan_on_board` (`ai-docs`
+decyduje o commicie planu), `_outside_recheck_rules` i `consent.automatic` (zgody), a także zapis ruchu karty, start
+kroku i `upsert_project`. Ciepły tick karty z zatwierdzonym planem robi więc nadal trzy pełne wczytania (`_plan_next`,
+`_planning_branch`, `_plan_on_board`; ramki próbnika `pomiar-k113-przed.json`). Ich przeniesienie na kontekst ticku
+wymaga zmiany kilku metod silnika (rozstrzygnięcie „nic do zrobienia” z kontekstu, świeży odczyt tylko przed skutkiem);
+decyzja o osobnym tickecie zapada po pomiarze „po” (PT-468).
 
 **Odczyty podczas zajętej kolejki mutacji (K-98 #2, PT-343).** Kolejka mutacji (jednowątkowy worker `tide-cardflow`)
 pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:

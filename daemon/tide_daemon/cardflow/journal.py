@@ -107,6 +107,9 @@ class Journal:
         # K-105 PT-415: wartość wyliczona z historii ścisłej karty (`derive`): karta → (wpis pamięci ścisłego odczytu,
         # jego wersja, wartość). Bez własnej kopii zdarzeń — ważna, dopóki pamięć ścisła ma ten sam wpis i wersję.
         self._derived: dict[str, tuple] = {}
+        # K-113 PT-466: osobne pamięci wartości wyliczonych (`derive(…, slot=…)`) — nazwa → (karta → ta sama krotka co
+        # w `_derived`). Pusta nazwa to `_derived` (stan procesu karty); każda pamięć znika razem z kartą.
+        self._derived_slots: dict[str, dict[str, tuple]] = {"": self._derived}
         self.lock = threading.RLock()
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
@@ -311,34 +314,55 @@ class Journal:
                 return entry.version, list(entry.events)
             return self._loose_version(card, events), events
 
-    def derive(self, card: str, compute):
+    def derive(self, card: str, compute, slot: str = ""):
         """Ścisły odczyt (`read_complete`) i wartość `compute(zdarzenia)` pamiętana dla wersji dziennika (K-105 PT-415).
 
         Klucz to wpis pamięci ścisłego odczytu i jego `JournalVersion` (z `st_ctime_ns` i `generation`): trafienie
         wymaga, by odczyt zwrócił zdarzenia tego samego wpisu (te same obiekty), więc nowa wersja, przyrost, okresowy
         pełny odczyt, własny zapis albo luźna wersja (plik zmieniany w trakcie czytania) dają nowe wyliczenie. Błąd
         odczytu albo `compute` usuwa wpis karty i propaguje — nie zostaje jako wartość ani jako „brak zmian”.
-        Zwraca (zdarzenia, wartość); wartość jest wspólna — wołający jej nie zmienia (kopiuje u siebie)."""
+        Zwraca (zdarzenia, wartość); wartość jest wspólna — wołający jej nie zmienia (kopiuje u siebie).
+
+        `slot` (K-113 PT-466): nazwa osobnej pamięci dla innej wartości z tej samej historii (np. filtr prób
+        uzgadniania sieci); ta sama reguła wersji i unieważnienia co pamięć domyślna."""
         with self._strict():
-            hit = self._derived.pop(card, None)
+            memory = self._derived_slots.setdefault(slot, {})
+            hit = memory.pop(card, None)
             events = self.read_complete(card)
+            if hit is not None:
+                memory[card] = hit
+            return events, self.derive_events(card, events, compute, slot)
+
+    def derive_events(self, card: str, events: list, compute, slot: str = ""):
+        """`compute(events)` pamiętane dla wersji dziennika jak w `derive`, ale dla zdarzeń już odczytanych (np. z fazy
+        odczytu ticku), bez ponownego odczytu pliku (K-113 PT-466).
+
+        Pamięć działa tylko wtedy, gdy `events` to dokładnie zdarzenia bieżącego wpisu pamięci ścisłego odczytu (te same
+        obiekty, ta sama długość) — wtedy ich wersją jest `JournalVersion` tego wpisu (dev/ino/rozmiar/mtime/ctime/
+        `generation`/seq). Inne zdarzenia (starszy odczyt, luźna wersja, brak wpisu) dają wyliczenie bez zapisu. Wartość
+        jest funkcją samych `events`; to nie jest potwierdzenie, że plik nadal ma tę treść (mutacje czytają świeżo).
+        Błąd `compute` usuwa wpis karty i propaguje."""
+        with self._strict():
+            memory = self._derived_slots.setdefault(slot, {})
+            hit = memory.pop(card, None)
             entry = self._strict_memory.get(card)
             same = (entry is not None and len(events) == len(entry.events)
                     and (not events or events[-1] is entry.events[-1]))
             if hit is not None and same and hit[0] is entry and hit[1] == entry.version:
-                self._derived[card] = hit
-                return events, hit[2]
+                memory[card] = hit
+                return hit[2]
             value = compute(events)
             if same:
-                self._derived[card] = (entry, entry.version, value)
-            return events, value
+                memory[card] = (entry, entry.version, value)
+            return value
 
     def forget_except(self, cards) -> None:
         """Usuwa wpisy pamięci ścisłego odczytu, kontroli zgodności (PT-416) i wartości wyliczonych z pamięci ścisłej
-        (`derive`, PT-415) kart spoza `cards` (K-105 #2: początek ticku, karta usunięta)."""
+        (`derive`, PT-415, także nazwane pamięci K-113 PT-466) kart spoza `cards` (K-105 #2: początek ticku, karta
+        usunięta)."""
         keep = set(cards)
         with self.lock:
-            for memory in (self._strict_memory, self._check_memory, self._derived):
+            for memory in (self._strict_memory, self._check_memory, *self._derived_slots.values()):
                 for card in [c for c in memory if c not in keep]:
                     del memory[card]
 
@@ -425,7 +449,8 @@ class Journal:
         self._generations[card] = self._generations.get(card, 0) + 1
         self._strict_memory.pop(card, None)
         self._check_memory.pop(card, None)
-        self._derived.pop(card, None)
+        for memory in self._derived_slots.values():
+            memory.pop(card, None)
         self._cache.pop(card, None)
         self._states.pop(card, None)
 

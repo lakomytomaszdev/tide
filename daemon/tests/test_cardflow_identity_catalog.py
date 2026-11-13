@@ -501,9 +501,13 @@ BARRIERS = {
         denial="PackError przed device_remove", effect="incus.device_remove własnych paczek",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_packs_cleanup_removes_only_own_devices"]),
     "box-network": dict(
-        consumers=[("cardflow/boxstep.py", "recover_network")],
+        # K-113 PT-466: filtr prób K-38 uzgadniania sieci pamiętany według wersji dziennika; `recover_network` bierze
+        # go z `network_state` (delegacja tej bariery, DELEGATIONS).
+        consumers=[("cardflow/trialhold.py", "network_state"), ("cardflow/trialhold.py", "_network_filter")],
         denial="held → bez odtworzenia polityki sieci", effect="odtworzenie polityki proxy kroku",
-        negative=[f"{M}:BoxNetworkRecovery.test_unknown_history_releases_nothing_across_restart"],
+        negative=[f"{M}:BoxNetworkRecovery.test_unknown_history_releases_nothing_across_restart",
+                  "daemon.tests.test_cardflow_trial_network_memory:NetworkMemoryTest."
+                  "test_unreadable_history_or_unknown_identity_is_not_remembered_and_has_no_effects"],
         positive=[f"{M}:BoxNetworkRecovery.test_valid_history_releases_own_ended_step_and_orphan_reservation_across_restart",
                   "daemon.tests.test_cardflow_box_ports:PortPlacementTest.test_recovered_start_preserves_owner_and_releases_ports_when_finished"]),
 }
@@ -696,6 +700,8 @@ DELEGATIONS = {
     ("cardflow/historyaudit_driver.py", "main"): "model",
     # K-105 PT-415: stan procesu karty — jedno wywołanie zamiast fold(read_process_history(…)).
     ("cardflow/trialhold.py", "process_state"): "model",
+    # K-113 PT-466: uzgadnianie sieci bierze filtr prób z `network_state` (pamięć według wersji dziennika).
+    ("cardflow/boxstep.py", "recover_network"): "box-network",
     ("cardflow_monitor.py", "CardFlowMonitor.enter_step"): "console",
     ("cardflow_monitor.py", "CardFlowMonitor.moved"): "advance-resume",
     ("cardflow_monitor.py", "CardFlowMonitor.report_step_fault"): "console",

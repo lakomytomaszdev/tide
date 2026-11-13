@@ -543,19 +543,13 @@ def recover_network(engine, history=None) -> None:
             # Nieznana lub niespójna historia karty: bez zwolnień, refguard ani polityk sieci.
             # K-105 PT-415: stan procesu karty (model tożsamości i fold) z pamięci według wersji dziennika, gdy mutacje
             # porównuje świeżo faza ticku (`fresh`); bez fazy (odtworzenie zamiaru startu) świeży odczyt bez pamięci.
-            events, whole = trialhold.process_state(engine.journal, card, history, fresh=history is None)
-            basis[card] = events
+            # K-113 PT-466: tak samo filtr prób K-38 — zachowujemy rezerwacje i migawki dawnych prób (odtwarzanie nie
+            # może uruchamiać refguard.finish ani zwalniać WIP po zwykłym done), a zdarzenia bez prób i chronionych
+            # tożsamości oraz stan z nich złożony pochodzą z pamięci według wersji dziennika karty. Ciepły tick bez
+            # zmian dziennika nie ocenia prób ponownie; mutacje niżej i tak wymagają `fresh(card)`.
+            basis[card], events, st = trialhold.network_state(engine.journal, card, history, fresh=history is None)
         except (OSError, ValueError, TypeError, KeyError):
             continue
-        # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
-        # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
-        protected = {name for name, identity in whole.process_identities.items()
-                     if identity.held and isinstance(name, str)}
-        kept = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
-                and e.get("key") not in protected]
-        # Bez pominiętych zdarzeń stan jest stanem procesu karty; nowe złożenie tylko dla historii z próbami K-38.
-        st = whole if len(kept) == len(events) else fold(kept)
-        events = kept
         # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
         # oznacza, że nie uruchomiono procesu. Nie dotykamy rezerwacji trwającego zamiaru.
         for event in events:
