@@ -12,6 +12,7 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
 import "git" as Git
+import "git/start.js" as Start
 import "board.js" as Logic
 import "card/decision.js" as Decision
 
@@ -184,12 +185,13 @@ Rectangle {
         mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
         mergeTargets.open()
     }
+    // Okno scalania (K-99, PT-390) z celem tylko do odczytu: domyślny cel z panelu i pełnej karty albo cel wybrany
+    // w MergeTargetPicker. Okno samo prosi o podgląd (`previewRequested`); zgodę wysyła tylko jego „Scal do <cel>”.
     function previewMerge(cardId, target, targetRef) {
-        const tag = nextTag("preview-merge:" + cardId)
-        mergePreview.show(tag, cardId, target)
-        mergePreview.contextKey = mergeContext(cardId)
-        mergePreview.targetRef = targetRef || "refs/heads/" + target
-        previewMergeRequested(tag, cardId, JSON.stringify({targetRef: mergePreview.targetRef}))
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        mergeWindow.contextKey = mergeContext(cardId)
+        mergeWindow.startLine = card && card.derived ? Start.cardStartLine(card.derived.flow) : ""
+        mergeWindow.open(cardId, targetRef || "refs/heads/" + target, target)
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -410,7 +412,8 @@ Rectangle {
 
     function closeDiff() {
         diffOpen = false
-        page.forceActiveFocus()
+        if (mergeWindow.opened) mergeWindow.forceActiveFocus()   // „Zmiany gałęzi” z okna scalania wracają do okna
+        else page.forceActiveFocus()
     }
 
     // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
@@ -934,23 +937,10 @@ Rectangle {
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
         } else if (tag.indexOf("diff:") === 0) {
             return   // odpowiedź `Git.Diff` odbiera sam widok diffa (DiffView), nie Tablica
-        } else if (tag.indexOf("preview-merge:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            mergePreview.result = error ? null : reply
-            if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
-        } else if (tag.indexOf("merge-card:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            if (error) {
-                // Ponowna zgoda wymaga nowego odczytu; stary przycisk nie może ponowić mutacji.
-                mergePreview.result = null
-            } else {
-                mergePreview.close()
-                showToast("Karta scalona do " + reply.targetBranch + ".", "mint")
-            }
+        } else if (tag.indexOf("preview-merge:") === 0 || tag.indexOf("merge-card:") === 0) {
+            // Okno samo pomija odpowiedź z innym tagiem niż bieżące żądanie (stary podgląd, zamknięte okno).
+            const merged = mergeWindow.receive(tag, error, reply)
+            if (merged) showToast(merged + ".", "mint")
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -974,7 +964,7 @@ Rectangle {
         refreshColumnSpecs()
         optimistic = []
         if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
-        if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
+        if (mergeWindow.opened && mergeWindow.contextKey !== mergeContext(mergeWindow.cardId)) mergeWindow.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
             const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
@@ -2135,15 +2125,23 @@ Rectangle {
         onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
 
-    MergePreview {
-        id: mergePreview
-        parent: page
+    // Okno scalania (wspólny komponent git/MergeWindow.qml): Tablica tylko przekłada sygnały na wywołania usługi.
+    Git.MergeWindow {
+        id: mergeWindow
+        anchors.fill: parent
         z: 60
-        onConfirmRequested: request => {
-            requestTag = page.nextTag("merge-card:" + cardId)
-            page.mergeRequested(requestTag, cardId, JSON.stringify(request))
+        onPreviewRequested: targetRef => {
+            const tag = page.nextTag("preview-merge:" + cardId)
+            track(tag)
+            page.previewMergeRequested(tag, cardId, JSON.stringify({targetRef: targetRef}))
         }
-        onRefreshRequested: page.previewMerge(cardId, targetBranch, targetRef)
+        onMergeRequested: request => {
+            const tag = page.nextTag("merge-card:" + cardId)
+            track(tag)
+            page.mergeRequested(tag, cardId, JSON.stringify(request))
+        }
+        onChangesRequested: cardId => page.openDiff(cardId)
+        onClosed: page.forceActiveFocus()
     }
     MergeTargetPicker {
         id: mergeTargets
@@ -2247,6 +2245,7 @@ Rectangle {
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
             if (page.diffOpen) page.closeDiff()
+            else if (mergeWindow.opened) mergeWindow.close()
             else if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()

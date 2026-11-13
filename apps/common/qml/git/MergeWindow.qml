@@ -1,0 +1,421 @@
+// Okno scalania (K-99, PT-390): wspólny komponent obok widoku diffa, osadzany jako nakładka na całe okno gospodarza
+// (Tablica dziś, Worktrees w K-99 #10). Daje strefę celu (tylko do odczytu), minimalny podgląd z odpowiedzi
+// `PreviewCardMerge` i rząd przycisków, który zawsze jest widoczny. Pełne sekcje podglądu dokłada K-99 #18,
+// wybór celu w oknie — #6.
+//
+// Kontrakt zgody. Komponent nie woła D-Bus i nie zna strony gospodarza: dane dostaje przez właściwości i funkcje,
+// a gospodarz odbiera sygnały:
+//  - `previewRequested(targetRef)` — gospodarz wysyła `PreviewCardMerge` z nowym tagiem i woła `track(tag)`;
+//  - `mergeRequested({targetRef, previewToken})` — jedyna zgoda: pola bieżącego podglądu, tylko po kliknięciu
+//    „Scal do <cel>” przy `canMerge === true` i niepustym `previewToken`; gospodarz wysyła `MergeCard`
+//    z nowym tagiem i woła `track(tag)`;
+//  - `changesRequested(cardId)` — „Zmiany gałęzi” (widok diffa karty z K-36);
+//  - `closed()` — okno zamknięte (Zamknij, Escape, `close()` przy zmianie kontekstu karty albo po scaleniu).
+// Odpowiedź usługi gospodarz oddaje przez `receive(tag, błąd, odpowiedź)`; odpowiedź z innym tagiem niż bieżące
+// żądanie (stare odświeżenie, okno zamknięte w międzyczasie) jest pomijana. Zamknięcie, Escape i „Odśwież” nigdy
+// nie wysyłają zgody. Po błędzie scalenia przycisk scalenia jest zablokowany do nowego, udanego podglądu.
+// Teksty z gita (nazwy gałęzi, ścieżki, powody) są zwykłym tekstem (Text.PlainText).
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls as QQC2
+import "../tide" as Tide
+import "start.js" as Start
+
+FocusScope {
+    id: win
+    objectName: "mergeWindow"
+    visible: opened
+
+    // --- dane od gospodarza ---
+    property bool opened: false
+    property string cardId: ""
+    property string targetRef: ""          // pełny ref celu (podpowiedź nad nazwą)
+    property string targetBranch: ""       // krótka nazwa celu; po podglądzie z odpowiedzi usługi
+    property string startLine: ""          // „Start od: …” karty (git/start.js, cardStartLine); pusta — bez linii
+    property string contextKey: ""        // klucz kontekstu karty gospodarza: jego zmiana zamyka okno (robi to gospodarz)
+    property bool changesAvailable: true   // „Zmiany gałęzi” (gospodarz bez widoku diffa może ukryć)
+
+    // --- stan żądania i podglądu ---
+    property string requestTag: ""         // tag bieżącego żądania (od gospodarza przez `track`)
+    property string pending: ""            // "preview" | "merge" | "" — na co czeka okno
+    readonly property bool busy: pending !== ""
+    property string error: ""
+    property var result: null              // ostatnia udana odpowiedź `PreviewCardMerge`
+    property bool mergeLocked: false       // po błędzie scalenia: do nowego udanego podglądu
+    property bool detailsOpen: false
+    readonly property bool canConfirm: opened && !busy && !mergeLocked && !!result && result.canMerge === true
+                                       && typeof result.previewToken === "string" && result.previewToken !== ""
+    readonly property string targetName: targetBranch || Start.shortRef(targetRef)
+
+    signal previewRequested(string targetRef)
+    signal mergeRequested(var request)
+    signal changesRequested(string cardId)
+    signal closed()
+
+    // Otwiera okno dla karty i celu (cel tylko do odczytu) i od razu prosi o podgląd.
+    function open(card, ref, branch) {
+        cardId = card
+        targetRef = ref
+        targetBranch = branch || ""
+        result = null
+        error = ""
+        mergeLocked = false
+        detailsOpen = false
+        opened = true
+        forceActiveFocus()
+        // Okno otwarte z wyskakującego wybieraka celu: zamykany Popup oddaje fokus poprzedniemu elementowi — odbierz go.
+        Qt.callLater(() => { if (win.opened) win.forceActiveFocus() })
+        refresh()
+    }
+
+    // Nowy podgląd. Nie w trakcie scalenia: tag scalenia musi zostać, żeby odpowiedź `MergeCard` dotarła.
+    function refresh() {
+        if (!opened || pending === "merge") return
+        result = null
+        error = ""
+        requestTag = ""
+        pending = "preview"
+        previewRequested(targetRef)
+    }
+
+    // Jedyna droga do zgody: klik w „Scal do <cel>” z polami bieżącego podglądu.
+    function confirm() {
+        if (!canConfirm) return
+        const r = result
+        const request = { targetRef: typeof r.targetRef === "string" && r.targetRef !== "" ? r.targetRef : targetRef,
+                          previewToken: r.previewToken }
+        requestTag = ""
+        pending = "merge"
+        mergeRequested(request)
+    }
+
+    // Gospodarz przypina tag żądania, które właśnie wysłał.
+    function track(tag) {
+        if (pending !== "") requestTag = tag
+    }
+
+    // Odpowiedź usługi; zwraca komunikat sukcesu scalenia („Scalono K-12 do master”) albo "".
+    function receive(tag, errorText, reply) {
+        if (!opened || !tag || tag !== requestTag) return ""
+        const kind = pending
+        pending = ""
+        requestTag = ""
+        if (kind === "preview") {
+            error = errorText || ""
+            result = errorText ? null : reply
+            if (!errorText) {
+                mergeLocked = false
+                if (reply && typeof reply.targetBranch === "string" && reply.targetBranch !== "")
+                    targetBranch = reply.targetBranch
+            }
+            return ""
+        }
+        if (kind !== "merge") return ""
+        if (errorText) {
+            // Ponowna zgoda wymaga nowego odczytu; stary podgląd nie może ponowić mutacji.
+            error = errorText
+            result = null
+            mergeLocked = true
+            return ""
+        }
+        const message = "Scalono " + cardId + " do "
+                        + (reply && typeof reply.targetBranch === "string" && reply.targetBranch !== ""
+                           ? reply.targetBranch : targetName)
+        close()
+        return message
+    }
+
+    function close() {
+        if (!opened) return
+        opened = false
+        pending = ""
+        requestTag = ""
+        result = null
+        error = ""
+        mergeLocked = false
+        detailsOpen = false
+        closed()
+    }
+
+    // --- treść podglądu (czyste funkcje, testowane sondą) ---
+
+    function stateText() {
+        if (pending === "preview") return "Przygotowuję podgląd…"
+        if (pending === "merge") return "Scalam…"
+        const r = result
+        if (!r) return error ? (mergeLocked ? "Scalenie nie powiodło się" : "Podgląd nieudany") : ""
+        if (r.canMerge === true) return "Można scalić"
+        const conflicts = conflictPaths(r).length || Number(r.conflictCount) || 0
+        if (conflicts > 0) return conflicts === 1 ? "Konflikt w 1 pliku" : "Konflikty w " + conflicts + " plikach"
+        return "Scalenie zablokowane"
+    }
+
+    function conflictPaths(r) {
+        return r && Array.isArray(r.conflicts) ? r.conflicts.map(p => String(p)) : []
+    }
+
+    function blockedLines(r) {
+        const out = []
+        if (r && r.canMerge !== true && r.message) out.push(String(r.message))
+        for (const b of (r && Array.isArray(r.blockedReasons) ? r.blockedReasons : []))
+            if (b && (b.message || b.reason)) out.push(String(b.message || b.reason))
+        return out
+    }
+
+    function warningLines(r) {
+        return r && Array.isArray(r.warnings) ? r.warnings.map(w => String(w)) : []
+    }
+
+    // „Szczegóły”: SHA źródła i celu, drzewo wyniku, kody oraz reszta dotychczasowej treści `MergePreview`
+    // (przygotowanie celu, kolizje lokalne, commity, pliki). Czytelne sekcje zamiast tego tekstu dokłada K-99 #18.
+    function detailsText(r) {
+        if (!r) return ""
+        const lines = ["Źródło: " + (r.sourceRef || ""), "SHA źródła: " + (r.sourceCommit || ""),
+                       "Cel: " + (r.targetRef || targetRef), "SHA celu: " + (r.targetCommit || ""),
+                       "Drzewo wyniku: " + (r.resultTree || "nieprzygotowane"),
+                       "Worktree celu: " + (r.targetWorktree || "") + (r.targetWorktreeExists === false
+                                                                      ? " (jeszcze nie istnieje)" : "")]
+        if (r.reason) lines.push("Kod: " + r.reason)
+        for (const b of r.blockedReasons || []) lines.push("Blokada: " + b.message + " [" + b.reason + "]")
+        lines.push(r.localCollisions && typeof r.localCollisions === "object"
+                   ? "Lokalne kolizje: " + r.localCollisionCount + ". " + (r.canMerge
+                     ? "Odczyt nie wykazał blokad scalenia." : "Scalenie jest zablokowane.")
+                   : "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione.")
+        if (r.targetPreparation) {
+            const p = r.targetPreparation
+            lines.push("", "Commit startu celu: " + p.startCommit)
+            if (p.createRef) lines.push("Po zgodzie: utwórz " + (r.targetRef || targetRef) + " od " + p.remoteRef,
+                                        "SHA remote: " + p.remoteCommit)
+            if (p.createWorktree) lines.push("Po zgodzie: utwórz własny worktree " + p.path)
+        }
+        if (r.localCollisions && typeof r.localCollisions === "object") {
+            const labels = { staged: "staged (indeks)", unstaged: "unstaged (poza indeksem)",
+                             untracked: "untracked (nieśledzone)" }
+            for (const kind of ["staged", "unstaged", "untracked"]) {
+                const entries = r.localCollisions[kind] || []
+                lines.push("", "Kolizje " + labels[kind] + " (" + entries.length + "):")
+                for (const entry of entries)
+                    lines.push(entry.status + "  " + entry.paths.join(" ← ") + " · scalenie: " + entry.mergePaths.join(", "))
+            }
+        }
+        lines.push("", "Wnoszone commity (" + (r.commitCount || 0) + ") — cel..karta:")
+        for (const c of r.commits || []) lines.push(c.sha + "  " + c.subject)
+        lines.push("", "Zmiany plików względem drzewa celu (" + (r.fileCount || 0) + "):")
+        for (const f of r.files || [])
+            lines.push(f.status + "  " + (f.oldPath && f.newPath && f.oldPath !== f.newPath
+                       ? f.oldPath + " → " + f.newPath : f.newPath || f.oldPath))
+        return lines.join("\n")
+    }
+
+    Keys.onEscapePressed: event => {
+        win.close()
+        event.accepted = true
+    }
+
+    // Tło przykrywa gospodarza: kliknięcia i kółko nie przechodzą pod spód (nie zamyka — tylko jawne „Zamknij”/Esc).
+    Rectangle {
+        anchors.fill: parent
+        color: Tide.Theme.alpha(Tide.Tokens.backgroundPanel, 0.72)
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onClicked: mouse => mouse.accepted = true
+            onWheel: wheel => wheel.accepted = true
+        }
+    }
+
+    Rectangle {
+        id: frame
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 40, 1000)
+        height: Math.min(parent.height - 40, 760)
+        color: Tide.Tokens.backgroundPanel
+        radius: Tide.Tokens.radiusCard
+        border.color: Tide.Tokens.textMuted
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 12
+
+            // --- strefa celu (tylko do odczytu) ---
+            Text {
+                objectName: "mergeWindowTarget"
+                Layout.fillWidth: true
+                text: win.cardId + " → " + win.targetName
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt + 2
+                font.weight: Font.DemiBold
+                wrapMode: Text.WrapAnywhere
+                HoverHandler { id: targetHover }
+                QQC2.ToolTip.visible: targetHover.hovered && win.targetRef !== ""
+                QQC2.ToolTip.text: win.targetRef
+                QQC2.ToolTip.delay: 400
+            }
+            Text {
+                objectName: "mergeWindowStart"
+                Layout.fillWidth: true
+                visible: win.startLine !== ""
+                text: win.startLine
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                wrapMode: Text.WrapAnywhere
+            }
+
+            // --- minimalny podgląd (przewijany) ---
+            QQC2.ScrollView {
+                id: scroll
+                objectName: "mergeWindowScroll"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
+
+                ColumnLayout {
+                    width: scroll.availableWidth
+                    spacing: 10
+
+                    Text {
+                        objectName: "mergeWindowState"
+                        Layout.fillWidth: true
+                        text: win.stateText()
+                        textFormat: Text.PlainText
+                        color: win.result && win.result.canMerge === true ? Tide.Tokens.positive
+                             : win.result || win.error ? Tide.Tokens.negative : Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt + 1
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "mergeWindowError"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: win.busy ? "" : win.error
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Text {
+                        objectName: "mergeWindowLockHint"
+                        Layout.fillWidth: true
+                        visible: win.mergeLocked && !win.busy
+                        text: "Przycisk scalenia wróci po nowym podglądzie — kliknij „Odśwież”."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "mergeWindowConflicts"
+                        Layout.fillWidth: true
+                        readonly property var paths: win.conflictPaths(win.result)
+                        visible: paths.length > 0
+                        text: "Pliki w konflikcie:\n" + paths.join("\n")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Text {
+                        objectName: "mergeWindowBlocked"
+                        Layout.fillWidth: true
+                        readonly property var reasons: win.blockedLines(win.result)
+                        visible: reasons.length > 0
+                        text: reasons.join("\n")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Text {
+                        objectName: "mergeWindowWarnings"
+                        Layout.fillWidth: true
+                        readonly property var lines: win.warningLines(win.result)
+                        visible: lines.length > 0
+                        text: lines.join("\n")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Text {
+                        objectName: "mergeWindowConsent"
+                        Layout.fillWidth: true
+                        visible: !!win.result
+                        text: "Sam podgląd nie jest zgodą. Nie stanowi zgody zamknięcie, Escape ani odświeżenie. "
+                              + "Dopiero przycisk „Scal do " + win.targetName + "” potwierdza ten podgląd."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt - 1
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Tide.TextButton {
+                        objectName: "mergeWindowDetailsToggle"
+                        visible: !!win.result
+                        text: (win.detailsOpen ? "▾ " : "▸ ") + "Szczegóły"
+                        onClicked: win.detailsOpen = !win.detailsOpen
+                    }
+                    TextEdit {
+                        objectName: "mergeWindowDetails"
+                        Layout.fillWidth: true
+                        visible: win.detailsOpen && !!win.result
+                        readOnly: true
+                        selectByMouse: true
+                        textFormat: TextEdit.PlainText
+                        text: win.detailsText(win.result)
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt - 1
+                        wrapMode: TextEdit.WrapAnywhere
+                    }
+                }
+            }
+
+            // --- rząd przycisków (zawsze widoczny, poza przewijaniem) ---
+            Tide.TextButton {
+                objectName: "mergeWindowMerge"
+                Layout.fillWidth: true
+                variant: "filled"
+                wrapText: true
+                text: "Scal do " + win.targetName
+                enabled: win.canConfirm
+                opacity: enabled ? 1 : 0.5
+                onClicked: win.confirm()
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                Tide.TextButton {
+                    objectName: "mergeWindowChanges"
+                    visible: win.changesAvailable
+                    text: "Zmiany gałęzi"
+                    onClicked: win.changesRequested(win.cardId)
+                }
+                Tide.TextButton {
+                    objectName: "mergeWindowRefresh"
+                    text: "Odśwież"
+                    enabled: win.pending !== "merge"
+                    onClicked: win.refresh()
+                }
+                Item { Layout.fillWidth: true }
+                Tide.TextButton {
+                    objectName: "mergeWindowClose"
+                    text: "Zamknij"
+                    onClicked: win.close()
+                }
+            }
+        }
+    }
+}
