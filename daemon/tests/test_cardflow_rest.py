@@ -7,7 +7,10 @@ operacja kolejki innej karty wyklucza spoczynek, błąd odczytu kolejki też.
 
 Karty są prawdziwymi plikami Tablicy (`BoardStore`), dzienniki prawdziwym `Journal`, silnik prawdziwym `FlowEngine`
 (bez procesów kroków, jak `EngineOnJournal` z PT-150)."""
+import contextlib
+import json
 import os
+import subprocess
 import types
 import unittest
 from unittest import mock
@@ -18,18 +21,41 @@ from tide_daemon.cardflow import caretaker, mergecheck, rest
 from .test_cardflow_caretaker_retry import EngineOnJournal
 
 
+def git(cwd, *args):
+    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                          env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+    if done.returncode:
+        raise AssertionError(done.stderr)
+    return done.stdout
+
+
 class RestCase(EngineOnJournal):
+    """Projekt `proj` na Tablicy z repozytorium git; karty projektu."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = os.path.join(self.base, "repo")
+        os.makedirs(self.repo)
+        git(self.repo, "init", "-q", "-b", "master")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "start")
+        self.engine.store.upsert_project({"slug": "proj", "repo": self.repo})
+
+    def card(self, title):
+        return self.engine.store.create_card({"title": title, "project": "proj"})["id"]
+
     def finished(self, title="Zakończona", *, column="done"):
         """Zakończona karta bez pracy: `card.started` i `card.finished` w dzienniku, karta w Gotowe na Tablicy."""
-        card = self.engine.store.create_card({"title": title})["id"]
+        card = self.card(title)
         self.add(card, "card.started", entry="now", executor="Sonnet", provider="anthropic", column="todo")
         self.add(card, "card.finished", column=column)
         self.engine.store.move_card(card, column)
         return card
 
     def active(self, title="Aktywna"):
-        card = self.engine.store.create_card({"title": title})["id"]
+        card = self.card(title)
         self.add(card, "card.started", entry="now", executor="Sonnet", provider="anthropic", column="todo")
+        self.engine.store.move_card(card, "todo")
         return card
 
     def verdict(self, card, factors=None):
@@ -299,6 +325,202 @@ class QueueEntryPointTest(RestCase):
         self.assertTrue(self.verdict(card).rest)
         ops.append(("kolejka-testowa", "K-77", "op"))
         self.assertEqual(self.verdict(card).factor, "queues")
+
+
+class TickCase(RestCase):
+    """Cały tick silnika w procesie; licznik na granicy przebiegu karty (`FlowEngine._tick_card`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.now = [1000.0]
+        self.journal.monotonic = lambda: self.now[0]      # zegar okresu kontroli pełnej (wstrzykiwalny)
+
+    @contextlib.contextmanager
+    def passes(self):
+        """Karty z pełnym przebiegiem w ticku (lista w kolejności)."""
+        seen = []
+        real = self.engine._tick_card
+
+        def counted(card, *args, **kwargs):
+            seen.append(card)
+            return real(card, *args, **kwargs)
+        with mock.patch.object(self.engine, "_tick_card", side_effect=counted):
+            yield seen
+
+    def tick(self):
+        with self.passes() as seen:
+            self.engine.tick()
+        return seen
+
+
+class TickRestTest(TickCase):
+    def setUp(self):
+        super().setUp()
+        self.done = self.finished("Zakończona")
+        self.live = self.active("Aktywna")
+
+    def test_finished_card_without_work_skips_the_full_pass_from_the_second_tick(self):
+        self.assertEqual(self.tick(), [self.done, self.live], "pierwszy tick silnika: pełny przebieg każdej karty")
+        for _ in range(3):
+            self.assertEqual(self.tick(), [self.live])
+
+    def test_new_journal_event_brings_the_full_pass_back_in_the_next_tick(self):
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        self.add(self.done, "flow.notice", key="z-procesu", result="plan")         # zapis tego procesu
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.assertEqual(self.tick(), [self.live])
+        events = self.journal.read_fresh(self.done)
+        with open(self.journal.mirror_path(self.done), "a", encoding="utf-8") as fh:      # zapis spoza procesu
+            fh.write(json.dumps({"v": 1, "seq": len(events) + 1, "ts": "2026-11-13T12:00:00+01:00",
+                                 "card": self.done, "type": "flow.notice", "key": "zewnetrzny",
+                                 "result": "plan"}) + "\n")
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.assertEqual(self.tick(), [self.live])
+
+    def test_manual_move_on_the_board_is_detected_in_the_next_tick_and_handled_by_the_full_pass(self):
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        self.engine.store.move_card(self.done, "archived")       # ruch użytkownika bez zdarzenia w dzienniku
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.assertEqual(self.tick(), [self.live], "Archiwum: nadal zakończona, znowu w spoczynku")
+        self.engine.store.move_card(self.done, "todo")
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.assertEqual(self.tick(), [self.done, self.live], "poza Gotowe/Archiwum karta nie jest w spoczynku")
+
+    def test_first_tick_of_a_new_engine_and_the_full_check_period_run_every_card_in_full(self):
+        from tide_daemon.cardflow.engine import FlowEngine
+        from tide_daemon.models import executors
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        self.now[0] += rest.PERIOD - 1
+        self.assertEqual(self.tick(), [self.live])
+        self.now[0] += 1
+        self.assertEqual(self.tick(), [self.done, self.live], "upływ okresu kontroli pełnej")
+        self.assertEqual(self.tick(), [self.live])
+        restarted = FlowEngine(self.engine.store, self.journal, catalog=executors.default_catalog,
+                               settings=self.engine.settings, tmp_root=self.base)
+        self.engine = restarted
+        self.assertEqual(self.tick(), [self.done, self.live], "pierwszy tick po restarcie usługi")
+        self.assertEqual(self.tick(), [self.live])
+
+    def test_failure_of_one_full_pass_does_not_stop_the_others_and_brings_its_full_pass_back(self):
+        other = self.finished("Druga zakończona")
+        real = self.engine._tick_card
+
+        def failing(card, *args, **kwargs):
+            if card == other:
+                raise RuntimeError("błąd przebiegu karty")
+            return real(card, *args, **kwargs)
+        with mock.patch.object(self.engine, "_tick_card", side_effect=failing):
+            with self.passes() as seen:
+                self.engine.tick()
+        self.assertEqual(seen, [self.done, self.live, other], "pozostałe karty przeszły")
+        self.assertEqual(self.tick(), [self.live, other], "karta z błędem: pełny przebieg w następnym ticku")
+        self.assertEqual(self.tick(), [self.live])
+        with mock.patch.object(self.engine, "_queue_notices", side_effect=RuntimeError("powiadomienie")):
+            self.now[0] += rest.PERIOD
+            self.assertEqual(self.tick(), [self.done, self.live, other])
+        self.assertEqual(self.tick(), [self.done, self.live, other], "błąd po `_tick_card` też przywraca przebieg")
+        self.assertEqual(self.tick(), [self.live])
+
+    def test_queue_operation_of_another_card_excludes_rest_and_rest_returns_after_a_full_pass(self):
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        self.add(self.live, "step.waiting", ticket="PT-2", kind="ticket", provider="anthropic", cause="quota",
+                 reason="limit tygodniowy", since="2026-11-13T10:00:00+01:00")
+        self.assertEqual(self.tick(), [self.done, self.live], "operacja kolejki kroków innej karty")
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.add(self.live, "card.paused")        # wpis wypada z kolejki
+        self.assertEqual(self.tick(), [self.done, self.live], "po zakończeniu operacji: najpierw pełny przebieg")
+        self.assertEqual(self.tick(), [self.live])
+        with mock.patch.object(rest.stepqueue, "order", side_effect=OSError("kolejka nie odpowiada")):
+            self.assertEqual(self.tick(), [self.done, self.live], "błąd odczytu kolejki")
+
+    def test_factor_excluding_rest_brings_the_full_pass_back(self):
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        work = {"pending": True}
+        before = list(rest.FACTORS)
+        self.addCleanup(lambda: rest.FACTORS.__setitem__(slice(None), before))
+        rest.register("atrapa-nowej-pracy", "atrapa", lambda probe: work["pending"] and probe.card == self.done)
+        self.assertEqual(self.tick(), [self.done, self.live])
+        work["pending"] = False
+        self.assertEqual(self.tick(), [self.done, self.live])
+        self.assertEqual(self.tick(), [self.live])
+
+    def test_revert_of_the_board_journal_of_a_resting_card_is_restored_with_a_warning_in_the_next_tick(self):
+        self.tick()
+        self.assertEqual(self.tick(), [self.live])
+        board, mirror = self.journal.path(self.done), self.journal.mirror_path(self.done)
+        with open(board, encoding="utf-8") as fh:
+            lines = fh.read().splitlines(keepends=True)
+        with open(board, "w", encoding="utf-8") as fh:        # revert w repozytorium Tablicy
+            fh.write("".join(lines[:1]))
+        self.tick()
+        self.assertIn("odtworzony z kopii", self.engine._warnings.get(self.done, ""))
+        with open(board, encoding="utf-8") as fh, open(mirror, encoding="utf-8") as mh:
+            self.assertEqual(fh.read(), mh.read())
+
+    def test_second_tick_with_resting_cards_opens_no_journal_file_for_content(self):
+        """Granica dziennika: ścisły odczyt (pełny i przyrost — `_pread_all`), tolerancyjny odczyt (`_read`),
+        kontrola zgodności (`Journal._check_read`) i własny odczyt pętli odtwarzania (`startorder.events`)."""
+        from tide_daemon.cardflow import journal as journal_module, startorder
+        self.add(self.live, "card.finished", column="done")
+        self.engine.store.move_card(self.live, "done")
+        self.finished("Trzecia")
+        self.tick()
+        reads = []
+
+        def counting(name, real):
+            return lambda *args, **kwargs: reads.append((name, args[:1])) or real(*args, **kwargs)
+        with mock.patch.object(journal_module, "_pread_all", side_effect=counting("strict", journal_module._pread_all)), \
+                mock.patch.object(journal_module, "_read", side_effect=counting("tolerant", journal_module._read)), \
+                mock.patch.object(self.journal, "_check_read", side_effect=counting("check", self.journal._check_read)), \
+                mock.patch.object(startorder, "events", side_effect=counting("startorder", startorder.events)):
+            seen = self.tick()
+        self.assertEqual(seen, [], "wszystkie karty w spoczynku")
+        self.assertEqual(reads, [], "drugi tick otworzył treść dziennika")
+
+
+class GuardAndBusyTest(TickCase):
+    def test_worktree_guard_and_main_branch_work_for_a_repo_whose_cards_all_rest(self):
+        repo = self.repo
+        tree = os.path.join(self.base, "wt")
+        git(repo, "worktree", "add", "-q", "-b", "ticket/a", tree)
+        card = self.card("Zakończona z repozytorium")
+        self.add(card, "card.started", entry="now", executor="Sonnet", provider="anthropic", column="todo", repo=repo)
+        self.add(card, "card.finished", column="done")
+        self.engine.store.move_card(card, "done")
+        self.assertEqual(self.tick(), [card])
+        self.engine._main_branches.clear()
+        self.assertEqual(self.tick(), [], "karta repozytorium w spoczynku")
+        self.assertEqual(self.engine._main_branches.get(repo), "master")
+        admin = os.path.join(repo, ".git", "worktrees", "wt")
+        os.unlink(os.path.join(admin, "HEAD"))
+        os.unlink(os.path.join(admin, "gitdir"))
+        self.assertEqual(self.tick(), [])
+        self.assertTrue(os.path.isfile(os.path.join(admin, "HEAD")), "strażnik odtworzył wpis worktree")
+        self.assertIn(tree, git(repo, "worktree", "list"))
+
+    def test_busy_worktrees_and_hidden_sessions_are_the_same_as_without_rest(self):
+        done = self.finished("Zakończona z krokami")
+        self.step(done, "d-1", session="sesja-d", worktree=os.path.join(self.base, "wt-d"))
+        self.add(done, "step.finished", step="d-1", ticket="PT-1", result="done")
+        self.add(done, "card.finished", column="done")
+        live = self.active("Aktywna z krokiem")
+        self.step(live, "l-1", session="sesja-l", worktree=os.path.join(self.base, "wt-l"))
+        console = self.active("Aktywna z Konsolą")
+        self.step(console, "c-1", session="sesja-c", worktree=os.path.join(self.base, "wt-c"), mode="interactive")
+        self.add(console, "step.finished", step="c-1", ticket="PT-1", result="done")
+        self.tick()
+        self.assertEqual(self.tick(), [live, console], "zakończona karta w spoczynku")
+        with_rest = (self.engine._busy, self.engine._hidden)
+        with mock.patch.object(rest.TickRest, "resting", return_value=False):
+            self.assertEqual(self.tick(), [done, live, console])
+        self.assertEqual((self.engine._busy, self.engine._hidden), with_rest)
+        self.assertIn("sesja-d", with_rest[1][0])
+        self.assertIn(os.path.realpath(os.path.join(self.base, "wt-d")), with_rest[1][1])
 
 
 if __name__ == "__main__":

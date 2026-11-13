@@ -69,6 +69,7 @@ from . import handoff
 from . import boxstep
 from . import trialhold
 from . import processidentity
+from . import rest
 from ..box import trialgate
 from ..box import nftcontract
 from ..box import settings as bsettings
@@ -3580,6 +3581,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 self._recover_started_steps(card, current, history=history)
         return unreadable
 
+    def _rest_memory(self) -> "rest.RestMemory":
+        """K-105 PT-412: znaczniki ostatniego pełnego przebiegu kart w spoczynku (`rest.RestMemory`, zegar okresu
+        kontroli pełnej — `Journal.monotonic`). Nowy silnik ma pustą pamięć: pierwszy tick przechodzi każdą kartę."""
+        memory = self.__dict__.get("_rest")
+        if memory is None:
+            memory = self.__dict__["_rest"] = rest.RestMemory(lambda: self.journal.monotonic())
+        return memory
+
     def tick(self) -> None:
         # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów (w pętli recovery
         # i w `_tick_card`) i sieci pudełek dzielą ten sam pełny odczyt karty; własny zapis karty go unieważnia,
@@ -3622,8 +3631,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         recovering=True)
             hidden_ids, hidden_places, busy = set(), set(), set()
             guarded: set[str] = set()
+            # K-105 PT-412: karty w spoczynku (`rest.at_rest`, znacznik ostatniego pełnego przebiegu) dostają tylko
+            # lekkie sprawdzenie — kontrolę zgodności, rejestrację repozytorium dla strażnika i `busy`/`hidden`.
+            memory = self._rest_memory()
+            resting = memory.begin(self, read)
+            memory.forget_except(registered)
             for card in self.journal.cards():
                 if card in unreadable_starts:
+                    resting.drop(card)
                     continue
                 warning = self.journal.check(card)
                 if warning:
@@ -3642,15 +3657,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         worktree_guard(repo, self._worktree_heads)
                 except Exception as exc:
                     print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
-                try:
-                    self._tick_card(card, st, read, history)
-                except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
-                    print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
-                try:
-                    self._guard_card(card, read)
-                    self._queue_notices(card, read)
-                except Exception as exc:
-                    print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                if not resting.resting(card, st):
+                    passed = True
+                    try:
+                        self._tick_card(card, st, read, history)
+                    except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
+                        passed = False
+                        print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+                    try:
+                        self._guard_card(card, read)
+                        self._queue_notices(card, read)
+                    except Exception as exc:
+                        passed = False
+                        print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                    resting.passed(card, passed)
                 st = self.journal.state(card)
                 busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
                 busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
