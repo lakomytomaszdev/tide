@@ -163,7 +163,10 @@ Rectangle {
             // Zmiany w widoku diffa (PT-360): bez terminala, Esc wraca na listę.
             Row {
                 objectName: "worktreeChangeActions"
-                visible: changes.visible || branchChanges.visible || pull.visible
+                // Jawne warunki, nie visible dzieci: to widoczność efektywna, więc po ukryciu strony (przełącznik
+                // Katalogi/Gałęzie, inny widok okna) wiersz zostawał ukryty na stałe.
+                visible: Logic.canShowChanges(row.worktree) || Logic.canShowBranchChanges(row.worktree)
+                         || Logic.canOfferPull(row.worktree)
                 spacing: 8
                 topPadding: 2
                 PillButton {
@@ -182,7 +185,7 @@ Rectangle {
                 }
                 Text {
                     objectName: "pullReason"
-                    visible: pull.visible && !row.pullBusy && row.pullBlocker !== null
+                    visible: Logic.canOfferPull(row.worktree) && !row.pullBusy && row.pullBlocker !== null
                     anchors.verticalCenter: pull.verticalCenter
                     text: row.pullBlocker !== null ? row.pullBlocker.text : ""
                     color: Tide.Tokens.textMuted

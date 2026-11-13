@@ -3,6 +3,8 @@
 Jedno miejsce na ustawienia okna, wspólne dla widoków — dziś `cardOpen` (PT-133): co otwiera kafelek karty
 z „Czeka na mnie” i powiadomienie o niej, „decision” (okno decyzji, domyślnie) albo „full” (pełna karta),
 oraz `diffMode` (PT-350): tryb widoku diffa, „unified” (domyślnie) albo „split” (obok siebie).
+Okno Worktrees (K-99, PT-388) dokłada `worktreesMode` („dirs” — Katalogi, domyślnie, albo „branches” — Gałęzie)
+i `worktreesProject` (slug projektu Tablicy wybrany w trybie Gałęzie) — ten sam plik i mechanizm, bez drugiego magazynu.
 Plik czytamy za każdym razem od nowa; nieznane klucze zostają przy zapisie, uszkodzony plik
 albo nieznana wartość dają domyślne ustawienie (nic nie rzuca wyjątku przy odczycie).
 """
@@ -57,6 +59,37 @@ def set_diff_mode(value: str, path: str | None = None) -> None:
     if value not in DIFF_MODE_VALUES:
         raise ValueError(f"nieznany tryb diffa: {value!r}")
     _save("diffMode", value, path)
+
+# Okno Worktrees (K-99, PT-388): tryb widoku („dirs” — Katalogi, „branches” — Gałęzie) i projekt trybu Gałęzie.
+WORKTREES_MODE_VALUES = ("dirs", "branches")
+WORKTREES_MODE_DEFAULT = "dirs"
+PROJECT_MAX = 200
+
+
+def worktrees_mode(path: str | None = None) -> str:
+    """Tryb okna Worktrees: „dirs” (domyślnie) albo „branches”; uszkodzony plik daje domyślny."""
+    value = load(path).get("worktreesMode")
+    return value if value in WORKTREES_MODE_VALUES else WORKTREES_MODE_DEFAULT
+
+
+def set_worktrees_mode(value: str, path: str | None = None) -> None:
+    """Zapisuje tryb okna Worktrees jak `set_card_open`. ValueError — nieznana wartość, OSError — zapis."""
+    if value not in WORKTREES_MODE_VALUES:
+        raise ValueError(f"nieznany tryb okna Worktrees: {value!r}")
+    _save("worktreesMode", value, path)
+
+
+def worktrees_project(path: str | None = None) -> str:
+    """Slug projektu wybranego w trybie Gałęzie; pusty, gdy nic nie wybrano albo wartość jest nieprawidłowa."""
+    value = load(path).get("worktreesProject")
+    return value if isinstance(value, str) and 0 < len(value) <= PROJECT_MAX else ""
+
+
+def set_worktrees_project(value: str, path: str | None = None) -> None:
+    """Zapisuje projekt trybu Gałęzie jak `set_card_open`. ValueError — pusty albo zbyt długi slug, OSError — zapis."""
+    if not isinstance(value, str) or not 0 < len(value) <= PROJECT_MAX:
+        raise ValueError(f"nieprawidłowy projekt okna Worktrees: {value!r}")
+    _save("worktreesProject", value, path)
 
 
 def _save(key: str, value: str, path: str | None) -> None:
