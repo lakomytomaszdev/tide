@@ -4659,7 +4659,19 @@ to zwykłe `load()`: ta sama transakcja (z odtworzeniem intencji), te same błę
 świeżym wczytaniu; wpis pamięci dostaje odcisk sprzed wczytania (zmiana w trakcie wczytania daje kolejne wczytanie),
 a błąd wczytania nie jest pamiętany. Każda zmiana Tablicy — GUI, `git`, ręczna edycja, zapis w procesie — daje
 świeże wczytanie w następnym kontekście ticku. Publiczne `load()`, transakcje zapisu i kontekst odświeżenia
-`Snapshot` (#1) pamięci nie używają. Pozostałe bezpośrednie `store.load()` w ticku przełącza K-113 #5.
+`Snapshot` (#1) pamięci nie używają.
+
+**Odczyty Tablicy w ticku: kontekst ticku i świeże bramki (K-113 #5, PT-469).** Z kontekstu ticku (pamięć #3) czytają
+odczyty w `tick`/`_tick_card` bez skutku: wykrycie ruchu karty (sam zapis `moved` czyta świeżo), `_project_read` przed
+wznowieniem startu, `_project_base` (gdy pola bazy już są), `_queue_notices`, `_guard_card`, `_caretake`,
+`_tracker_notes`, `RestMemory.begin` i kolejność kroków (`_order_board`). Świeże `store.load()` (przez `_project` bez
+kontekstu) zostają jako bramki albo wejścia skutku: `_plan_next` (limit ticketów, repozytorium dla commita planu,
+gałęzi ticketu i `_launch`), `_planning_branch` (nazwa gałęzi karty dla `card-branch`), `_plan_on_board` (`ai-docs`
+decyduje o commicie planu), `_outside_recheck_rules` i `consent.automatic` (zgody), a także zapis ruchu karty, start
+kroku i `upsert_project`. Ciepły tick karty z zatwierdzonym planem robi więc nadal trzy pełne wczytania (`_plan_next`,
+`_planning_branch`, `_plan_on_board`; ramki próbnika `pomiar-k113-przed.json`). Ich przeniesienie na kontekst ticku
+wymaga zmiany kilku metod silnika (rozstrzygnięcie „nic do zrobienia” z kontekstu, świeży odczyt tylko przed skutkiem);
+decyzja o osobnym tickecie zapada po pomiarze „po” (PT-468).
 
 **Odczyty podczas zajętej kolejki mutacji (K-98 #2, PT-343).** Kolejka mutacji (jednowątkowy worker `tide-cardflow`)
 pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:
