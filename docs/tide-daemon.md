@@ -759,6 +759,162 @@ Indeks powstaje leniwie: pierwsze `Match` po starcie usługi czeka na zbudowanie
 
 **Instalacja.** `make install-daemon` (kod i plik aktywacji `org.tide.Daemon.KRunner.service`) oraz `make install-krunner` (plik `.desktop`; oba są też w `make install`). KRunner czyta wtyczki D-Bus przy starcie, więc instalator i dezinstalator proszą działający KRunner o zamknięcie (`qdbus6 org.kde.krunner /MainApplication quit`) — wraca sam przy następnym Alt+Spacja. Wyszukiwanie w menu Plasmy (Kickoff) ma własną instancję i zobaczy zmianę po ponownym zalogowaniu albo `systemctl --user restart plasma-plasmashell`. `make uninstall-krunner` usuwa plik wtyczki, więc znika ona z KRunnera. Szybkie sprawdzenie: `qdbus6 org.kde.krunner /App querySingleRunner tide plasma` otwiera KRunnera z wynikami tylko tej wtyczki.
 
+## Wydajność postoju (K-105, PT-458)
+
+Kryterium gotowości „Gotowe (M0)”: usługa na postoju nie zajmuje więcej niż 30 % jednego rdzenia, `Snapshot` odpowiada
+w p95 poniżej 1 s, a zatwierdzenie planu 18 wierszy trwa poniżej 10 s. Mierzy się to dwoma narzędziami o tej samej
+mierze CPU: reproduktorem (przed instalacją, koordynator) i skryptem produkcji (po instalacji, właściciel).
+
+### Narzędzie 10 okien CPU całego procesu
+
+Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tests/perf_idle_cpu.py --scale prod
+--windows 10`, skrypt produkcji `scripts/measure_idle_prod.py`.
+
+- **Miara rozstrzygająca: CPU całego procesu usługi.** „Proces” to w reproduktorze PID usługi uruchomionej przez
+  reproduktor, a na produkcji `MainPID` jednostki (`systemctl --user show -p MainPID`). Liczy się przyrost
+  `utime + stime` z `/proc/<pid>/stat` — **wszystkie wątki procesu, bez procesów potomnych** (`cutime`/`cstime` nie są
+  czytane). 10 kolejnych okien po 60 s, w % jednego rdzenia na okno; **próg: każde okno ≤ 30 %** (średnia nie
+  ratuje okna ponad progiem). Wynik podaje PID, surowe przyrosty `utime` i `stime` (ticki) i % rdzenia każdego okna,
+  średnią, maksimum, `box.enabled`, loadavg przed i po oraz SHA.
+- **Czysty postój.** Rozgrzewka (`--warmup`, w reproduktorze i na produkcji domyślnie 60 s po starcie i sprawdzeniu
+  ważności; nie ma jej jak wykryć bez żądań, więc to parametr) i 10 okien CPU **nie wysyłają żadnych żądań do usługi**:
+  bez próbnika, `Snapshot` i innych wywołań D-Bus. Próbnik usługi (60 s: udział `engine.tick`, próbki `engine.tick`/s,
+  najcięższe ramki) i seria 60 wywołań `Snapshot` co 0,5 s (p95 nearest-rank) idą w **osobnym oknie po** oknach CPU,
+  bo próbnik sam zużywa CPU.
+- **Ważność.** Zmiana PID (restart usługi) albo zniknięcie procesu unieważnia próbę; tak samo loadavg 1-min ≥ rdzenie/2
+  przed pomiarem albo po oknach CPU (reguła PT-362), niepełna seria okien i przekroczenie limitu czasu. Na produkcji
+  dodatkowo kroki w toku (jednostki `tide-step-*` i `tide-outside-*`) — jednym odczytem przed rozgrzewką, nie w trakcie.
+- **Diagnostyka bez progu** (nie zmienia oceny): udział `engine.tick`, próbki `engine.tick`/s, CPU wątku workera przepływu
+  (`flowThread` według reguły PT-410: jedyny wątek `tide-cardflow*`, inaczej największe `cpuS` bez wątku głównego
+  i próbnika), `Snapshot` p95 (w reproduktorze; na produkcji próg `< 1 s` ocenia skrypt), oraz pamięć przed i po oknach CPU:
+  `RssAnon`, `VmRSS`, `VmHWM` z `/proc/<pid>/status` i `MemoryCurrent` — w reproduktorze `memory.current` cgroup procesu
+  (z zapisaną ścieżką cgroup i znacznikiem, czy cgroup zawiera inne procesy), na produkcji `MemoryCurrent` jednostki.
+- **Ocena jednookienkowa PT-410** (`perf_idle_scale.py evaluate`, tryb PT-346 bez zmian) nie ma już progów ani werdyktu:
+  CPU wątku przepływu, udział `engine.tick` i wzrost `VmRSS` są raportowane z oznaczeniem „tryb jednego okna — bez oceny
+  progu; rozstrzyga tryb 10 okien”. Zostaje tylko ważność (loadavg).
+- **Porównywalność.** Reproduktor nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` ani
+  `scanner` (~15 % próbek produkcji), więc jest wskaźnikiem. Rozstrzyga pomiar produkcji.
+
+### Reproduktor: skrypt kolejki koordynatora
+
+`daemon/tests/perf_k105_queue.py` — każde podpolecenie to **jedno polecenie `outside`**; dane syntetyczne, nic
+z danych właściciela.
+
+- `/usr/bin/python3 daemon/tests/perf_k105_queue.py build-data` — buduje dane 46 kart / ~60 MB (generator PT-410) **raz**
+  do `build/k105-data/` w worktree (katalog ignorowany przez git) z manifestem `manifest.json` (parametry, skrót
+  plików generatora, SHA repozytorium, rozmiar na dysku, czas budowy). Ponowne wywołanie przy zgodnym manifeście nic nie
+  robi. Czas budowy zapisuje manifest (`buildSeconds`); budowa to osobne polecenie, żeby nie liczyć się w limicie pomiaru.
+- `/usr/bin/python3 daemon/tests/perf_k105_queue.py measure <before|after> <false|true> [--base-sha SHA]` —
+  **jedna konfiguracja (strona × `box.enabled`) i jedna seria 10 okien na polecenie**. Kopiuje dane z `build/` do świeżego
+  katalogu tymczasowego (ścieżki w danych i klucz kopii dzienników są przepisywane na nowy katalog; `box.enabled`
+  ustawia plik `cardflow.json`). Strona `before` uruchamia kod usługi z przypiętego SHA bazy karty (`--base-sha` albo
+  `K105_BASE_SHA`) z własnego `git worktree add --detach` w katalogu tymczasowym i usuwa go po pomiarze
+  (`git worktree remove` tylko tego katalogu, bez `prune`, bez zmiany gałęzi karty i ticketu); `after` — kod bieżącego
+  worktree.
+- **Wynik** konfiguracji: `build/k105-measure/<strona>-box-<false|true>.json` z listą prób; zapis przyrostowy po każdym oknie
+  (próba `running` z oknami do tej pory).
+- **Limit i wznawianie.** Próba ma wewnętrzny limit czasu (`--limit-min`, domyślnie 13 min: rozgrzewka 60 s + 10 okien
+  + okno diagnostyki 60 s + start ≈ 12,5 min). Po przekroczeniu w rozgrzewce albo w oknach próba jest nieważna; limit
+  przed oknem diagnostyki pomija tylko diagnostykę (okna CPU zostają ważne). Ponowne uruchomienie **tego samego polecenia**
+  pomija konfigurację z ważnym wynikiem (także z oceną „niespełniony” — to ważny wynik) albo z wyczerpanymi 3 próbami
+  i liczy próby dalej; próba zapisana jako `running` (polecenie ubite, np. kodem 143) liczy się jako nieważna.
+  Jeden przebieg naraz (blokada pliku `build/k105-measure/.lock`), najwyżej 3 próby na konfigurację, rozstrzyga pierwsza ważna.
+- Kody wyjścia `measure`: 0 — wynik ważny albo konfiguracja już rozstrzygnięta; 1 — 3 próby bez ważnej; 2 — ta próba
+  nieważna (zgłoś to samo polecenie ponownie); 3 — inny przebieg trwa; 4 — brak danych albo zły SHA bazy.
+
+Kolejność dla koordynatora: `build-data`, potem cztery polecenia `measure` (`before false`, `before true`, `after false`,
+`after true`), każde osobno.
+
+### Zmiany usługi mierzone przez K-105
+
+Opisy pełne są w sekcji „Przepływ karty: „Od razu” (PT-58)” (pamięć ścisłego odczytu, kontroli zgodności i historii
+procesów, pętla odtwarzania, karty w spoczynku); tu tylko krótki spis z odsyłaczami:
+
+- **PT-411 — pamięć historii między tickami.** Ścisły odczyt historii karty (`Journal.read_complete`) jest pamiętany
+  między tickami i unieważniany wersją dziennika; okresowy pełny odczyt weryfikuje pamięć, a przyrost pamięci jest
+  ograniczony (akapit „Pamięć ścisłego odczytu (K-105 #2, PT-411)”).
+- **PT-415 — pamięć historii procesów i stanu procesu karty** nad pamięcią PT-411 (akapit „Pamięć historii procesów
+  i stanu procesu karty (K-105 PT-415)”): odczyty bez skutku nie wykonują nowego `fold` co tick.
+- **PT-416 — lekka kontrola zgodności z kopią** (`Journal.check`, dziennik w Tablicy ↔ kopia usługi; akapit „Pamięć
+  kontroli zgodności (K-105, PT-416)”): w każdym ticku bez pełnego odczytu.
+- **PT-459 (praca „#2”) — pętla odtwarzania na pamięci** (`FlowEngine._replay_starts`, akapit „Pętla odtwarzania na
+  początku ticku (K-105 PT-459)”): korzysta z pamięci PT-411/PT-415 zamiast własnych pełnych odczytów.
+- **PT-412 — karty w spoczynku**: rejestr czynników spoczynku, wykluczenie przez operacje kolejek i okres kontroli
+  pełnej; opis i lista czynników w akapicie „Karty w spoczynku (K-105 PT-412)”.
+- **PT-413 — pamięć oceny ryzyka w prezentacji** (`cardflow/riskview.py`): publikacja migawki w wątku głównym nie
+  rozwiązuje ścieżek (`realpath`) przy każdej publikacji; ocena ryzyka polecenia „uruchom poza piaskownicą” pochodzi z pamięci
+  kluczowanej (karta, wersja dziennika, polecenie, korzenie), ograniczonej do 256 kart i działającej wyłącznie w zakresie
+  odczytu prezentacji (`Engine.derived`). Zgoda automatyczna, kontrola przed startem, `run-always` i decyzja merge-check
+  liczą ryzyko świeżo i pamięci nie widzą.
+
+### Wyniki przed/po w reproduktorze (PT-414, 13.11.2026)
+
+Wynik reproduktora jest **wskaźnikiem**: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej). Strona „przed” to kod bazy
+karty `efeb3e87929318196386a9c62b22c099542f0ac3`, strona „po” — gałąź ticketu `05868ada43eba1e6d2c43e5f2bfb519763f74882`
+(PT-411, PT-412, PT-413, PT-415, PT-416, PT-459 scalone do gałęzi karty). Dane: 46 kart, 59,5 MB dzienników, budowa 52,5 s.
+Każda konfiguracja to osobne polecenie `perf_k105_queue.py measure`; rozstrzyga pierwsza ważna próba. Próg: **każde okno
+≤ 30 %** rdzenia (16 rdzeni, limit loadavg 8,0).
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed, `box.enabled=false` | 1–3 | **nieważne** (loadavg 12,2–12,8 ≥ 8,0, także przed startem) | 74–94 | 85,5 / 94,5; 85,4 / 91,3; 74,4 / 75,6 | brak ważnej próby (3 z 3) |
+| przed, `box.enabled=true` | 1 | ważna | 83,62; 83,05; 83,75; 82,75; 82,78; 83,32; 82,97; 82,97; 82,92; 82,80 | 83,09 / 83,75 | **niespełniony** (10 z 10 okien) |
+| po, `box.enabled=false` | 1 | ważna | 45,08; 45,30; 45,17; 45,73; 45,42; 45,22; 44,98; 45,48; 45,07; 48,02 | 45,55 / 48,02 | **niespełniony** (10 z 10 okien) |
+| po, `box.enabled=true` | 1 | ważna | 45,85; 45,83; 45,98; 45,30; 45,00; 45,45; 45,40; 45,20; 44,90; 44,35 | 45,33 / 45,98 | **niespełniony** (10 z 10 okien) |
+
+Diagnostyka bez progu (osobne okno po oknach CPU):
+
+| Konfiguracja | `engine.tick` (udział / próbki na s) | CPU wątku przepływu | `Snapshot` p95 | `RssAnon` przed → po | `MemoryCurrent` przed → po |
+|---|---|---|---|---|---|
+| przed, `true` | 0,198 / 55,1 | 82,3 % | 280 ms | 544,2 → 546,1 MB | 744,0 → 728,6 MB |
+| po, `false` | 0,096 / 33,0 | 45,0 % | 239 ms | 539,3 → 584,4 MB | 633,3 → 678,6 MB |
+| po, `true` | 0,102 / 32,8 | 44,8 % | 242 ms | 550,2 → 551,8 MB | 644,3 → 645,7 MB |
+
+Wnioski z reproduktora (nie są oceną produkcji):
+
+- **Poprawa, ale nie do progu.** Gałąź ticketu obniża CPU całego procesu z ok. 83 % do ok. 45 % rdzenia przy
+  `box.enabled=true` (o ok. 38 punktów) — nadal 15 punktów ponad progiem w każdym oknie. Dla `box.enabled=false` nie ma
+  ważnego „przed”, więc nie ma porównania; „po” (45,6 %) jest równie ponad progiem.
+- **Prawie całe CPU zajmuje wątek przepływu** (`tide-cardflow`: ok. 45 z 45,3 % przy „po”). Najcięższa ścieżka w próbniku
+  „po” to `engine.tick › boxstep.recover_network › trialhold.held › trialpolicy.blocked_event` (ok. 1400 z ok. 1970
+  próbek `engine.tick`, czyli ok. 71 %) z wyrażeniem regularnym (`re.search`/`_compile`) wykonywanym przy każdym ticku,
+  także przy `box.enabled=false`; za nią odczyt kart `store.load › _read_doc › realpath` (ok. 370 próbek). To wskazanie
+  miejsca do dalszej optymalizacji; ticket PT-414 nie zmienia kodu usługi.
+- Pamięć (diagnostyka bez progu) jest stała w obrębie okien (± ok. 2 MB `RssAnon`), z wyjątkiem „po, `false`”
+  (+ ok. 45 MB `RssAnon`, `VmHWM` 674 MB) — jednej próby nie wystarczy do wniosku o trendzie.
+- **Niespełniony próg to ważny wynik, nie błąd pomiaru**: nie daje domknięcia z akceptacją i jest otwartym blokerem M0,
+  dopóki pomiar produkcji nie pokaże ≤ 30 % w każdym oknie w obu ustawieniach `box.enabled`.
+
+### Procedura produkcji po instalacji (właściciel)
+
+Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, nie zmienia konfiguracji (także
+`box.enabled`), nie zapisuje w `~/.local/share`, `~/.config` ani w Tablicy — poza wynikiem (`--out`, odmawia ścieżek
+w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i raportem próbnika zapisywanym przez usługę.
+
+1. Po `make install` i restarcie usługi (nie w trakcie pracy agentów): `/usr/bin/python3 scripts/measure_idle_prod.py
+   --out ~/pomiar-k105-box-<false|true>.json`. Skrypt sprawdza loadavg i **wymaga ciągłego postoju bez kroków w toku przez
+   10 min** (`--wait-idle-min`, kryterium M0) przed rozgrzewką: odpytuje tylko odczyty kroków (bez żądań do usługi), a każdy
+   krok zeruje licznik. Kroki szuka na hoście (`systemctl --user`) i — przy `box.enabled=true` — w uruchomionych
+   pudełkach (`incus exec … systemctl --user`, jak usługa); błąd odczytu unieważnia pomiar, nie oznacza „bez kroków”.
+   Czas postoju podany przez właściciela (`--owner-idle-min`, zapisywany w wyniku jako niezweryfikowany) zalicza się do
+   wymaganych 10 min (skraca czekanie tylko o tyle, nie je zastępuje). Po `--max-wait-min` (domyślnie 30) bez osiągnięcia
+   postoju wynik jest nieważny. Dalej rozgrzewka, 10 okien CPU `MainPID` na czystym postoju, potem osobno próbnik 60 s (przez plik żądania usługi) i seria
+   `Snapshot`. Wynik JSON: okna, średnia, maksimum, pamięć przed i po, bieżące `box.enabled` odczytane z konfiguracji,
+   ocena (próg CPU każdego okna ≤ 30 %, `Snapshot` p95 < 1 s). Kod wyjścia 0 — w progach, 1 — ponad próg, 2 — nieważny.
+2. **Oba ustawienia `box.enabled`.** Właściciel przełącza je sam (zwykłym sposobem ustawień usługi, restartuje usługę
+   i powtarza pomiar z kroku 1): raz `false`, raz `true`. Skrypt nigdy ich nie przełącza.
+3. **Zatwierdzenie planu 18 wierszy (kryterium M0, < 10 s).** Osobny, jawnie nazwany tryb:
+   `/usr/bin/python3 scripts/measure_idle_prod.py --mode approve-plan --card K-<numer> --out ~/pomiar-k105-zatwierdzenie.json`.
+   To **jedyny tryb, który wywołuje akcję usługi** (`ApproveCardPlan`); uruchamia go wyłącznie właściciel dla karty z planem
+   ≥ 18 wierszy, którą i tak zatwierdza. Mierzy czas od wywołania do zdarzenia `plan.approved` w dzienniku karty
+   (`<Tablica>/flow/<karta>/journal.jsonl`, tylko odczyt) i zapisuje liczbę wierszy planu. Odmawia przy planie
+   < 18 wierszy, chyba że właściciel poda `--allow-small-plan` — wtedy wynik ma znacznik „poza kryterium”.
+4. **Gdzie zapisać wynik.** Pliki JSON zostają u właściciela poza repozytorium i poza Tablicą; do karty trafia podsumowanie
+   (okna, maksimum, `Snapshot` p95, czas zatwierdzenia, `box.enabled`, SHA) wpisane przez koordynatora w notce domknięcia.
+5. **Domknięcie karty kończy się pytaniem do właściciela o wynik pomiaru produkcji.** Wynik powyżej progu —
+   CPU któregokolwiek okna w którymkolwiek ustawieniu `box.enabled`, `Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s —
+   to **otwarty bloker M0**. Ten sam pomiar powtarza się po następnej instalacji (regresja).
+
 ## Bezczynność
 
 Tapeta „Tide: kot” (`org.tide.cat`) zamyka kotu oczy, gdy nikt nie używa komputera. Wie o tym od usługi:
@@ -2461,6 +2617,150 @@ Dziennik karty (`cardflow/journal.py`): `flow/<K-12>/journal.jsonl` w repozytori
 `$XDG_STATE_HOME/tide/cardflow/<skrót>/<K-12>.jsonl` zapisywana pierwsza: dziennik cofnięty revertem albo zmieniony
 z zewnątrz wraca z kopii z ostrzeżeniem w `errors` migawki. Zmiany z jednej chwili to jeden commit „K-12: card flow”;
 `BoardMonitor.sync()` commituje je przed „sync external changes”.
+
+**Pamięć ścisłego odczytu (K-105 #2, PT-411).** Ścisły odczyt historii karty (`Journal.read_complete`: pełne wiersze,
+schemat, kolejny `seq`, ta sama karta, znana tożsamość startu procesu; błąd = unknown) pamięta zdarzenia dla wersji
+dziennika (`Journal.version`, `JournalVersion`): źródło (kopia usługi albo plik w Tablicy), `st_dev`, `st_ino`,
+`st_size`, `st_mtime_ns`, `st_ctime_ns` z `fstat` otwartego deskryptora, licznik zapisów tego procesu (`generation`)
+i ostatni `seq`. Niezmieniony dziennik kosztuje `open` i `fstat`; trafienie zwraca nową listę tych samych obiektów
+zdarzeń (zdarzenia są tylko do odczytu, także w fazie ticku `HistoryPhase`). Przy tym samym i-węźle, większym rozmiarze
+i niezmienionym ostatnim zapamiętanym wierszu (porównany skrót bajtów w tym samym miejscu; pamięć nie trzyma tekstu)
+odczyt doczytuje tylko nowe bajty i sprawdza je tą samą regułą. Każda inna zmiana — ucięcie, podmiana pliku (nowy
+i-węzeł), zmiana treści bez zmiany rozmiaru, także z przywróconym mtime (`st_ctime_ns`), zapis tego procesu — daje
+pełny odczyt. Błąd (pełny albo przyrostu) usuwa wpis, więc unknown zostaje przy każdym kolejnym odczycie, dopóki plik
+jest uszkodzony. Tick na początku usuwa wpisy kart spoza rejestru (`cards_complete`).
+
+*Ograniczenie przyrostu.* Przyrost sprawdza tylko stan pliku i ostatni wiersz: edycja wcześniejszych wierszy w miejscu
+połączona z dopisaniem (ten sam i-węzeł, większy rozmiar, zachowany ostatni wiersz) nie jest nim wykrywana. Dlatego
+wpis pamięta chwilę ostatniego pełnego odczytu, a po `FULL_READ_PERIOD` (10 min, zegar `Journal.monotonic`) odczyt
+czyta plik w całości zamiast trafienia albo przyrostu; przyrost nie przesuwa tej chwili. Do tego czasu ograniczenie
+dotyczy tylko odczytów bez skutku: porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`), zapisy
+(`append`, `append_complete`) i kontrole wycofania (`rollback`) czytają świeżo (`Journal.read_fresh` — pełny ścisły
+odczyt z pominięciem pamięci), więc zapis oparty na takiej historii jest odmówiony (`HistoryChanged`). Pełne odczyty
+liczy granica `Journal._read_strict` (pełny odczyt `read_complete` i `read_fresh`); `Journal.check` jej nie używa —
+ma własną pamięć opisaną niżej.
+
+**Pamięć kontroli zgodności (K-105, PT-416).** `Journal.check` (dziennik w Tablicy ↔ kopia usługi, w każdym ticku dla
+każdej karty) pamięta parę stanów obu plików według tej samej reguły pięciu pól (`st_dev`, `st_ino`, `st_size`,
+`st_mtime_ns`, `st_ctime_ns`). Ta sama para kosztuje dwa `stat` i daje wynik bez ostrzeżenia, bez odczytu treści
+i bez żadnego skutku. Każda zmiana któregokolwiek pola któregokolwiek pliku (revert z nowym i-węzłem, edycja w miejscu
+z przywróconym mtime, `chmod`, `touch`) daje pełne porównanie treści obu plików w tym samym wywołaniu; odtworzenie
+z kopii następuje wyłącznie po nim — pamięć tylko pomija porównanie i niczego nie autoryzuje. Para trafia do pamięci
+po porównaniu zgodnym, obramowanym dwoma równymi `stat`, albo po odtworzeniu potwierdzonym tak samo (świeży odczyt
+Tablicy równy kopii między dwoma równymi `stat`, kopia bez zmian od porównania); zmiana Tablicy z zewnątrz tuż po
+odtworzeniu nie zostaje zapamiętana jako zgodna. Błąd `stat` albo odczytu, brak pliku i nieudane odtworzenie usuwają
+wpis karty, a brak kopii daje jak dotąd odbudowę kopii z Tablicy bez pary. Zapis tego procesu do dziennika i początek
+ticku dla kart spoza rejestru (`forget_except`) usuwają wpisy. Odczyty treści liczy granica `Journal._check_read`.
+Ograniczenie jak przy kluczu wersji: zmiana w miejscu bez zmiany rozmiaru tuż po porównaniu, w obrębie jednego kwantu
+zegara znaczników czasu jądra, nie zmienia żadnego z pięciu pól.
+
+**Pamięć historii procesów i stanu procesu karty (K-105 PT-415).** Nad pamięcią ścisłego odczytu `Journal.derive`
+pamięta wartość wyliczoną z historii karty: wynik kontroli tożsamości procesów i stan procesu karty
+(`trialhold._checked_state` — jeden `fold` z modelem `process_identities`; nieznana albo niespójna tożsamość =
+ValueError). Kluczem jest wpis pamięci ścisłego odczytu i jego `JournalVersion` (z `st_ctime_ns` i `generation`);
+trafienie wymaga, by odczyt zwrócił zdarzenia tego samego wpisu, więc nowa wersja, przyrost, okresowy pełny odczyt,
+zapis tego procesu i luźna wersja dają nowe wyliczenie. Pamięć nie trzyma tekstu ani własnej kopii zdarzeń — tylko
+odwołanie do wpisu PT-411 i stan. Błąd odczytu, `stat` albo kontroli usuwa wpis karty i nie jest pamiętany ani jako
+historia, ani jako „brak zmian”. Wpisy znikają razem z pamięcią ścisłą (`_invalidate`, `forget_except`).
+
+`trialhold.read_process_history(journal, card)` zwraca historię z tej pamięci, a `trialhold.process_state` —
+(historię, kopię stanu z własnymi kontenerami pól; wartości zagnieżdżone wspólne i tylko do odczytu, jak w
+`Journal.state`, wspólna funkcja `state.copy_state`). Z pamięci korzystają wyłącznie odczyty bez skutku: faza ticku
+(`HistoryPhase` jest widokiem jednego ticku nad pamięcią; zapamiętany błąd fazy nadal rzucany w obrębie fazy),
+bariera `_outside_history(card)`, inwentaryzacja K-38, `_recover_started_steps` z fazy (zapis przez `Journal.unchanged`),
+`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; nowy `fold`
+tylko dla historii z pominiętymi próbami K-38; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
+przy `box.enabled=true` (`box/lifecycle.tick`, `active_steps`, `packs.cleanup` — ta sama pamięć ścisła PT-411 co przed
+PT-415, teraz bez nowego `fold` co tick), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`,
+`_recover_console_openings`) oraz czekanie na polecenie outside i próbę testów po scaleniu (`_outside_ready`,
+`_merge_check_run`, `_outside_recheck`, wejście `_resume_step`). Wariant `fresh=True` (świeży pełny odczyt
+`Journal.read_fresh` i nowe złożenie, bez czytania i zapisu pamięci) mają bramki przed skutkiem: `_process_check`
+przed startem, zatrzymaniem i wznowieniem procesu (domyślnie), `_outside_history` z krokiem lub poleceniem (zgoda,
+start, wynik i zapis `outside.finished`, zapisy `_outside_recheck` i automatycznej zgody — `consent.record_automatic`
+z `gate`), próba testów po scaleniu (wynik z zapisanego zakończenia, start pod blokadą przed Popen, zapis
+`outside.finished`/`merge.check-finished`), zatrzymanie jednostki outside po końcu albo przekroczeniu czasu
+(`_outside_collect` z `confirm` — świeży odczyt tylko po zakończeniu uruchomienia, nie przy czekaniu), wejście Konsoli,
+przekazanie, ręczne domknięcie, diagnostyka K-38 i `public_inventory` przed zapisem.
+Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), powtarza całą
+inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
+zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
+Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
+
+**Pętla odtwarzania na początku ticku (K-105 PT-459).** `FlowEngine._replay_starts` obejmuje każdą kartę z dziennikiem
+(także zakończoną) i bierze jej historię oraz stan procesu karty z fazy ticku (`trialhold.process_state` z
+`HistoryPhase` — pamięć PT-411/PT-415), a nie z własnych pełnych odczytów: ścisła reguła odczytu zastępuje dawny skan
+`order.` po `journal.read` i kontrolę `startorder.events` (pełne wiersze, kolejny `seq`; poza pętlą `startorder` przy
+starcie zlecenia czyta plik świeżo jak dotąd), a `BaseGeneration.recover` i `_project_base` dostają ten sam odczyt
+(`observed`). Błąd odczytu albo nieznana tożsamość karty wstrzymuje odtwarzanie tylko tej karty (tick pomija ją
+też dalej). Pamięć nie autoryzuje zapisu: zakończona generacja bazy (aktywacja i wynik w historii) nie jest
+wznawiana, każde inne odtworzenie generacji zaczyna się od `Journal.unchanged` z odczytem z pamięci (dopisanie po
+odczycie → `HistoryChanged` przed operacjami git i zapisem; generacja w toku płaci więc jeden świeży odczyt na tick),
+a projekcja bazy na Tablicę porównuje historię świeżo tylko przed faktycznym zapisem pól (`project_card_base(guard=…)`).
+Po zapisie odtworzenia faza czyta kartę ponownie (licznik zapisów), więc projekcja widzi własny zapis.
+
+**Karty w spoczynku (K-105 PT-412).** Zakończona karta bez żadnej pracy nie przechodzi co 5 s pełnego przebiegu karty
+(`_tick_card`, strażnik postoju `_guard_card`, `_queue_notices`); tick robi dla niej tylko lekkie sprawdzenie. Moduł:
+`cardflow/rest.py`.
+
+- *Definicja.* Warunek spoczynku to **jedna funkcja** `rest.at_rest(probe)` nad **rejestrem czynników
+  wykluczających** `rest.FACTORS`. Każdy czynnik ma nazwę i odpowiada na pytanie „ta karta ma pracę”; karta jest
+  w spoczynku tylko wtedy, gdy żaden czynnik jej nie wyklucza. Wyjątek albo błąd odczytu w czynniku wyklucza spoczynek
+  (`Verdict.error`). Czynniki czytają stan karty (`Journal.state`), kontekst odczytu Tablicy ticku i pamięć silnika;
+  nic nie zapisują.
+- *Czynniki rejestru* (kolejność sprawdzania):
+  `card-unfinished` — karta nie ma `card.finished` albo nie stoi w Gotowe/Archiwum (także karta usunięta z Tablicy);
+  `steps` — krok albo krok opiekuna trwa, albo Konsola kroku interaktywnego jest otwarta;
+  `intents` — zamiar akcji bez wyniku, także w tle (`youtrack-note`);
+  `held` — tożsamość procesu chroniona (`held`, K-38);
+  `k38-public` — karta K-38 (inwentaryzacja publicznych procesów biegnie tylko w jej pełnym przebiegu);
+  `main-merge` — scalenie do głównej czeka (`main-merge.waiting`) albo zamiar bez punktu kontrolnego `projected`;
+  `base` — propozycja, prośba albo zmiana bazy karty w toku (`baseproposal.blocked`, `card.base-requested`);
+  `outside` — polecenie poza piaskownicą tej karty trwa albo czeka (także próba testów po scaleniu i wpis w żywej
+  kolejce silnika);
+  `caretaker` — opiekun pracuje albo jego wynik czeka na akcję;
+  `stage-errors` — błąd etapu (`flow.error`) czeka na ponowienie;
+  `decisions` — decyzja czeka (`caretaker._waiting_decisions`: pytanie, zgoda, plan, review — zasilają `_caretake`);
+  `plan` — plan czeka na review, zatwierdzenie albo poprawę;
+  `reviews` — werdykt review albo odrzucenie ticketu czeka na odtworzenie (`_recover_verdicts`,
+  `_recover_review_rejections`);
+  `tracker` — notatka YouTracka po scaleniu ticketu czeka na wysłanie (projekt z YouTrackiem);
+  `notices` — powiadomienie czeka na wysłanie (w pamięci silnika albo wynik kroku bez `step.notice` i decyzji);
+  `queues` — karta ma operację w kolejce (niżej).
+- *Kolejki.* Nazwany punkt wejścia `rest.has_queued_operation` („karta ma operację w kolejce”) nad rejestrem źródeł
+  `rest.QUEUES`: `heavyqueue` (kolejka poleceń poza piaskownicą z kolejką ciężkich K-39 PT-373 — trwające i czekające,
+  ciężkie i lekkie, z próbami testów po scaleniu; źródła jak pole `queue` migawki, `queueview.operations`, oraz żywa
+  kolejka silnika) i `stepqueue` (kolejka kroków u dostawcy K-39 PT-377 — każdy wpis czekania). Każda oczekująca albo
+  trwająca operacja którejkolwiek kolejki wyklucza spoczynek **każdej** karty, także gdy należy do innej karty; błąd
+  odczytu stanu kolejki też. Kolejki odczytuje się raz na tick, przy pierwszym pytaniu. Obie kolejki są w bazie
+  ticketu i są podpięte przez PT-412; **kolejne kolejki (np. dalsza silnikowa część K-39, PT-378/381) podpinają się
+  wyłącznie przez `rest.register_queue`**, nie osobnym warunkiem w ticku. Ograniczenie: polecenie poza piaskownicą
+  z `outside.started` bez `outside.finished` na zakończonej karcie jest w kolejce tak samo jak w polu `queue` migawki,
+  więc trzyma wszystkie karty poza spoczynkiem, dopóki nie zniknie z kolejki.
+- *Zasada dla następców.* **Każdy nowy czynnik pracy musi wykluczać spoczynek.** Czynnik dopisuje się w jednym
+  miejscu — `rest.register(nazwa, pytanie, has_work)` albo wpis w `rest.FACTORS` (i nazwa na liście wyżej) — a nie
+  rozproszonym warunkiem w ticku. Tu podpinają się K-108 (unieważnienie spoczynku po zmianie blokera), K-109
+  (`command.*`), K-107 (otwarte etapy i Konsola) i silnikowa część K-39. Praca bez czynnika w rejestrze nie jest
+  obsłużona, dopóki karta jest w spoczynku (najdłużej do okresu kontroli pełnej).
+- *Lekkie sprawdzenie karty w spoczynku* (w każdym ticku): wersja dziennika (`Journal.version`, pamięć PT-411),
+  kontrola zgodności z kopią (`Journal.check`, PT-416 — bez zmian, więc revert dziennika w Tablicy wraca z kopii
+  z ostrzeżeniem w najbliższym ticku), kolumna i `move_id` z kontekstu odczytu Tablicy ticku, `at_rest`, rejestracja
+  repozytorium karty w strażniku worktree (`worktree_guard`) i w `_main_branches` (jak dotąd, przed decyzją
+  o spoczynku — strażnik działa także dla repozytorium, którego wszystkie karty są w spoczynku) oraz zajęte worktree
+  i ukryte sesje (`busy`/`hidden`) ze stanu karty z pamięci. Pętla odtwarzania na początku ticku (PT-459) nadal
+  obejmuje każdą kartę.
+- *Powrót pełnego przebiegu.* Pamięć `rest.RestMemory` trzyma po udanym pełnym przebiegu karty, która była wtedy
+  w spoczynku, znacznik (wersja dziennika, kolumna, `move_id`, chwila). Pełny przebieg wraca przy: zmianie wersji
+  dziennika (także własny zapis i zapis spoza procesu), zmianie kolumny albo ruchu karty na Tablicy (ruch obsługuje
+  pełny przebieg jak dotąd), pierwszym ticku nowego silnika (pusta pamięć), upływie okresu kontroli pełnej
+  (`rest.PERIOD` = `FULL_READ_PERIOD`, 10 min, zegar `Journal.monotonic`), wyjątku w poprzednim pełnym przebiegu
+  (bez znacznika) i gdy którykolwiek czynnik wykluczy spoczynek. Znacznik powstaje dopiero po pełnym przebiegu bez
+  wyjątku, w którym żaden czynnik nie wykluczał spoczynku — karta wykluczona np. operacją kolejki wraca do spoczynku
+  dopiero po kolejnym pełnym przebiegu.
+- *Ścieżki pełnego przebiegu, których zakończona karta nie potrzebuje* (dowód pokrycia: notka PT-412):
+  `_complete_manual_finish`, `start(…, _resume=True)`, `_advance_card`, `_caretake`, `_queue_notices`, `_guard_card`
+  i `_recover_transfer_requests` same pomijają kartę z `card.finished`; `_recover_started_steps` wykonuje także pętla
+  odtwarzania (każda karta); `_outside_history(card)` jest tylko odczytem; `_sync_plan_cards` odtwarza projekcję kartek
+  planu z dziennika — po zmianie plików z zewnątrz wraca przy najbliższej zmianie dziennika albo kontroli pełnej.
 
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
@@ -4305,8 +4605,11 @@ czyta ponownie. Faza nie zastępuje odczytu przed skutkiem: zapis odtworzonego s
 pierwszą mutacją karty w `recover_network` (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
 odczyt porównuje `HistoryPhase.unchanged`; przy zmianie mutacje tej karty są odmówione, stan sieci nie jest
 zapamiętany i kolejny tick uzgadnia go od nowa. Faza trwa cały tick: `_recover_started_steps` wołane z `_tick_card`
-też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo
-jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pamięci. Tablica:
+też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię poza fazą;
+od K-105 PT-415 odczyty bez skutku korzystają z pamięci historii procesów i stanu procesu karty, a bramki przed
+skutkiem czytają świeżo (sekcja dziennika karty, „Pamięć historii procesów i stanu procesu karty”). Faza jest
+widokiem jednego ticku nad tą pamięcią. Porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`)
+i zapisy bramek (`append`, `append_complete`) czytają świeżo (`Journal.read_fresh`). Tablica:
 tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
 transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,
 `_caretake` i `_guard_card` (kolumna karty). Zapis pliku Tablicy w tym procesie (`BoardStore.generation`) unieważnia

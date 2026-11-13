@@ -572,11 +572,14 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
-    def project_card_base(self, card_id: str, base: dict, board: Board | None = None) -> dict:
+    def project_card_base(self, card_id: str, base: dict, board: Board | None = None, guard=None) -> dict:
         """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard.
 
         `board`: Tablica z kontekstu odczytu ticku (K-98 #3). Gdy według niej pola bazy już są zapisane, nie ma
-        zapisu ani wczytania; inaczej zwykła transakcja zapisu ze świeżym odczytem (`_execute`)."""
+        zapisu ani wczytania; inaczej zwykła transakcja zapisu ze świeżym odczytem (`_execute`).
+        `guard`: fabryka kontekstu wchodzona w planie transakcji tuż przed zapisem zmienionych pól (K-105 PT-459:
+        świeże porównanie historii karty, gdy baza pochodzi z pamięci; wywołujący trzyma blokadę dziennika do końca
+        zapisu). Wyjątek z niej przerywa transakcję bez zapisu; bez zmiany pól nie jest wchodzona."""
         fields = (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit"))
 
         def plan(board):
@@ -590,6 +593,9 @@ class BoardStore:
                 if value or card.doc.has(key):
                     changed += _doc_set(card.doc, key, value)
             if changed:
+                if guard is not None:
+                    with guard():           # tylko przed faktycznym zapisem pól; odmowa przerywa transakcję
+                        pass
                 change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
             return change
         card = board.cards.get(card_num(card_id)) if board is not None else None

@@ -928,6 +928,8 @@ def _callback_write(resolver, path, call, catalog):
 # bez przypisanej bariery test kompletności kończy się porażką.
 IDENTITY_NAMES = frozenset({
     "process_identities", "read_process_history", "preserves_project", "_identityHeld",
+    # K-105 PT-415: stan procesu karty (historia ścisła + fold z kontrolą tożsamości, pamięć według wersji).
+    "process_state",
     "_process_state", "_process_check", "public_processes", "public_inventory", "active_steps",
     "box_event_error", "start_error", "_validate_process_identity", "_validate_box_event",
     "process_history_checked",
@@ -1129,7 +1131,8 @@ def consumers() -> list:
 
 # Producenci wspólnego wyniku: liczą lub ściśle walidują historię, ale nie decydują o skutku.
 # Ich wywołanie nie jest delegacją (odczyt wyniku wykrywa `identity_reads` u wywołującego).
-PRODUCERS = frozenset({("cardflow/state.py", "fold"), ("cardflow/journal.py", "Journal.read_complete"),
+# K-105 #2: ścisła reguła odczytu (pełny odczyt i przyrost, `read_complete` i `read_fresh`) jest w `_parse_strict`.
+PRODUCERS = frozenset({("cardflow/state.py", "fold"), ("cardflow/journal.py", "_parse_strict"),
                        ("cardflow/journal.py", "_validate_process_identity")})
 
 

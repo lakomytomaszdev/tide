@@ -1,5 +1,6 @@
 """PT-202: publiczny Preview → Resolve → Snapshot i awarie na prawdziwym repo."""
 import copy
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -8,8 +9,10 @@ from .test_cardflow_base import StartBaseSetup
 from . import test_cardflow_base_change as preview_tests
 from .test_cardflow_dbus import git
 from .test_cardflow_merge_recovery import PowerLoss
+from tide_daemon.cardflow import trialhold
 from tide_daemon.cardflow.basegeneration import BaseGeneration
 from tide_daemon.cardflow.engine import FlowError
+from tide_daemon.cardflow.journal import HistoryChanged
 from tide_daemon.cardflow.gitops import FlowGitError, worktree_for
 from tide_daemon.cardflow.state import derived, fold, ticket_of
 
@@ -351,6 +354,79 @@ class EmptyGenerationTest(StartBaseSetup):
         with mock.patch.object(engine, "_base_change_processes", active):
             BaseGeneration(engine).recover(self.ident)
         self.assert_waiting()
+
+    def test_external_append_after_the_memory_read_refuses_the_recovery_before_any_effect(self):
+        """K-105 PT-459: odtworzenie generacji z historii z pamięci (faza ticku) zaczyna od świeżego porównania —
+        dopisanie spoza procesu po odczycie z pamięci daje `HistoryChanged` bez zapisu i bez operacji git."""
+        self.ask()
+        request = self.request(self.preview(step="ask"))
+        self.crash(request, "intent", action="change-base")
+        self.restart()
+        engine, journal = self.flow.engine, self.flow.engine.journal
+        phase = trialhold.HistoryPhase(journal)
+        observed = trialhold.process_state(journal, self.ident, phase)       # odczyt z pamięci (jak pętla ticku)
+        events = observed[0]
+        with open(journal.mirror_path(self.ident), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"v": 1, "seq": len(events) + 1, "ts": "2026-11-13T12:00:00+01:00",
+                                 "card": self.ident, "type": "flow.notice", "key": "zewnetrzny",
+                                 "result": "plan"}, ensure_ascii=False) + "\n")
+        with open(journal.mirror_path(self.ident), encoding="utf-8") as fh:
+            written = fh.read()
+        git_calls = []
+        real_run = engine.git.run
+        with mock.patch.object(engine.git, "run", side_effect=lambda *a, **k: git_calls.append(a) or real_run(*a, **k)), \
+                self.assertRaises(HistoryChanged):
+            BaseGeneration(engine).recover(self.ident, observed)
+        self.assertEqual(git_calls, [], "odmowa przed operacjami git")
+        with open(journal.mirror_path(self.ident), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), written, "odmowa bez zapisu dziennika")
+        for row in self.intent()["generation"]:
+            self.assertFalse(Path(row["worktree"]).exists())
+        # Kolejny tick porównuje nową historię (bez odmowy `HistoryChanged`) i decyduje na niej: zamiar sprzed
+        # dopisania nie jest już zgodą na aktywację (kwalifikacja PT-202), więc generacja czeka bez skutku.
+        refused = []
+        real_unchanged = journal.unchanged
+
+        def unchanged(card, basis):
+            fresh = journal.read_fresh(card)
+            if fresh != list(basis):
+                refused.append(card)
+            return real_unchanged(card, basis)
+        with mock.patch.object(journal, "unchanged", side_effect=unchanged):
+            engine.tick()
+        self.assertEqual(refused, [])
+        engine.tick()
+        waits = self.of(self.ident, "base-change.waiting")
+        self.assertEqual([w["reason"] for w in waits], ["Dziennik zmienił się po zamiarze korekty."])
+        self.assertFalse(self.of(self.ident, "card.base-changed"))
+        self.assertFalse(self.of(self.ident, "base-change.checkpoint"))
+        self.assertEqual(fold(self.events(self.ident)).base_version, 1)
+        for row in self.intent()["generation"]:
+            self.assertFalse(Path(row["worktree"]).exists())
+
+    def test_completed_generation_is_not_resumed_and_the_second_tick_reads_no_history(self):
+        """K-105 PT-459: zakończona generacja (aktywacja i wynik w historii) nie wznawia `resume` w każdym ticku,
+        a drugi tick bez zmian nie czyta historii karty w całości ani nie otwiera transakcji Tablicy w projekcji."""
+        reply = self.call("request_card_base_change", {"baseRef": "refs/heads/feature/start",
+                                                      "baseCommit": self.feature_sha})
+        self.assertTrue(self.call("resolve_card_step", self.request(reply["preview"]))["changed"])
+        engine = self.flow.engine
+        engine.tick()
+        reads, resumed, projections = [], [], []
+        real_full, real_execute = engine.journal._read_strict, engine.store._execute
+        with mock.patch.object(engine.journal, "_read_strict",
+                               side_effect=lambda card: reads.append(card) or real_full(card)), \
+                mock.patch.object(BaseGeneration, "resume", side_effect=lambda *a: resumed.append(a)), \
+                mock.patch.object(engine.store, "project_card_base", wraps=engine.store.project_card_base) as project, \
+                mock.patch.object(engine.store, "_execute",
+                                  side_effect=lambda *a, **k: projections.append(project.call_count) or
+                                  real_execute(*a, **k)):
+            engine.tick()
+        self.assertEqual(resumed, [])
+        self.assertEqual(reads, [], "pełny odczyt historii w drugim ticku")
+        self.assertEqual(project.call_count, 1, "projekcja bazy w pętli raz na kartę")
+        self.assertEqual(projections, [], "projekcja bez zmiany pól otworzyła transakcję Tablicy")
+        self.assert_active()
 
     def assert_waiting(self):
         st = fold(self.events(self.ident))

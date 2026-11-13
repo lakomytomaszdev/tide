@@ -64,10 +64,12 @@ from . import stepqueue
 from . import caretaker
 from . import decisions
 from . import caretakerctx
+from .riskview import RiskMemo
 from . import handoff
 from . import boxstep
 from . import trialhold
 from . import processidentity
+from . import rest
 from ..box import trialgate
 from ..box import nftcontract
 from ..box import settings as bsettings
@@ -533,6 +535,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.store = store
         self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
+        self._risk_view = RiskMemo()    # K-105 #4: pamięć oceny ryzyka outside tylko dla widoku (nie dla workera)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie, ciężkie): kolejka FIFO
         self._outside_heavy = {}        # krok → ciężkie (bool): klasa polecenia czekającego albo trwającego (PT-373)
@@ -598,15 +601,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except trialgate.TrialDenied as exc:
             raise FlowError("k38-trial-held", str(exc)) from None
 
-    def _process_state(self, card):
-        """Ścisły odczyt i jeden model tożsamości przed skutkami procesu."""
+    def _process_state(self, card, *, fresh=False):
+        """Ścisły odczyt i jeden model tożsamości przed skutkami procesu.
+
+        K-105 PT-415: bez `fresh` — stan procesu karty z pamięci według wersji dziennika (kopia z własnymi kontenerami
+        pól; wartości zagnieżdżone tylko do odczytu), do odczytów, po których skutek ma własną świeżą bramkę.
+        `fresh=True` — bramka przed skutkiem: świeży pełny odczyt i nowe złożenie stanu."""
         try:
-            return fold(trialhold.read_process_history(self.journal, card))
+            return trialhold.process_state(self.journal, card, fresh=fresh)[1]
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise FlowError("process-history", f"nieznana historia procesów — operacja wstrzymana: {exc}") from None
 
-    def _process_check(self, card, step):
-        st = self._process_state(card)
+    def _process_check(self, card, step, *, fresh=True):
+        """Bramka procesu przed startem, zatrzymaniem i wznowieniem: świeży odczyt (K-105 PT-415). `fresh=False` tylko
+        dla obserwacji kroku w każdym ticku (`_poll`, `_guard`), których skutki przechodzą przez własne bramki."""
+        st = self._process_state(card, fresh=fresh)
         name = step.get("step") or step.get("key") or ""
         identity = st.process_identities.get(name)
         if identity is not None:
@@ -626,7 +635,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """
         with self.journal.lock:
             try:
-                events = trialhold.read_process_history(self.journal, "K-38")
+                events = trialhold.read_process_history(self.journal, "K-38", fresh=True)
                 return self._register_trial_diagnostic(events)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
@@ -653,7 +662,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Zapis zgody nie może wcześniej naprawić uszkodzonego fallbacku Tablicy.
         with self.journal.lock:
             try:
-                events = trialhold.read_process_history(self.journal, card)
+                events = trialhold.read_process_history(self.journal, card, fresh=True)
                 return self._start_trial_diagnostic(card, request, events)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
@@ -671,7 +680,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 cards = set(self.journal.cards_complete()) | {"K-38"}
             except (OSError, ValueError):
                 return False
-            states = [trialhold.inventory(self, c, fold([])) for c in sorted(cards)]
+            states = [trialhold.inventory(self, c, fold([]), fresh=True) for c in sorted(cards)]
             return all(states)
         try:
             self.trial_gate.start_registered(name, consent=True, inventory=safe, bootstrap=True)
@@ -993,7 +1002,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
         st = self.journal.state(card.get("id") or "")
         if st.started is not None:
             st.caretaker_setup = self._caretaker_setup(st)
-        out = derived(st, card)
+        cid = card.get("id") or ""
+        # K-105 #4: ocena ryzyka outside w opisie decyzji z pamięci widoku — tylko w odczycie prezentacji.
+        presenting = getattr(self.journal, "presenting", None)    # dzienniki zastępcze w testach nie mają trybu widoku
+        if presenting is not None and presenting():
+            memo = self.__dict__.setdefault("_risk_view", RiskMemo())   # też dla silnika zbudowanego bez __init__
+            scope = memo.scope(cid, self.journal.view_version(cid))
+        else:
+            scope = contextlib.nullcontext()
+        with scope:
+            out = derived(st, card)
         if out:
             ticketentry.enrich(st, out)
             fullcard.heavy_queued(st, out, self._heavy_view(card.get("id") or ""))
@@ -2149,7 +2167,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
-        st = self._process_state(card_id)
+        st = self._process_state(card_id, fresh=True)
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
@@ -3471,7 +3489,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _complete_manual_finish(self, card: str, column: str) -> bool:
         """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
         try:
-            st = self._process_state(card)
+            st = self._process_state(card, fresh=True)
         except FlowError:
             return False
         if baseproposal.generation_blocked(st):
@@ -3509,19 +3527,67 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if claim is not None:
             model_queue.shared().release_step(claim)
 
-    def _project_base(self, card: str, read=None) -> None:
+    def _project_base(self, card: str, read=None, observed=None) -> None:
         """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól.
-        `read`: kontekst odczytu ticku (K-98 #3) — gdy pola bazy już są na Tablicy, bez zapisu i bez wczytania."""
-        st = self.journal.state(card)
+        `read`: kontekst odczytu ticku (K-98 #3) — gdy pola bazy już są na Tablicy, bez zapisu i bez wczytania.
+        `observed` (K-105 PT-459, pętla odtwarzania ticku): (zdarzenia, stan karty) z fazy ticku nad pamięcią stanu
+        procesu karty (PT-415) zamiast odczytu dziennika; zapis pól na Tablicy idzie wtedy przez świeże porównanie
+        historii z tymi zdarzeniami (`Journal.unchanged`) — dopisanie po odczycie z pamięci daje `HistoryChanged`
+        bez zapisu, a kolejny tick liczy projekcję od nowa."""
+        guard = None
+        if observed is None:
+            st = self.journal.state(card)
+        else:
+            events, st = observed
+            guard = lambda: self.journal.unchanged(card, events)    # noqa: E731
         if st.started:
             try:
                 with self.journal.lock:
                     if read is None:
-                        self.store.project_card_base(card, base_of(st))
+                        self.store.project_card_base(card, base_of(st), guard=guard)
                     else:
-                        self.store.project_card_base(card, base_of(st), board=read.board)
+                        self.store.project_card_base(card, base_of(st), board=read.board, guard=guard)
             except Exception as exc:
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
+
+    def _replay_starts(self, read, history) -> set:
+        """Pętla odtwarzania na początku ticku dla każdej karty z dziennikiem (także zakończonej): ścisła kontrola
+        historii zlecenia (dawny skan `order.` po `journal.read` i własny pełny odczyt `startorder.events`), odtworzenie
+        generacji bazy (`BaseGeneration.recover`), projekcja bazy (`_project_base`) i odtworzenie startów kroków.
+
+        K-105 PT-459: historia karty pochodzi z fazy ticku (`history`) nad pamięcią ścisłego odczytu (PT-411) i stanu
+        procesu karty (PT-415) — drugi tick bez zmian nie czyta jej w całości. Ścisła reguła odczytu obejmuje kontrolę
+        `startorder.events` (pełne wiersze, kolejny `seq`). Błąd odczytu (unknown) wstrzymuje odtwarzanie tylko tej
+        karty; zwraca zbiór takich kart (tick pomija je także dalej). Zapisy elementów pętli porównują historię
+        świeżo przed skutkiem (`Journal.unchanged`, `append`) — pamięć nie autoryzuje zapisu."""
+        from .basegeneration import BaseGeneration
+        unreadable = set()
+        for card in self.journal.cards():
+            try:
+                generation = self.journal.generation(card)
+                observed = trialhold.process_state(self.journal, card, history)
+                try:
+                    BaseGeneration(self).recover(card, observed)
+                except Exception as exc:
+                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
+                if self.journal.generation(card) != generation:     # zapis odtworzenia: faza czyta ponownie
+                    observed = trialhold.process_state(self.journal, card, history)
+            except (OSError, ValueError, TypeError, KeyError):
+                unreadable.add(card)
+                continue
+            self._project_base(card, read, observed)
+            current = self.journal.state(card)
+            if not baseproposal.blocked(current):
+                self._recover_started_steps(card, current, history=history)
+        return unreadable
+
+    def _rest_memory(self) -> "rest.RestMemory":
+        """K-105 PT-412: znaczniki ostatniego pełnego przebiegu kart w spoczynku (`rest.RestMemory`, zegar okresu
+        kontroli pełnej — `Journal.monotonic`). Nowy silnik ma pustą pamięć: pierwszy tick przechodzi każdą kartę."""
+        memory = self.__dict__.get("_rest")
+        if memory is None:
+            memory = self.__dict__["_rest"] = rest.RestMemory(lambda: self.journal.monotonic())
+        return memory
 
     def tick(self) -> None:
         # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów (w pętli recovery
@@ -3539,7 +3605,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             try:
                 # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
                 # może wyprzedzić rozpoznania niepełnej historii po restarcie.
-                for card in self.journal.cards_complete():
+                registered = self.journal.cards_complete()
+                # K-105 #2: pamięć ścisłego odczytu nie trzyma kart, których już nie ma w rejestrze.
+                self.journal.forget_except(registered)
+                for card in registered:
                     trialhold.read_process_history(self.journal, card, history)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
@@ -3548,24 +3617,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             from ..issue_start import recover as recover_issue_starts
             from ..issues import IssueStore
             recover_issue_starts(IssueStore(self.store), self)
-            from .basegeneration import BaseGeneration
-            from . import startorder
-            unreadable_starts = set()
-            for card in self.journal.cards():
-                if any(e["type"].startswith("order.") for e in self.journal.read(card)):
-                    try:
-                        startorder.events(self, card)
-                    except (OSError, ValueError):
-                        unreadable_starts.add(card)
-                        continue
-                try:
-                    BaseGeneration(self).recover(card)
-                except Exception as exc:
-                    print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
-                self._project_base(card, read)
-                current = self.journal.state(card)
-                if not baseproposal.blocked(current):
-                    self._recover_started_steps(card, current, history=history)
+            unreadable_starts = self._replay_starts(read, history)
             boxstep.recover_network(self, history=history)
             # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
             running_local = {s["step"]: s for card in self.journal.cards()
@@ -3579,8 +3631,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         recovering=True)
             hidden_ids, hidden_places, busy = set(), set(), set()
             guarded: set[str] = set()
+            # K-105 PT-412: karty w spoczynku (`rest.at_rest`, znacznik ostatniego pełnego przebiegu) dostają tylko
+            # lekkie sprawdzenie — kontrolę zgodności, rejestrację repozytorium dla strażnika i `busy`/`hidden`.
+            memory = self._rest_memory()
+            resting = memory.begin(self, read)
+            memory.forget_except(registered)
             for card in self.journal.cards():
                 if card in unreadable_starts:
+                    resting.drop(card)
                     continue
                 warning = self.journal.check(card)
                 if warning:
@@ -3599,15 +3657,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         worktree_guard(repo, self._worktree_heads)
                 except Exception as exc:
                     print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
-                try:
-                    self._tick_card(card, st, read, history)
-                except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
-                    print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
-                try:
-                    self._guard_card(card, read)
-                    self._queue_notices(card, read)
-                except Exception as exc:
-                    print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                if not resting.resting(card, st):
+                    passed = True
+                    try:
+                        self._tick_card(card, st, read, history)
+                    except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
+                        passed = False
+                        print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
+                    try:
+                        self._guard_card(card, read)
+                        self._queue_notices(card, read)
+                    except Exception as exc:
+                        passed = False
+                        print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
+                    resting.passed(card, passed)
                 st = self.journal.state(card)
                 busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
                 busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
@@ -3623,8 +3686,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:
         """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty.
-        `history`: faza odczytu historii tego ticku dla `_recover_started_steps` (zapis z niej — `Journal.unchanged`);
-        pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo jak dotąd."""
+        `history`: faza odczytu historii tego ticku dla `_recover_started_steps` (zapis z niej — `Journal.unchanged`).
+        K-105 PT-415: bariera outside (`_outside_history(card)`) i inwentaryzacja K-38 czytają stan procesu karty
+        z pamięci według wersji dziennika; zapis inwentaryzacji, bramka outside z krokiem i kontrola procesu przed
+        startem czytają świeżo."""
         self._outside_history(card)
         trialhold.inventory(self, card, st)
         if baseproposal.blocked(st):
@@ -3963,7 +4028,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         done = st.finished.get(st.last_step) or {}
         if done.get("outside"):
             try:
-                self._outside_history(card, step)
+                # Obserwacja co tick z pamięci (K-105 PT-415); skutki niżej mają własne świeże bramki.
+                self._outside_history(card, step, fresh=False)
             except FlowError:
                 return
         result = done.get("result")
@@ -4395,7 +4461,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return f"{prefix}{max(numbers, default=0) + 1}"
 
     def _resolve_transfer(self, card: str, st: FlowState, request: dict) -> dict:
-        st = self._process_state(card)
+        st = self._process_state(card, fresh=True)
         choice = request.get("choice") or ""
         focus = str(request.get("step") or decision_step(st) or "")
         step = st.steps.get(focus) or {}
@@ -5222,19 +5288,29 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return True
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
-        """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
-        st = self._process_check(card, step)
-        if step.get("step") in st.superseded and step.get("step") not in st.plan_resumes:
-            raise FlowError("stale-context", "Nie można wznowić sesji poprzedniego kontekstu.")
-        if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
+        """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie.
+
+        K-105 PT-415: kontrola procesu na wejściu z pamięci (krok czekający na polecenie outside wraca tu co tick);
+        przed wznowieniem — świeża bramka procesu i ponowne sprawdzenie warunków na świeżym stanie."""
+        def resumable(st):
+            if step.get("step") in st.superseded and step.get("step") not in st.plan_resumes:
+                raise FlowError("stale-context", "Nie można wznowić sesji poprzedniego kontekstu.")
+            return not any(s.get("parentStep") == step.get("step") for s in st.steps.values())
+        st = self._process_check(card, step, fresh=False)
+        if not resumable(st):
             return
         done = st.finished.get(step.get("step")) or {}
-        if done.get("outside") and decision.get("choice") in ("run", "run-always", "run-ticket"):
+        outside = done.get("outside") and decision.get("choice") in ("run", "run-always", "run-ticket")
+        if outside:
             if step.get("runner") == boxstep.RUNNER:
                 raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
             decision = self._outside_ready(card, step, done, decision)
             if decision is None:
                 return          # polecenie poza piaskownicą jeszcze trwa
+        st = self._process_check(card, step)
+        if not resumable(st):
+            return
+        if outside:
             st = self.journal.state(card)
         item, project = self._project(card)
         info = ticket_of(st, step.get("ticket") or "")
@@ -5969,10 +6045,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
         `history` (K-98 #3, `trialhold.HistoryPhase` ticku): decyzja na odczycie fazy, a każdy zapis dopiero po
         świeżym pełnym odczycie równym temu, na którym ją podjęto (`append_unchanged`); zmiana albo ucięcie
-        dziennika lub kopii w międzyczasie — odmowa bez skutku, kolejny tick decyduje od nowa."""
+        dziennika lub kopii w międzyczasie — odmowa bez skutku, kolejny tick decyduje od nowa.
+
+        K-105 PT-415: z fazą — stan procesu karty z pamięci według wersji dziennika (kopia), a zapis zawsze po świeżym
+        porównaniu (`Journal.unchanged`); bez fazy (bezpośrednie odtworzenie po wyniku) — świeży pełny odczyt."""
         try:
-            events = trialhold.read_process_history(self.journal, card, history)
-            st = fold(events)
+            events, st = trialhold.process_state(self.journal, card, history, fresh=history is None)
         except (OSError, ValueError, TypeError, KeyError):
             return  # także bezpośrednie recovery zachowuje bajty nieznanej historii
         ticket = ticket_of(st)
@@ -6025,7 +6103,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _poll(self, card: str, step: dict) -> None:
         try:
-            self._process_check(card, step)
+            # Obserwacja kroku co tick z pamięci (K-105 PT-415); zatrzymanie (`_stop`) ma własną świeżą bramkę.
+            self._process_check(card, step, fresh=False)
         except FlowError:
             return
         if step.get("mode") == "interactive":
@@ -6136,7 +6215,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
         try:
-            self._process_check(card, step)
+            # Obserwacja kroku co tick z pamięci (K-105 PT-415); zatrzymanie (`_stop`) ma własną świeżą bramkę.
+            self._process_check(card, step, fresh=False)
         except FlowError:
             return
         name = step.get("step") or ""
@@ -7104,21 +7184,43 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {key: found.get(key) for key in ("step", "ticket", "kind", "check", "command", "after", "branch",
                                                 "worktree", "stepDir", "baseVersion")}
 
-    def _merge_check_history(self, card: str) -> list:
+    def _merge_check_history(self, card: str, *, fresh: bool = False, starting: str = "") -> list:
+        """Historia procesów karty dla próby testów po scaleniu. Bez `fresh` z pamięci według wersji dziennika
+        (K-105 PT-415) — wyłącznie do obserwacji czekania; `fresh=True` (świeży pełny odczyt, bez pamięci) przed każdym
+        skutkiem: start próby (Popen), zatrzymanie jednostki i zapis wyniku. `starting` — nazwa próby przed jej startem:
+        świeża historia z jakimkolwiek uruchomieniem tej próby (np. dopisanym z zewnątrz po odczycie z pamięci) albo
+        niespójnym stanem outside odmawia startu (FlowError), jak `_outside_history` z krokiem i poleceniem."""
         try:
-            return trialhold.read_process_history(self.journal, card)
+            events = trialhold.read_process_history(self.journal, card, fresh=fresh or bool(starting))
+            if starting:
+                state, started, finished = processidentity.outside_run(events, starting)
+                if state != "ok" or started is not None or finished is not None:
+                    raise ValueError("próba ma już uruchomienie w historii — start odmówiony")
+            return events
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
 
     def _merge_check_run(self, card: str, step: dict, entry: dict, decision: dict) -> None:
         """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
         `outside.finished` pseudokroku i `merge.check-finished` z tym samym `exit` (liczba, „zatrzymane”,
-        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku."""
+        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku.
+
+        K-105 PT-415: czekanie (kolejka, trwająca próba) z pamięci historii; każdy skutek — wynik z zapisanego
+        zakończenia, start (pod blokadą w `_merge_check_start`), zatrzymanie jednostki i zapis wyniku — dopiero po
+        świeżym odczycie i tej samej redukcji na nim."""
         self._trial_check(step)
         name = step["step"]
         state, started, finished = processidentity.outside_run(self._merge_check_history(card), name)
         if state != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+
+        def fresh_run():
+            run = processidentity.outside_run(self._merge_check_history(card, fresh=True), name)
+            if run[0] != "ok":
+                raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+            return run
+        if finished:
+            _, started, finished = fresh_run()
         if finished:
             # Restart między `outside.finished` a wynikiem próby: wynik z zapisanego zakończenia, dokładnie raz.
             self._merge_check_finish(card, step, entry, finished.get("exit"), (started or {}).get("log") or "")
@@ -7145,7 +7247,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._merge_check_start(card, step, entry)
             return
-        collected = self._outside_collect(card, name, started)
+        def still_current():
+            # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
+            _, now_started, now_finished = fresh_run()
+            return not now_finished and now_started == started
+        collected = self._outside_collect(card, name, started, confirm=still_current)
         if collected is not None:
             code, tail = collected
             with self.journal.lock:
@@ -7200,7 +7306,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # bo udane ponowienie nie może zastąpić porażki (zasady wyjątków od testów).
         unit, log, exit_file, argv, env = self._outside_launch(name, step["stepDir"], worktree, command)
         with open(log, "ab") as out, self.journal.lock:
-            self._merge_check_history(card)
+            # K-105 PT-415: świeży ścisły odczyt pod blokadą przed Popen (jak `_start_outside`): uruchomienie dopisane
+            # z zewnątrz po ticku (odczyt z pamięci) zamyka start.
+            self._merge_check_history(card, fresh=True, starting=name)
             if not self._merge_check_still_allowed(card, step):
                 return
             subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
@@ -7520,27 +7628,33 @@ class FlowEngine(CaretakerChat, PlanEditing):
         data["outsideCommands"] = allowed
         self._write_settings(data)
 
-    def _outside_history(self, card: str, step: dict | None = None, *, command: str | None = None):
-        """Niepełna historia nie uprawnia do zgody, startu ani sprzątania outside."""
+    def _outside_history(self, card: str, step: dict | None = None, *, command: str | None = None,
+                         fresh: bool = True):
+        """Niepełna historia nie uprawnia do zgody, startu ani sprzątania outside.
+
+        K-105 PT-415: bez `step` (bariera ticku, odczyt bez skutku) — historia z pamięci według wersji dziennika;
+        z `step`/`command` (bramka zgody i startu outside) — świeży pełny odczyt i nowe złożenie stanu. `fresh=False`
+        tylko dla obserwacji w każdym ticku (krok czeka na kolejkę, wynik albo regułę), po której każdy skutek
+        (zgoda, start, zapis wyniku, wznowienie) ma własne świeże wywołanie tej bramki."""
         try:
-            events = trialhold.read_process_history(self.journal, card)
-            if step is not None:
-                st = fold(events)
-                name = step.get("step") or ""
-                recorded = st.steps.get(name)
-                if recorded is None or any(recorded.get(key) != step.get(key) for key in
-                                           ("ticket", "kind", "runner", "worktree", "stepDir", "branch")):
-                    raise ValueError("tożsamość outside nie zgadza się z zapisanym krokiem")
-                self._trial_check(recorded)
-                if command is not None:
-                    done = st.finished.get(name) or {}
-                    decision = st.step_decisions.get(name) or {}
-                    if (done.get("result") != "denied" or not done.get("outside")
-                            or done.get("command") != command
-                            or decision.get("choice") not in ("run", "run-always", "run-ticket")
-                            or ("command" in decision and decision["command"] != command)
-                            or name in st.outside_started):
-                        raise ValueError("brak aktualnej prośby i zgody na start outside")
+            if step is None:
+                return trialhold.read_process_history(self.journal, card)
+            events, st = trialhold.process_state(self.journal, card, fresh=fresh)
+            name = step.get("step") or ""
+            recorded = st.steps.get(name)
+            if recorded is None or any(recorded.get(key) != step.get(key) for key in
+                                       ("ticket", "kind", "runner", "worktree", "stepDir", "branch")):
+                raise ValueError("tożsamość outside nie zgadza się z zapisanym krokiem")
+            self._trial_check(recorded)
+            if command is not None:
+                done = st.finished.get(name) or {}
+                decision = st.step_decisions.get(name) or {}
+                if (done.get("result") != "denied" or not done.get("outside")
+                        or done.get("command") != command
+                        or decision.get("choice") not in ("run", "run-always", "run-ticket")
+                        or ("command" in decision and decision["command"] != command)
+                        or name in st.outside_started):
+                    raise ValueError("brak aktualnej prośby i zgody na start outside")
             return events
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
@@ -7552,9 +7666,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
         name = step.get("step") or ""
         # Start i zakończenie bieżącego uruchomienia outside tego procesu ze wspólnego wyniku redukcji:
         # zakończenie innej próby tej samej nazwy nie jest odpowiedzią bieżącej (PT-288 review 2, M4).
-        state, started, finished = processidentity.outside_run(self._outside_history(card, step), name)
+        # K-105 PT-415: czekanie (kolejka, trwające polecenie) z pamięci; każdy skutek (wznowienie z wynikiem, start,
+        # zapis `outside.finished`) dopiero po świeżym odczycie i tej samej redukcji na nim.
+        state, started, finished = processidentity.outside_run(self._outside_history(card, step, fresh=False), name)
         if state != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+
+        def fresh_run():
+            run = processidentity.outside_run(self._outside_history(card, step), name)
+            if run[0] != "ok":
+                raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+            return run
+        if finished:
+            _, started, finished = fresh_run()
         if finished:
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         if started is None:
@@ -7584,7 +7708,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
-        collected = self._outside_collect(card, name, started)
+        def still_current():
+            # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
+            _, now_started, now_finished = fresh_run()
+            return not now_finished and now_started == started
+        collected = self._outside_collect(card, name, started, confirm=still_current)
         if collected is None:
             return None
         code, tail = collected
@@ -7595,10 +7723,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
                                       f"Koniec wyniku:\n{tail}"}
 
-    def _outside_collect(self, card: str, name: str, started: dict):
+    def _outside_collect(self, card: str, name: str, started: dict, confirm=None):
         """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
         wyjścia, zatrzymana jednostka bez kodu (PT-315, `_outside_stopped`) albo przekroczony czas. Wspólne dla prośby
-        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego."""
+        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego.
+
+        `confirm` (K-105 PT-415): gdy `started` pochodzi z pamięci historii, świeża kontrola tuż przed pierwszym skutkiem
+        (zatrzymanie jednostki, zwolnienie miejsca); False — historia zmieniła się po odczycie z pamięci, bez skutku
+        i bez wyniku (None), kolejny tick decyduje od nowa. Wołana tylko, gdy uruchomienie już się skończyło albo
+        przekroczyło czas, więc nie dokłada świeżego odczytu do czekania."""
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
         step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
@@ -7607,6 +7740,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             code = self._outside_stopped(started, step_dir)
             if code is None:
                 return None
+        if confirm is not None and not confirm():
+            return None
         if code is None:
             stepstop._systemctl("stop", started["unit"] + ".scope")
             code = "przekroczony czas"
@@ -7727,11 +7862,22 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if trialhold.held(step):
             return
         try:
-            self._outside_history(card, step)
+            # K-105 PT-415: sprawdzenie co tick z pamięci; każdy zapis niżej dopiero po świeżej bramce (`gate`).
+            self._outside_history(card, step, fresh=False)
         except FlowError:
             return
+
+        def gate():
+            self._outside_history(card, step)
+        try:
+            self._outside_recheck_rules(card, step, done, gate)
+        except FlowError:
+            return
+
+    def _outside_recheck_rules(self, card: str, step: dict, done: dict, gate) -> None:
         if step.get("runner") == boxstep.RUNNER:
             if done.get("canAllow", True):
+                gate()
                 self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                     ticket=step.get("ticket") or "", canAllow=False)
             return
@@ -7743,10 +7889,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if allowed != bool(done.get("canAllow", True)):
             # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
+            gate()
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
         if allowed:
-            consent.record_automatic(self, card, step, command)
+            consent.record_automatic(self, card, step, command, gate=gate)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
 
@@ -8842,8 +8989,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                      i.get("requestSeq") == (st.started or {}).get("seq")), None)
 
     def _pending_main_merge(self, card: str) -> dict | None:
+        # K-105 PT-415: projekcja z pamięci `Journal.state` zamiast `fold` co tick; stan przed zdarzeniami, więc
+        # dopisanie w międzyczasie najwyżej odkłada odtworzenie do kolejnego ticku (punkt kontrolny jest w `events`).
+        intent = self._main_merge_intent(self.journal.state(card))
         events = self.journal.read(card)
-        intent = self._main_merge_intent(fold(events))
         if not intent or any(e.get("type") == "main-merge.checkpoint" and e.get("key") == intent["key"] and
                              e.get("stage") == "projected" for e in events):
             return None

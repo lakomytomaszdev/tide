@@ -300,7 +300,7 @@ class ResumeFixTest(_FixJournal):
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.engine._process_check = lambda card, step: self.engine.journal.state(card)
+        self.engine._process_check = lambda card, step, **_: self.engine.journal.state(card)
         self.engine._next_step_id = lambda *args: f"resume-{len(self.launched) + 1}"
 
     def fix_step(self, name, executor, round_no, **extra):
@@ -373,7 +373,7 @@ class ResumeFixTest(_FixJournal):
         engine = self.engine
         # Rzeczywista pętla błędu i doboru wykonawcy; porty procesu, planowania i gita są atrapami.
         engine._settings_data = lambda: {"escalateErrors": True}
-        engine._process_state = lambda card: engine.journal.state(card)
+        engine._process_state = lambda card, **_: engine.journal.state(card)
         engine._advance_limit = lambda *args: False
         engine._advance_plan_review = lambda *args: False
         engine._advance_planning = lambda *args: False

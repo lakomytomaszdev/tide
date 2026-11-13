@@ -99,6 +99,21 @@ def _waiting(card: str, st: FlowState, project: str, heavy_of, now: float, quiet
     return out
 
 
+def operations(states: Mapping[str, FlowState], *, now: float | None = None) -> list[dict]:
+    """Wszystkie trwające i czekające wpisy kolejki (ciężkie i lekkie, z próbami testów po scaleniu) z tych samych
+    źródeł co `build`, bez klasyfikacji ciężkości i bez odczytu obciążenia — dla punktu wejścia „karta ma operację
+    w kolejce” warunku spoczynku (K-105 PT-412, `rest.has_queued_operation`)."""
+    now = time.time() if now is None else now
+    unclassified = lambda *_args: False     # noqa: E731 — klasa polecenia nie zmienia obecności wpisu
+    found = []
+    for card in sorted(states):
+        st = states[card]
+        project = str((st.started or {}).get("project") or "")
+        found += [entry for _, entry in _running(card, st, project, unclassified, unclassified)]
+        found += [entry for _, entry in _waiting(card, st, project, unclassified, now, unclassified)]
+    return found
+
+
 def mark_decisions(card: str, st: FlowState, decisions: list, heavy_of: Callable) -> None:
     """Część techniczna decyzji zgody na polecenie poza piaskownicą dostaje `queue`: `heavy` albo `outside` (ta sama
     klasyfikacja co start polecenia; próba testów po scaleniu jest zawsze ciężka). Okno liczy z tego prognozę na polach

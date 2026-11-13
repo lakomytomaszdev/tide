@@ -522,7 +522,6 @@ def recover_network(engine, history=None) -> None:
     pełny odczyt musi być równy odczytowi fazy; inaczej mutacje tej karty są odmówione bez skutku, a stan sieci
     nie jest zapamiętany, więc kolejny tick uzgadnia go od nowa."""
     from . import trialhold
-    from .processidentity import process_identities
     proxy = proxy_of(engine)
     active, ended = [], []
     basis, confirmed = {}, {}
@@ -542,16 +541,21 @@ def recover_network(engine, history=None) -> None:
         try:
             # PT-288: wspólny ścisły odczyt i model tożsamości zamiast lokalnej reguły zdarzeń.
             # Nieznana lub niespójna historia karty: bez zwolnień, refguard ani polityk sieci.
-            events = basis[card] = trialhold.read_process_history(engine.journal, card, history)
+            # K-105 PT-415: stan procesu karty (model tożsamości i fold) z pamięci według wersji dziennika, gdy mutacje
+            # porównuje świeżo faza ticku (`fresh`); bez fazy (odtworzenie zamiaru startu) świeży odczyt bez pamięci.
+            events, whole = trialhold.process_state(engine.journal, card, history, fresh=history is None)
+            basis[card] = events
         except (OSError, ValueError, TypeError, KeyError):
             continue
         # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
         # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
-        protected = {name for name, identity in process_identities(events).items()
+        protected = {name for name, identity in whole.process_identities.items()
                      if identity.held and isinstance(name, str)}
-        events = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
-                  and e.get("key") not in protected]
-        st = fold(events)
+        kept = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
+                and e.get("key") not in protected]
+        # Bez pominiętych zdarzeń stan jest stanem procesu karty; nowe złożenie tylko dla historii z próbami K-38.
+        st = whole if len(kept) == len(events) else fold(kept)
+        events = kept
         # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
         # oznacza, że nie uruchomiono procesu. Nie dotykamy rezerwacji trwającego zamiaru.
         for event in events:
