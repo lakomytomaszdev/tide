@@ -642,6 +642,20 @@ out["emptyState"] = item("mergeWindowState")["text"]
         self.assertEqual(out["empty"], {name: False for name in SECTION_NAMES}, "puste listy: sekcje znikają")
         self.assertEqual(out["emptyState"], "Można scalić")
 
+    def test_conflict_preview_has_no_conflict_task_button_or_properties(self):
+        out = self.probe("rich = " + repr(RICH) + r'''
+open_window()
+answer(last("preview")[1], {**rich, "targetRef": "refs/heads/master"})
+out["state"] = item("mergeWindowState")["text"]
+out["texts"] = visible_texts()
+out["props"] = json.loads(js("(function () { const out = []; for (const k in loader.item) out.push(k); "
+                             "return JSON.stringify(out) })()"))
+''')
+        self.assertEqual(out["state"], "Konflikty w 2 plikach")
+        self.assertIn("canConfirm", out["props"], "kontrola: wyliczanie właściwości komponentu działa")
+        self.assertEqual([t for t in out["texts"] if "Zleć" in t or "rozwiązanie konfliktów" in t.lower()], [])
+        self.assertEqual([k for k in out["props"] if k.lower().startswith("conflicttask")], [])
+
     def test_collision_and_preparation_sections_follow_their_own_data(self):
         out = self.probe("rich = " + repr(RICH) + r'''
 open_window(ref="refs/heads/release/<b>x", branch="")
@@ -689,6 +703,7 @@ for code in codes:
         self.assertIn("[nowy-kod-z-przyszlosci]", details)
 
     def test_known_codes_match_the_codes_the_service_can_return(self):
+        # Docs (`tide-daemon.md`) opisują tylko 7 kodów; pełną listę gwarantuje porównanie z kodem usługi poniżej.
         found = set()
         with open(ENGINE, encoding="utf-8") as fh:
             engine = fh.read()
