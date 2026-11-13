@@ -4,10 +4,12 @@ import io
 from pathlib import Path
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from tools import test_dependencies as deps
 from tools import test_runner as runner
 from tools import test_changed_benchmark as benchmark
 from tools.test_dependencies import ImportGraph
@@ -375,3 +377,165 @@ class SelectionBenchmarkTest(unittest.TestCase):
                 self.assertGreaterEqual(data["measurements"][row["before"]]["seconds"], 0)
                 self.assertEqual(len(data["measurements"][row["after"]]["modules"]), 1)
             self.assertIn("| commit4 | 2 | 1 |", (output / "report.md").read_text())
+
+
+class DependencyReportTest(unittest.TestCase):
+    """PT-460: raport zasięgu i sięgania silnika na drzewie fixture (zestawy z drzewa narzędzia, pliki z --root)."""
+    SUITES = {"cardflow": [("daemon/tests", "test_cardflow*.py")], "daemon": [("daemon/tests", "test*.py")]}
+    PREFIX = "daemon/tide_daemon/cardflow/"
+    ENGINE = PREFIX + "engine.py"
+
+    def setUp(self):
+        patcher = patch.object(deps, "SUITES", self.SUITES)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.root = self.tree({
+            "__init__": "",
+            "engine": "from . import shared\n",
+            "shared": 'raise RuntimeError("analiza nie może wykonać kodu")\n',
+            "runner": "from . import engine\n",
+            "chained": "from . import runner\n",
+            "lazy": "def load():\n    from . import engine\n    return engine\n",
+            "doc": '"""Silnik (`engine.py`) podaje dane; from . import engine to tylko wzmianka."""\n# import engine\n',
+            "pure": "import json\n",
+            "orphan": "",
+        }, {
+            "cardflow_pure": "from tide_daemon.cardflow import pure\n",
+            "cardflow_runner": "from tide_daemon.cardflow import runner\n",
+            "cardflow_engine_only": "from tide_daemon.cardflow import engine\n",
+            "cardflow_doc": "from tide_daemon.cardflow import doc\n",
+            "cardflow_dynamic": "import importlib\n\ndef load(name):\n    return importlib.import_module(name)\n",
+            "other": "from tide_daemon.cardflow import pure\n",
+        })
+        self.tests = set(deps.suite_modules(self.root)[0])
+
+    def tree(self, sources, tests):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for name, body in sources.items():
+            self.put(root, self.PREFIX + name + ".py", body)
+        for name, body in tests.items():
+            self.put(root, "daemon/tests/test_" + name + ".py", body)
+        return root
+
+    @staticmethod
+    def put(root, path, body):
+        file = root / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(body, encoding="utf-8")
+
+    def rows(self, root=None):
+        report = deps.dependency_report(root or self.root)
+        return report, {row["path"].removeprefix(self.PREFIX): row for row in report["rows"]}
+
+    def test_reach_equals_affected_keys_for_both_variants_and_engine_is_first(self):
+        report, rows = self.rows()
+        graph = ImportGraph(self.root, ["daemon/tests"])
+        self.assertEqual(report["rows"][0]["path"], self.ENGINE)
+        self.assertEqual(set(rows), {"engine.py", "__init__.py", "shared.py", "runner.py", "chained.py",
+                                     "lazy.py", "doc.py", "pure.py", "orphan.py"})
+        for name, row in rows.items():
+            path = self.PREFIX + name
+            self.assertEqual(row["reach_certain"], len(graph.affected(path, self.tests, include_uncertain=False)))
+            self.assertEqual(row["reach_potential"], len(graph.affected(path, self.tests, include_uncertain=True)))
+        # Znane wartości: pewne bez testu importera nierozstrzygalnego, potencjalne z nim.
+        self.assertEqual((rows["pure.py"]["reach_certain"], rows["pure.py"]["reach_potential"]), (2, 3))
+        self.assertEqual((rows["runner.py"]["reach_certain"], rows["runner.py"]["reach_potential"]), (1, 2))
+        self.assertEqual((rows["orphan.py"]["reach_certain"], rows["orphan.py"]["reach_potential"]), (0, 1))
+
+    def test_reaches_engine_with_chain_in_function_import_counted_docstring_not(self):
+        _, rows = self.rows()
+        self.assertEqual(rows["chained.py"]["chain"], [self.PREFIX + n for n in ("chained.py", "runner.py", "engine.py")])
+        self.assertEqual(rows["lazy.py"]["chain"], [self.PREFIX + "lazy.py", self.ENGINE])
+        self.assertTrue(rows["runner.py"]["reaches_engine"])
+        for name in ("doc.py", "pure.py", "orphan.py", "shared.py", "__init__.py"):
+            with self.subTest(name=name):
+                self.assertFalse(rows[name]["reaches_engine"])
+                self.assertIsNone(rows[name]["chain"])
+
+    def test_summary_counts_modules_and_cardflow_suite_tests_without_engine(self):
+        report, _ = self.rows()
+        # Bez engine.py: runner, chained, lazy sięgają silnika; __init__, shared, doc, pure, orphan nie.
+        self.assertEqual(report["summary"]["cardflow_modules"], 8)
+        self.assertEqual(report["summary"]["cardflow_modules_without_engine"], 5)
+        # Zestaw cardflow: runner i engine_only sięgają silnika, pure/doc/dynamic nie.
+        self.assertEqual(report["summary"]["cardflow_suite_tests"], 5)
+        self.assertEqual(report["summary"]["cardflow_suite_tests_without_engine"], 3)
+
+    def test_own_tests_exclude_tests_reachable_only_through_engine(self):
+        _, rows = self.rows()
+        graph = ImportGraph(self.root, ["daemon/tests"])
+        # shared.py: testy wchodzą tylko przez engine → runner/lazy/chained; bez węzła engine nic nie zostaje.
+        self.assertEqual(set(graph.affected(self.PREFIX + "shared.py", self.tests, include_uncertain=False)),
+                         {"daemon/tests/test_cardflow_runner.py", "daemon/tests/test_cardflow_engine_only.py"})
+        self.assertEqual((rows["shared.py"]["own_certain"], rows["shared.py"]["own_potential"]), (0, 1))
+        # runner.py ma własny test niezależnie od silnika.
+        self.assertEqual((rows["runner.py"]["own_certain"], rows["runner.py"]["own_potential"]), (1, 2))
+        self.assertEqual((rows["engine.py"]["own_certain"], rows["engine.py"]["own_potential"]), (None, None))
+
+    def test_import_chain_a_to_b_and_missing_chain(self):
+        graph = ImportGraph(self.root, ["daemon/tests"])
+        p = self.PREFIX
+        self.assertEqual(deps.import_chain(graph, p + "chained.py", self.ENGINE),
+                         [p + "chained.py", p + "runner.py", self.ENGINE])
+        self.assertEqual(deps.import_chain(graph, self.ENGINE, self.ENGINE), [self.ENGINE])
+        self.assertIsNone(deps.import_chain(graph, self.ENGINE, p + "runner.py"))
+        self.assertIsNone(deps.import_chain(graph, p + "pure.py", self.ENGINE))
+        self.assertIsNone(deps.import_chain(graph, p + "nie_ma.py", self.ENGINE))
+
+    def test_selection_marks_full_fallback_and_service_contract(self):
+        _, rows = self.rows()
+        self.assertEqual(rows["__init__.py"]["marks"], ["pełny", "kontrakt"])
+        self.assertEqual(rows["orphan.py"]["marks"], ["fallback", "kontrakt"])
+        self.assertEqual(rows["runner.py"]["marks"], ["kontrakt"])
+        self.assertEqual(deps.selection_marks("tools/x.py", {"t"}), [])
+        # Oznaczenia zgadzają się z doborem make test-changed na tym samym drzewie.
+        entries = [("daemon/tests", "test*.py")]
+        with patch.object(runner, "SUITES", self.SUITES), \
+                patch.object(runner, "SERVICE_CONTRACT_MODULES", ("daemon/tests/test_other.py",)):
+            self.assertTrue(runner.changed_modules([self.PREFIX + "__init__.py"], entries, self.root).full)
+            fallback = runner.changed_modules([self.PREFIX + "orphan.py"], entries, self.root)
+            self.assertIn("zestaw cardflow: brak rozpoznanych importów testów",
+                          fallback.reasons["daemon/tests/test_cardflow_pure.py"][0])
+            normal = runner.changed_modules([self.PREFIX + "runner.py"], entries, self.root)
+            self.assertFalse(any("brak rozpoznanych" in r for rs in normal.reasons.values() for r in rs))
+            self.assertIn("daemon/tests/test_other.py", normal.reasons)
+
+    def test_report_never_imports_analysed_code(self):
+        sys.modules.pop("tide_daemon.cardflow.shared", None)
+        self.rows()
+        self.assertNotIn("tide_daemon.cardflow.shared", sys.modules)
+
+    def test_cli_text_and_json_carry_the_same_data(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(deps.main(["--root", str(self.root)]), 0)
+        text = out.getvalue()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(deps.main(["--json", "--root", str(self.root)]), 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data, deps.dependency_report(self.root))
+        self.assertIn("łańcuch: chained.py → runner.py → engine.py", text)
+        self.assertIn("bez drogi do silnika: 5 / 8", text)
+        self.assertIn("niesięgające silnika: 3 / 5", text)
+        self.assertIn("pełny, kontrakt", text)
+        self.assertNotIn(str(self.root) + "/" + self.PREFIX, text)
+
+    def test_root_points_to_another_tree_with_suites_from_the_tool_tree(self):
+        other = self.tree({"__init__": "", "engine": "", "alone": ""},
+                          {"cardflow_alone": "from tide_daemon.cardflow import alone\n"})
+        _, rows = self.rows(other)
+        self.assertEqual(set(rows), {"engine.py", "__init__.py", "alone.py"})
+        self.assertEqual(rows["alone.py"]["reach_certain"], 1)
+        self.assertFalse(rows["alone.py"]["reaches_engine"])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deps.main(["--json", "--root", str(other)])
+        self.assertEqual(json.loads(out.getvalue())["root"], str(other))
+
+    def test_missing_engine_is_a_cli_error(self):
+        bare = self.tree({"__init__": ""}, {"cardflow_x": ""})
+        with redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            deps.main(["--root", str(bare)])
