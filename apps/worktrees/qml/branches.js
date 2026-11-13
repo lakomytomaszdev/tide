@@ -1,5 +1,6 @@
 .pragma library
-// Tryb „Gałęzie” okna Worktrees (K-99, PT-388): drzewo z odpowiedzi `Git.BranchMap({project})` i teksty stanu.
+// Tryb „Gałęzie” okna Worktrees (K-99, PT-388): drzewo z odpowiedzi `Git.BranchMap({project})` i teksty stanu;
+// dane okna scalania z mapy (PT-395).
 // Czysta logika bez QML — testowana osobno i w sondzie okna.
 // Skróty gałęzi i dat to wspólny formatter „startu” (git/start.js), bez kopii.
 .import "git/start.js" as Start
@@ -101,6 +102,49 @@ function mapRequest(project) {
 
 function cardDiffRequest(card) {
     return {source: "card", card: card}
+}
+
+// --- Okno scalania z mapy (K-99, PT-395) -----------------------------------------------------------------
+
+// „Scal…” tylko przy gałęzi karty domkniętej i niescalonej (`state: closed`); karta w toku, scalona, ticket
+// i baza go nie mają. O tym, czy scalenie jest naprawdę możliwe, decyduje podgląd usługi w oknie.
+function canMerge(node) {
+    return !!node && node.kind === "card" && node.state === "closed" && typeof node.card === "string" && node.card !== ""
+}
+
+// Znana baza karty (pełny ref) dla okna scalania: `started.ref` węzła; pusta — baza nieznana (cel to propozycja).
+function cardBaseRef(node) {
+    const started = node && node.started
+    return started && typeof started.ref === "string" ? started.ref : ""
+}
+
+// „Start od: master (3.11, 58a3f26)” z pól węzła mapy przez wspólny formatter (git/start.js, `cardStartLine`):
+// `started` to baza z datą startu, a po korekcie bazy `started.initial` (wtedy zdanie bez daty, jak w Tablicy).
+function cardStartLine(node) {
+    const started = node && node.started
+    if (!started || typeof started !== "object") return ""
+    const point = (ref, sha) => typeof ref === "string" && ref !== ""
+        ? { status: "known", baseRef: ref, baseCommit: typeof sha === "string" ? sha : "" } : { status: "unknown" }
+    const flow = { base: point(started.ref, started.sha),
+                   timeline: [{ type: "card.started", ts: typeof started.date === "string" ? started.date : "" }] }
+    if (started.initial && typeof started.initial === "object")
+        flow.initialBase = point(started.initial.ref, started.initial.sha)
+    return Start.cardStartLine(flow)
+}
+
+// Powód odmowy usługi dla okna scalania; "" przy sukcesie.
+function mergeErrorText(reply) {
+    if (reply && reply.ok === true) return ""
+    const message = reply && typeof reply.message === "string" ? reply.message : ""
+    if (message !== "") return message
+    const code = reply && typeof reply.error === "string" ? reply.error : ""
+    return code !== "" ? "Usługa odmówiła (" + code + ")." : "Usługa tide-daemon nie odpowiedziała — spróbuj jeszcze raz."
+}
+
+// Komunikat po udanym `MergeCard` (z okna: „Scalono K-5 do main”); `already` — źródło było już w celu.
+function mergedText(message, reply) {
+    if (!message) return ""
+    return message + (reply && reply.already === true ? " — gałąź karty była już w celu, bez nowego commita." : ".")
 }
 
 // Projekt do pokazania: zapamiętany, gdy nadal jest na liście; inaczej pierwszy z listy; bez listy — "".

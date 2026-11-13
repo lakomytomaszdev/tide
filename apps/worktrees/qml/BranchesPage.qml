@@ -4,6 +4,12 @@
 // Strona sama nie rozmawia z usługą: backend daje branchMap(tag, żądanie), branchMapReplied(tag, json), gitDiff,
 // replied (widok diffa), boardChanged, branchProject i setBranchProject. Teksty z danych (tytuły, nazwy gałęzi)
 // są zwykłym tekstem, ścieżki repozytorium z UI nie ma — projekt wskazuje slug.
+//
+// „Scal…” (PT-395) przy domkniętej, niescalonej karcie otwiera wspólne okno scalania (git/MergeWindow.qml) — ten sam
+// kontrakt co w Tablicy. Strona tylko przekłada jego sygnały na listCardBranches / previewCardMerge / mergeCard
+// backendu (z tagiem przypiętym przez `track`) i oddaje mu odpowiedzi z `boardReplied`; zgodę wysyła wyłącznie
+// „Scal do <cel>” okna. Zmiana projektu i zniknięcie karty z mapy zamykają okno; odświeżenie mapy go nie zamyka.
+// Po scaleniu mapa czyta się od nowa, a węzeł pokazuje „scalona do <cel>”. Bez „Zleć rozwiązanie konfliktów”.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -30,8 +36,16 @@ Rectangle {
     property var diffRequest: null
     property bool stale: false             // Tablica zmieniła się, gdy widok był ukryty
     property int serial: 0                 // numer żądania: spóźnione odpowiedzi są pomijane
+    property int mergeSerial: 0            // numer żądania okna scalania (tag; stare odpowiedzi pomija samo okno)
+    property string mergeNotice: ""        // „Scalono K-5 do main.” po udanym scaleniu z mapy
+    property alias mergeWindow: mergeWindow
 
     readonly property bool diffOpen: diffRequest !== null
+    readonly property var selectedNode: {
+        const row = selectedCard !== "" ? treeRows.find(r => r.node.kind === "card" && r.node.card === selectedCard) : null
+        return row ? row.node : null
+    }
+    readonly property bool mergeAvailable: Branches.canMerge(selectedNode)
     readonly property var treeRows: reply && reply.ok === true ? Branches.rows(reply.nodes, reply.edges) : []
     readonly property string truncatedText: reply && reply.ok === true ? Branches.shownText(reply) : ""
     readonly property bool failed: reply !== null && reply.ok !== true
@@ -53,6 +67,8 @@ Rectangle {
 
     function choose(slug) {
         if (slug === project) return
+        mergeWindow.close()   // okno dotyczy karty innego projektu: zamknięcie nie wysyła zgody
+        mergeNotice = ""
         project = slug
         reply = null
         selectedCard = ""
@@ -74,6 +90,38 @@ Rectangle {
 
     function closeDiff() {
         diffRequest = null
+        if (mergeWindow.opened) mergeWindow.forceActiveFocus()   // „Zmiany gałęzi” z okna scalania wracają do okna
+    }
+
+    // „Scal…”: okno bez wskazanego celu — domyślny cel i skróty bierze z odpowiedzi `ListCardBranches`.
+    function openMerge() {
+        const node = selectedNode
+        if (!Branches.canMerge(node)) return
+        mergeNotice = ""
+        mergeWindow.contextKey = project + ":" + node.card
+        mergeWindow.baseRef = Branches.cardBaseRef(node)
+        mergeWindow.startLine = Branches.cardStartLine(node)
+        mergeWindow.open(node.card, "", "")
+    }
+
+    function mergeTag(kind) {
+        mergeSerial += 1
+        return kind + ":" + mergeWindow.cardId + ":" + mergeSerial
+    }
+
+    // Odpowiedź `/Board` dla okna scalania; okno samo pomija odpowiedź z innym tagiem niż bieżące żądanie.
+    function gotBoardReply(tag, text) {
+        const reply = parse(text)
+        if (tag.indexOf("merge-targets:") === 0) {
+            mergeWindow.receiveBranches(tag, reply)
+            return
+        }
+        if (tag.indexOf("preview-merge:") !== 0 && tag.indexOf("merge-card:") !== 0) return
+        const merged = mergeWindow.receive(tag, Branches.mergeErrorText(reply), reply)
+        if (merged) {
+            mergeNotice = Branches.mergedText(merged, reply)
+            loadMap()   // węzeł pokazuje „scalona do <cel>” z dziennika karty
+        }
     }
 
     function parse(text) {
@@ -118,6 +166,10 @@ Rectangle {
         reply = value !== null ? value : { ok: false, message: "" }
         if (selectedCard !== "" && !treeRows.some(r => r.node.kind === "card" && r.node.card === selectedCard))
             selectedCard = ""
+        // Karta okna scalania zniknęła z poprawnie odczytanej mapy: zamknij okno (bez zgody).
+        if (mergeWindow.opened && reply.ok === true
+                && !treeRows.some(r => r.node.kind === "card" && r.node.card === mergeWindow.cardId))
+            mergeWindow.close()
     }
 
     onActiveChanged: if (active && stale) refresh()
@@ -130,6 +182,7 @@ Rectangle {
     Connections {
         target: page.backend
         function onBranchMapReplied(tag, text) { page.gotReply(tag, text) }
+        function onBoardReplied(tag, text) { page.gotBoardReply(tag, text) }
         function onBoardChanged() {
             if (page.active) refreshTimer.restart()
             else page.stale = true
@@ -233,6 +286,18 @@ Rectangle {
                 textFormat: Text.PlainText
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12
+            }
+            Text {
+                objectName: "branchMergeNotice"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: page.mergeNotice
+                wrapMode: Text.WrapAnywhere
+                color: Tide.Tokens.positive
+                textFormat: Text.PlainText
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 13
+                Accessible.role: Accessible.StaticText
             }
         }
 
@@ -407,7 +472,38 @@ Rectangle {
                 enabled: page.selectedCard !== ""
                 onClicked: page.showChanges()
             }
+            PillButton {
+                objectName: "branchMerge"
+                visible: page.mergeAvailable
+                text: "Scal…"
+                onClicked: page.openMerge()
+            }
         }
+    }
+
+    // Okno scalania (wspólny komponent git/MergeWindow.qml): strona tylko przekłada sygnały na wywołania usługi.
+    // Pod widokiem diffa: „Zmiany gałęzi” z okna otwierają diff nad nim, a Esc wraca do okna.
+    Git.MergeWindow {
+        id: mergeWindow
+        anchors.fill: parent
+        z: 90
+        onBranchesRequested: text => {
+            const tag = page.mergeTag("merge-targets")
+            trackBranches(tag)
+            page.backend.listCardBranches(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
+        }
+        onPreviewRequested: targetRef => {
+            const tag = page.mergeTag("preview-merge")
+            track(tag)
+            page.backend.previewCardMerge(tag, cardId, JSON.stringify({targetRef: targetRef}))
+        }
+        onMergeRequested: request => {
+            const tag = page.mergeTag("merge-card")
+            track(tag)
+            page.backend.mergeCard(tag, cardId, JSON.stringify(request))
+        }
+        onChangesRequested: cardId => { page.diffRequest = Branches.cardDiffRequest(cardId) }
+        onClosed: page.forceActiveFocus()
     }
 
     // Zmiany gałęzi karty w widoku diffa (K-36): nakładka na stronę; Esc i „Zamknij” wracają do mapy.
