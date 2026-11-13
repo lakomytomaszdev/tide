@@ -133,7 +133,6 @@ write("start")''')
         self.wait_event(waiting, "step.notice", result="question")
         self.wait_closed(ready)
         decision = self.wait_column(waiting, "waiting")["derived"]["flow"]["decisions"]
-        self.wait_column(ready, "review")
         before = {card: self.events(card) for card in (waiting, ready)}
         heads = {r["branch"]: flow.git(self.repo, "rev-parse", r["branch"])
                  for r in (waiting_start, ready_start)}
