@@ -18,6 +18,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "git" as Git
 import "tide/agentmodel.js" as AgentModel
 import "board.js" as Logic
 
@@ -1053,7 +1054,7 @@ Rectangle {
                     }
                 }
 
-                BranchPicker {
+                Git.BranchPicker {
                     id: basePicker
                     objectName: "basePicker"
                     Layout.fillWidth: true

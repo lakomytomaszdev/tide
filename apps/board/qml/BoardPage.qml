@@ -177,21 +177,23 @@ Rectangle {
         const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
         return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
     }
+    // Stan przejściowy (do K-99 #16): „Wybierz cel” i „Scal do głównej” bez domyślnego celu otwierają od razu okno
+    // scalania z wyborem celu (domyślny cel i skróty z `ListCardBranches`), nie MergeTargetPicker.
     function chooseMerge(cardId) {
+        openMergeWindow(cardId, "", "")
+    }
+    // Okno scalania (K-99, PT-390, #6): z celem z panelu i pełnej karty od razu prosi o jego podgląd, bez celu
+    // (`target` pusty) bierze domyślny cel z odpowiedzi `ListCardBranches`. Zgodę wysyła tylko jego „Scal do <cel>”.
+    function previewMerge(cardId, target, targetRef) {
+        openMergeWindow(cardId, target, targetRef)
+    }
+    function openMergeWindow(cardId, target, targetRef) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
         const base = card && card.derived && card.derived.flow && card.derived.flow.base
-        mergeTargets.cardId = cardId
-        mergeTargets.contextKey = mergeContext(cardId)
-        mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
-        mergeTargets.open()
-    }
-    // Okno scalania (K-99, PT-390) z celem tylko do odczytu: domyślny cel z panelu i pełnej karty albo cel wybrany
-    // w MergeTargetPicker. Okno samo prosi o podgląd (`previewRequested`); zgodę wysyła tylko jego „Scal do <cel>”.
-    function previewMerge(cardId, target, targetRef) {
-        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
         mergeWindow.contextKey = mergeContext(cardId)
+        mergeWindow.baseRef = base && base.status === "known" ? base.baseRef : ""
         mergeWindow.startLine = card && card.derived ? Start.cardStartLine(card.derived.flow) : ""
-        mergeWindow.open(cardId, targetRef || "refs/heads/" + target, target)
+        mergeWindow.open(cardId, target ? targetRef || "refs/heads/" + target : "", target)
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -790,7 +792,7 @@ Rectangle {
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
         if (tag.indexOf("merge-targets:") === 0) {
-            mergeTargets.picker.receive(tag, reply)
+            mergeWindow.receiveBranches(tag, reply)
             return
         }
         if (tag.indexOf("base-change-branches:") === 0) {
@@ -963,7 +965,6 @@ Rectangle {
     onSnapshotChanged: {
         refreshColumnSpecs()
         optimistic = []
-        if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
         if (mergeWindow.opened && mergeWindow.contextKey !== mergeContext(mergeWindow.cardId)) mergeWindow.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
@@ -2135,6 +2136,11 @@ Rectangle {
             track(tag)
             page.previewMergeRequested(tag, cardId, JSON.stringify({targetRef: targetRef}))
         }
+        onBranchesRequested: text => {
+            const tag = page.nextTag("merge-targets:" + cardId)
+            trackBranches(tag)
+            page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
+        }
         onMergeRequested: request => {
             const tag = page.nextTag("merge-card:" + cardId)
             track(tag)
@@ -2143,24 +2149,13 @@ Rectangle {
         onChangesRequested: cardId => page.openDiff(cardId)
         onClosed: page.forceActiveFocus()
     }
-    MergeTargetPicker {
-        id: mergeTargets
-        parent: page
-        z: 60
-        onRequested: text => {
-            const tag = page.nextTag("merge-targets:" + cardId)
-            picker.pendingTag = tag
-            page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
-        }
-        onPreviewRequested: target => page.previewMerge(cardId, target.name, target.ref)
-    }
     CardUi.BaseChangePreview {
         id: baseChangePreview
         parent: page
         z: 65
         selectedBase: baseChangePicker.selected
         selectionReady: baseChangePicker.ready
-        selectionContent: BranchPicker {
+        selectionContent: Git.BranchPicker {
             id: baseChangePicker
             Layout.fillWidth: true
             active: baseChangePreview.visible && baseChangePreview.selecting

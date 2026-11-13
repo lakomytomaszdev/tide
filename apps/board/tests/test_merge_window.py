@@ -46,6 +46,7 @@ Window {
     QtObject {
         id: fake
         property var calls: []
+        property var branches: []          // żądania `ListCardBranches` (osobno, żeby nie mieszać się z `calls`)
         property int serial: 0
         function add(entry) { calls = calls.concat([entry]) }
         function tag(kind) { serial += 1; return kind + ":" + serial }
@@ -60,6 +61,11 @@ Window {
                     const tag = fake.tag("preview")
                     track(tag)
                     fake.add(["preview", tag, targetRef])
+                }
+                onBranchesRequested: text => {
+                    const tag = fake.tag("branches")
+                    trackBranches(tag)
+                    fake.branches = fake.branches.concat([[tag, text]])
                 }
                 onMergeRequested: request => {
                     const tag = fake.tag("merge")
@@ -91,6 +97,56 @@ def open_window(card="K-12", ref="refs/heads/master", branch="master"):
 
 def last(kind):
     return [c for c in calls() if c[0] == kind][-1]
+
+def previews():
+    return [c[2] for c in calls() if c[0] == "preview"]
+
+def branch(name, selectable=True, reason=""):
+    return {"ref": "refs/heads/" + name, "name": name, "commit": "a" * 40, "kind": "local",
+            "selectable": selectable, "reason": reason}
+
+def listing(branches, main="", default="", recent=()):
+    """Odpowiedź `ListCardBranches` (purpose merge) bez gałęzi zdalnych; `main`/`default` to pełne refy albo pusty tekst."""
+    reply = {"ok": True, "branches": branches, "recentTargets": list(recent), "defaultTargetRef": default,
+             "trackingTargets": [], "createTarget": None, "warnings": [], "hasMore": False}
+    if main:
+        reply["mainRef"] = main
+    return reply
+
+def give(reply):
+    """Odpowiedź na ostatnie żądanie listy gałęzi."""
+    tag = json.loads(js("JSON.stringify(fake.branches)"))[-1][0]
+    return js("loader.item.receiveBranches(" + json.dumps(tag) + ", " + json.dumps(reply) + ")")
+
+def open_choosing(base=""):
+    """Okno bez wskazanego celu; `base` to pełny ref znanej bazy karty albo pusty tekst (baza nieznana)."""
+    js("loader.item.baseRef = " + json.dumps(base))
+    js("loader.item.contextKey = 'K-12:p:/repo'")
+    open_window(ref="", branch="")
+    wait(60)
+
+def visible_texts():
+    return json.loads(js("(function () { const out = []; (function walk(it) { if (!it) return; "
+                         "if (it.visible && typeof it.text === 'string') out.push(it.text); "
+                         "for (const c of it.children) walk(c) })(loader.item); return JSON.stringify(out) })()"))
+
+def scroll_picker():
+    """Przewija strefę wyboru celu na dół (wyniki wyszukiwania pod skrótami)."""
+    js("(function () { const s = " + ALL + "(loader.item, 'mergeWindowPickerScroll')[0]; "
+       "if (s) s.contentItem.contentY = Math.max(0, s.contentItem.contentHeight - s.contentItem.height) })()")
+    wait(60)
+
+def shortcuts():
+    texts = []
+    for i in range(10):
+        found = field("mergeTargetShortcut" + str(i), "it.children[0].text")
+        if not found:
+            break
+        texts.append(found[0])
+    return texts
+
+def ok(ref, token=""):
+    return {**PREVIEW, "targetRef": ref, "targetBranch": ref.split("/", 2)[2], "previewToken": token or "t:" + ref}
 
 def answer(tag, reply, error=""):
     return js("loader.item.receive(" + json.dumps(tag) + ", " + json.dumps(error) + ", " + json.dumps(reply) + ")")
@@ -249,6 +305,169 @@ out["sent"] = [json.loads(c[2]) for c in calls() if c[0] == "merge"]
         self.assertEqual(out["closed"], [False, ["closed"]])
         self.assertEqual(out["sent"], [{"targetRef": "refs/heads/master", "previewToken": "token-1"},
                                        {"targetRef": "refs/heads/master", "previewToken": "fresh"}])
+
+
+class TargetChoiceTest(MergeWindowCase):
+    """K-99 #6: strefa celu jako wybór (domyślny cel, skróty, wyszukiwanie) na atrapie gospodarza."""
+
+    def test_default_target_gets_preview_and_shortcut_and_search_choices_send_new_preview(self):
+        out = self.probe(r'''
+open_choosing("refs/heads/feature/x")
+out["asked"] = [len(json.loads(js("JSON.stringify(fake.branches)"))), previews(), item("mergeWindowTarget")["text"]]
+give(listing([branch("feature/x"), branch("main"), branch("other")], main="refs/heads/main",
+             default="refs/heads/feature/x"))
+out["default"] = [previews(), item("mergeWindowTarget")["text"], item("mergeWindowMerge")["enabled"]]
+first = last("preview")[1]
+answer(first, ok("refs/heads/feature/x"))
+out["ready"] = item("mergeWindowMerge")["enabled"]
+click("mergeWindowTargetToggle")
+out["shortcuts"] = shortcuts()
+click("mergeTargetShortcut1")
+out["afterShortcut"] = [previews(), item("mergeWindowMerge")["enabled"], win("pending"), win("proposal")]
+answer(first, ok("refs/heads/feature/x"))   # spóźniona odpowiedź poprzedniego celu
+out["staleIgnored"] = [item("mergeWindowMerge")["enabled"], win("result === null")]
+answer(last("preview")[1], ok("refs/heads/main"))
+out["readyMain"] = item("mergeWindowMerge")["enabled"]
+click("mergeTargetResult0")
+out["afterSearch"] = [previews(), item("mergeWindowMerge")["enabled"], item("mergeWindowTarget")["text"]]
+answer(last("preview")[1], ok("refs/heads/other"))
+click("mergeWindowMerge")
+out["merge"] = json.loads(last("merge")[2])
+out["calls"] = [c[0] for c in calls()]
+''')
+        self.assertEqual(out["asked"], [1, [], "K-12 → wybierz cel"])
+        self.assertEqual(out["default"], [["refs/heads/feature/x"], "K-12 → feature/x", False])
+        self.assertTrue(out["ready"])
+        self.assertEqual(out["shortcuts"], ["Baza karty · refs/heads/feature/x", "Główna · refs/heads/main"])
+        self.assertEqual(out["afterShortcut"], [["refs/heads/feature/x", "refs/heads/main"], False, "preview", False])
+        self.assertEqual(out["staleIgnored"], [False, True])
+        self.assertTrue(out["readyMain"])
+        self.assertEqual(out["afterSearch"], [["refs/heads/feature/x", "refs/heads/main", "refs/heads/other"], False,
+                                              "K-12 → other"])
+        self.assertEqual(out["merge"], {"targetRef": "refs/heads/other", "previewToken": "t:refs/heads/other"})
+        self.assertEqual(out["calls"].count("merge"), 1, "wybór celu sam niczego nie scala")
+
+    def test_unknown_base_default_is_only_a_proposal_until_conscious_choice(self):
+        out = self.probe(r'''
+open_choosing("")
+give(listing([branch("trunk"), branch("other")], main="refs/heads/trunk"))
+answer(last("preview")[1], ok("refs/heads/trunk"))
+out["proposed"] = [previews(), win("proposal"), item("mergeWindowProposal")["visible"],
+                   item("mergeWindowMerge")["enabled"], item("mergeWindowState")["text"]]
+click("mergeWindowMerge")
+out["noMerge"] = [c for c in calls() if c[0] == "merge"]
+out["shortcuts"] = shortcuts()
+click("mergeTargetShortcut0")
+out["accepted"] = [previews(), win("proposal"), item("mergeWindowMerge")["enabled"]]
+click("mergeWindowMerge")
+out["merge"] = json.loads(last("merge")[2])
+''')
+        self.assertEqual(out["proposed"], [["refs/heads/trunk"], True, True, False, "Można scalić"])
+        self.assertEqual(out["noMerge"], [])
+        self.assertEqual(out["shortcuts"], ["Główna · refs/heads/trunk"])
+        self.assertEqual(out["accepted"], [["refs/heads/trunk"], False, True])
+        self.assertEqual(out["merge"], {"targetRef": "refs/heads/trunk", "previewToken": "t:refs/heads/trunk"})
+
+    def test_unknown_base_choosing_another_target_sends_new_preview_and_disables_merge(self):
+        out = self.probe(r'''
+open_choosing("")
+give(listing([branch("trunk"), branch("other")], main="refs/heads/trunk"))
+answer(last("preview")[1], ok("refs/heads/trunk"))
+scroll_picker()
+click("mergeTargetResult0")
+out["chosen"] = [previews(), win("proposal"), item("mergeWindowMerge")["enabled"], win("pending")]
+answer(last("preview")[1], ok("refs/heads/other"))
+out["ready"] = [item("mergeWindowMerge")["enabled"], item("mergeWindowProposal")["visible"]]
+''')
+        self.assertEqual(out["chosen"], [["refs/heads/trunk", "refs/heads/other"], False, False, "preview"])
+        self.assertEqual(out["ready"], [True, False])
+
+    def test_unselectable_target_shows_reason_and_sends_no_preview(self):
+        reason = "Cel należy do innej karty <b>"
+        out = self.probe("reason = " + repr(reason) + r'''
+open_choosing("refs/heads/base")
+give(listing([branch("base", False, reason), branch("other")], main="refs/heads/other", default="refs/heads/base"))
+out["default"] = [previews(), item("mergeWindowTarget")["text"], item("mergeWindowTargetNote")["visible"],
+                  item("mergeWindowTargetNote")["text"], item("mergeWindowMerge")["enabled"]]
+out["shortcuts"] = shortcuts()
+click("mergeTargetShortcut0")
+out["afterBlockedClick"] = previews()
+click("mergeTargetShortcut1")
+out["afterOther"] = [previews(), item("mergeWindowTargetNote")["visible"]]
+''')
+        self.assertEqual(out["default"][0:3], [[], "K-12 → wybierz cel", True])
+        self.assertIn("refs/heads/base", out["default"][3])
+        self.assertIn("Cel należy do innej karty <b>", out["default"][3])
+        self.assertFalse(out["default"][4])
+        self.assertEqual(out["shortcuts"], ["Baza karty · refs/heads/base — Cel należy do innej karty <b>",
+                                            "Główna · refs/heads/other"])
+        self.assertEqual(out["afterBlockedClick"], [], "klik w cel niewybieralny nie wysyła podglądu")
+        self.assertEqual(out["afterOther"], [["refs/heads/other"], False])
+
+    def test_repository_without_master_and_origin_uses_only_service_answers(self):
+        for main in ("main", "develop"):
+            for known in (True, False):
+                with self.subTest(main=main, baseKnown=known):
+                    ref = "refs/heads/" + main
+                    out = self.probe("ref = " + repr(ref) + "\nknown = " + repr(known) + r'''
+open_choosing(ref if known else "")
+give(listing([branch(ref.split("/", 2)[2]), branch("feature/a")], main=ref, default=ref if known else ""))
+answer(last("preview")[1], ok(ref))
+if known:
+    click("mergeWindowTargetToggle")
+out["previews"] = previews()
+out["shortcuts"] = shortcuts()
+out["target"] = item("mergeWindowTarget")["text"]
+out["texts"] = visible_texts()
+out["proposal"] = win("proposal")
+out["merge"] = item("mergeWindowMerge")["enabled"]
+''')
+                    self.assertEqual(out["previews"], [ref])
+                    self.assertEqual(out["shortcuts"], [("Baza karty · " if known else "Główna · ") + ref])
+                    self.assertEqual(out["target"], "K-12 → " + main)
+                    self.assertEqual(out["proposal"], not known)
+                    self.assertEqual(out["merge"], known)
+                    joined = "\n".join(out["texts"]).lower()
+                    self.assertNotIn("master", joined)
+                    self.assertNotIn("origin", joined)
+                    self.assertNotIn("refs/remotes", joined)
+
+    def test_answer_without_main_ref_hides_shortcut_and_guesses_no_target(self):
+        out = self.probe(r'''
+open_choosing("")
+give(listing([branch("trunk"), branch("master")], recent=[branch("recent")]))
+out["state"] = [previews(), item("mergeWindowTarget")["text"], item("mergeWindowState")["text"],
+                item("mergeWindowMerge")["enabled"], win("proposal")]
+out["shortcuts"] = shortcuts()
+''')
+        self.assertEqual(out["state"], [[], "K-12 → wybierz cel", "Wybierz cel scalenia", False, False])
+        self.assertEqual(out["shortcuts"], ["Ostatni cel · refs/heads/recent"], "bez mainRef brak skrótu głównej")
+
+    def test_branch_list_reply_with_stale_tag_is_ignored(self):
+        out = self.probe(r'''
+open_choosing("refs/heads/feature/x")
+old = json.loads(js("JSON.stringify(fake.branches)"))[-1][0]
+open_window(ref="", branch="")
+out["tags"] = [old, json.loads(js("JSON.stringify(fake.branches)"))[-1][0]]
+reply = listing([branch("feature/x")], main="refs/heads/feature/x", default="refs/heads/feature/x")
+js("loader.item.receiveBranches(" + json.dumps(old) + ", " + json.dumps(reply) + ")")
+out["afterOld"] = previews()
+give(reply)
+out["afterNew"] = previews()
+click("mergeWindowClose")
+js("loader.item.receiveBranches(" + json.dumps(out["tags"][1]) + ", " + json.dumps(reply) + ")")
+out["afterClose"] = [previews(), win("opened")]
+''')
+        self.assertNotEqual(out["tags"][0], out["tags"][1])
+        self.assertEqual(out["afterOld"], [])
+        self.assertEqual(out["afterNew"], ["refs/heads/feature/x"])
+        self.assertEqual(out["afterClose"], [["refs/heads/feature/x"], False])
+
+    def test_window_sources_have_no_fixed_branch_names(self):
+        for name in ("MergeWindow.qml", "BranchPicker.qml"):
+            with open(os.path.join(GIT_DIR, name), encoding="utf-8") as fh:
+                source = fh.read()
+            self.assertIsNone(re.search(r"\bmaster\b|\borigin\b", source), name)
 
 
 class PreviewTest(MergeWindowCase):

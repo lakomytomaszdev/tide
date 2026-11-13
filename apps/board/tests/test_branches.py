@@ -1,7 +1,23 @@
 """PT-209: formularz w Qt offscreen oraz kontrakt żądania w QJSEngine."""
 import json
+import os
+import unittest
 
+from . import REPO
 from . import test_view as view
+
+
+class BranchPickerLocationTest(unittest.TestCase):
+    """K-99 #6: wybierak gałęzi leży we wspólnym katalogu QML gita, a okno zlecenia i okno scalania używają jednej kopii."""
+
+    def test_picker_lives_in_shared_git_dir_and_launch_dialog_uses_it(self):
+        git_dir = os.path.join(REPO, "apps", "common", "qml", "git")
+        self.assertTrue(os.path.isfile(os.path.join(git_dir, "BranchPicker.qml")))
+        self.assertFalse(os.path.exists(os.path.join(REPO, "apps", "board", "qml", "BranchPicker.qml")))
+        with open(os.path.join(REPO, "apps", "board", "qml", "LaunchDialog.qml"), encoding="utf-8") as fh:
+            self.assertIn("Git.BranchPicker {", fh.read())
+        with open(os.path.join(git_dir, "MergeWindow.qml"), encoding="utf-8") as fh:
+            self.assertIn("BranchPicker {", fh.read())
 
 
 class BranchPickerTest(view.ProbeCase):

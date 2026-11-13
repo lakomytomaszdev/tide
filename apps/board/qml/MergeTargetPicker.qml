@@ -2,7 +2,9 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import "tide" as Tide
+import "git" as Git
 
+// Stary wybierak celu: od K-99 #6 żaden przycisk go nie otwiera (cel wybiera się w oknie scalania); zostaje do #16.
 QQC2.Popup {
     id: menu
     objectName: "mergeTargetMenu"
@@ -27,7 +29,7 @@ QQC2.Popup {
     contentItem: ColumnLayout {
         id: content
         spacing: 12
-        BranchPicker {
+        Git.BranchPicker {
             id: picker
             objectName: "mergeBranchPicker"
             Layout.fillWidth: true

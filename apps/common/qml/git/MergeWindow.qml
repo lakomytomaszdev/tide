@@ -1,11 +1,20 @@
-// Okno scalania (K-99, PT-390): wspólny komponent obok widoku diffa, osadzany jako nakładka na całe okno gospodarza
-// (Tablica dziś, Worktrees w K-99 #10). Daje strefę celu (tylko do odczytu), minimalny podgląd z odpowiedzi
-// `PreviewCardMerge` i rząd przycisków, który zawsze jest widoczny. Pełne sekcje podglądu dokłada K-99 #18,
-// wybór celu w oknie — #6.
+// Okno scalania (K-99, PT-390, #6): wspólny komponent obok widoku diffa, osadzany jako nakładka na całe okno gospodarza
+// (Tablica dziś, Worktrees w K-99 #10). Daje strefę celu z wyborem (domyślny cel, skróty i wyszukiwanie lokalnych
+// gałęzi przez wspólny BranchPicker), minimalny podgląd z odpowiedzi `PreviewCardMerge` i rząd przycisków, który
+// zawsze jest widoczny. Pełne sekcje podglądu dokłada K-99 #18.
+//
+// Cel. `open(card, ref, branch)` z pustym `ref` nie zakłada celu: okno prosi o listę (`branchesRequested(text)`),
+// a z odpowiedzi `ListCardBranches` (`receiveBranches(tag, odpowiedź)`) bierze wyłącznie `defaultTargetRef`, `mainRef`
+// i `recentTargets` — żadnych nazw na sztywno. Domyślny cel wybieralny dostaje podgląd od razu. Przy bazie nieznanej
+// (`baseRef` pusty) bez `defaultTargetRef` nazwana główna jest tylko propozycją: podgląd idzie, ale „Scal do”
+// czeka na świadomy wybór celu. Zmiana celu zeruje podgląd i wysyła nowy; cel niewybieralny pokazuje powód i nie
+// wysyła podglądu. Wybór celu nie jest zgodą i nie zmienia bazy karty.
 //
 // Kontrakt zgody. Komponent nie woła D-Bus i nie zna strony gospodarza: dane dostaje przez właściwości i funkcje,
 // a gospodarz odbiera sygnały:
 //  - `previewRequested(targetRef)` — gospodarz wysyła `PreviewCardMerge` z nowym tagiem i woła `track(tag)`;
+//  - `branchesRequested(text)` — gospodarz wysyła `ListCardBranches` (purpose merge) z nowym tagiem i woła
+//    `trackBranches(tag)`;
 //  - `mergeRequested({targetRef, previewToken})` — jedyna zgoda: pola bieżącego podglądu, tylko po kliknięciu
 //    „Scal do <cel>” przy `canMerge === true` i niepustym `previewToken`; gospodarz wysyła `MergeCard`
 //    z nowym tagiem i woła `track(tag)`;
@@ -29,7 +38,8 @@ FocusScope {
     // --- dane od gospodarza ---
     property bool opened: false
     property string cardId: ""
-    property string targetRef: ""          // pełny ref celu (podpowiedź nad nazwą)
+    property string baseRef: ""            // znana baza karty (pełny ref); pusta — baza nieznana, główna to tylko propozycja
+    property string targetRef: ""          // pełny ref celu (podpowiedź nad nazwą); pusty — cel jeszcze nie wybrany
     property string targetBranch: ""       // krótka nazwa celu; po podglądzie z odpowiedzi usługi
     property string startLine: ""          // „Start od: …” karty (git/start.js, cardStartLine); pusta — bez linii
     property string contextKey: ""        // klucz kontekstu karty gospodarza: jego zmiana zamyka okno (robi to gospodarz)
@@ -43,34 +53,97 @@ FocusScope {
     property var result: null              // ostatnia udana odpowiedź `PreviewCardMerge`
     property bool mergeLocked: false       // po błędzie scalenia: do nowego udanego podglądu
     property bool detailsOpen: false
-    readonly property bool canConfirm: opened && !busy && !mergeLocked && !!result && result.canMerge === true
+    property bool proposal: false          // cel jest tylko propozycją (baza nieznana): „Scal do” czeka na świadomy wybór
+    property string targetNote: ""         // powód, dla którego domyślny cel nie dostał podglądu
+    property bool targetOpen: false        // strefa wyboru celu rozwinięta przyciskiem „Zmień cel”
+    readonly property bool pickerShown: targetOpen || targetRef === "" || proposal
+    property alias picker: picker
+    readonly property bool canConfirm: opened && targetRef !== "" && !proposal && !busy && !mergeLocked && !!result
+                                       && result.canMerge === true
                                        && typeof result.previewToken === "string" && result.previewToken !== ""
     readonly property string targetName: targetBranch || Start.shortRef(targetRef)
 
     signal previewRequested(string targetRef)
+    signal branchesRequested(string text)
     signal mergeRequested(var request)
     signal changesRequested(string cardId)
     signal closed()
 
-    // Otwiera okno dla karty i celu (cel tylko do odczytu) i od razu prosi o podgląd.
+    // Otwiera okno dla karty i prosi o listę celów. Z `ref` od razu prosi o podgląd tego celu; z pustym `ref` cel
+    // wybiera się z odpowiedzi `ListCardBranches` (domyślny cel) albo ręcznie.
     function open(card, ref, branch) {
+        const wasOpen = opened
         cardId = card
-        targetRef = ref
-        targetBranch = branch || ""
+        targetRef = ref || ""
+        targetBranch = ref ? branch || "" : ""
+        proposal = false
+        targetNote = ""
+        targetOpen = false
         result = null
         error = ""
         mergeLocked = false
         detailsOpen = false
+        requestTag = ""
+        pending = ""
         opened = true
+        if (wasOpen) picker.reset()   // zamknięte okno ma nieaktywny wybierak: odczyt listy zaczyna sam `active`
         forceActiveFocus()
         // Okno otwarte z wyskakującego wybieraka celu: zamykany Popup oddaje fokus poprzedniemu elementowi — odbierz go.
         Qt.callLater(() => { if (win.opened) win.forceActiveFocus() })
+        if (targetRef !== "") refresh()
+    }
+
+    // Gospodarz przypina tag wysłanego `ListCardBranches`.
+    function trackBranches(tag) {
+        picker.pendingTag = tag
+    }
+
+    // Odpowiedź `ListCardBranches`. Bez celu okno bierze z niej domyślny cel albo (baza nieznana) propozycję głównej.
+    function receiveBranches(tag, reply) {
+        if (!opened) return
+        const mine = tag !== "" && tag === picker.pendingTag
+        picker.receive(tag, reply)
+        if (!mine || targetRef !== "" || !reply || reply.ok !== true) return
+        const known = (reply.branches || []).concat(reply.recentTargets || [])
+        const byDefault = typeof reply.defaultTargetRef === "string" && reply.defaultTargetRef !== ""
+        const ref = byDefault ? reply.defaultTargetRef
+                  : baseRef === "" && typeof reply.mainRef === "string" ? reply.mainRef : ""
+        if (ref === "") return
+        const entry = known.find(b => b.ref === ref)
+        if (entry && entry.selectable !== false) {
+            targetRef = entry.ref
+            targetBranch = entry.name || ""
+            proposal = !byDefault
+            targetNote = ""
+            refresh()
+        } else {
+            targetNote = "Cel " + ref + " jest niedostępny" + (entry && entry.reason ? ": " + entry.reason : ".")
+        }
+    }
+
+    // Świadomy wybór celu (skrót albo wynik wyszukiwania): nowy podgląd, a „Scal do” czeka na jego odpowiedź.
+    function chooseTarget(entry) {
+        if (!opened || !entry || typeof entry.ref !== "string" || entry.ref === "" || pending === "merge") return
+        if (entry.selectable === false) {
+            targetNote = "Cel " + entry.ref + " jest niedostępny" + (entry.reason ? ": " + entry.reason : ".")
+            return
+        }
+        targetNote = ""
+        targetOpen = true   // strefa wyboru zostaje otwarta (nazwa nowego celu, kolejna zmiana); zwija ją „Zmień cel”
+        if (entry.ref === targetRef && proposal) {
+            // Ta sama propozycja przyjęta świadomie: bieżący podgląd (albo ten w drodze) zostaje.
+            proposal = false
+            return
+        }
+        targetRef = entry.ref
+        targetBranch = entry.name || ""
+        proposal = false
         refresh()
     }
 
     // Nowy podgląd. Nie w trakcie scalenia: tag scalenia musi zostać, żeby odpowiedź `MergeCard` dotarła.
     function refresh() {
-        if (!opened || pending === "merge") return
+        if (!opened || pending === "merge" || targetRef === "") return
         result = null
         error = ""
         requestTag = ""
@@ -94,7 +167,7 @@ FocusScope {
         if (pending !== "") requestTag = tag
     }
 
-    // Odpowiedź usługi; zwraca komunikat sukcesu scalenia („Scalono K-12 do master”) albo "".
+    // Odpowiedź usługi; zwraca komunikat sukcesu scalenia („Scalono K-12 do <cel>”) albo "".
     function receive(tag, errorText, reply) {
         if (!opened || !tag || tag !== requestTag) return ""
         const kind = pending
@@ -134,6 +207,9 @@ FocusScope {
         error = ""
         mergeLocked = false
         detailsOpen = false
+        proposal = false
+        targetNote = ""
+        targetOpen = false
         closed()
     }
 
@@ -143,7 +219,8 @@ FocusScope {
         if (pending === "preview") return "Przygotowuję podgląd…"
         if (pending === "merge") return "Scalam…"
         const r = result
-        if (!r) return error ? (mergeLocked ? "Scalenie nie powiodło się" : "Podgląd nieudany") : ""
+        if (!r) return error ? (mergeLocked ? "Scalenie nie powiodło się" : "Podgląd nieudany")
+                             : targetRef === "" ? "Wybierz cel scalenia" : ""
         if (r.canMerge === true) return "Można scalić"
         const conflicts = conflictPaths(r).length || Number(r.conflictCount) || 0
         if (conflicts > 0) return conflicts === 1 ? "Konflikt w 1 pliku" : "Konflikty w " + conflicts + " plikach"
@@ -238,11 +315,11 @@ FocusScope {
             anchors.margins: 16
             spacing: 12
 
-            // --- strefa celu (tylko do odczytu) ---
+            // --- strefa celu: bieżący cel, powód/propozycja i wybór (skróty + wyszukiwanie) ---
             Text {
                 objectName: "mergeWindowTarget"
                 Layout.fillWidth: true
-                text: win.cardId + " → " + win.targetName
+                text: win.cardId + " → " + (win.targetRef !== "" ? win.targetName : "wybierz cel")
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textPrimary
                 font.family: Tide.Theme.uiFamily
@@ -264,6 +341,64 @@ FocusScope {
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt
                 wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                objectName: "mergeWindowProposal"
+                Layout.fillWidth: true
+                visible: win.proposal
+                text: "To tylko propozycja celu: baza karty jest nieznana. Wybierz cel świadomie (kliknij go na liście "
+                      + "albo wskaż inny) — dopiero wtedy „Scal do” się odblokuje."
+                textFormat: Text.PlainText
+                color: Tide.Tokens.butter
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                wrapMode: Text.Wrap
+            }
+            Text {
+                objectName: "mergeWindowTargetNote"
+                Layout.fillWidth: true
+                visible: win.targetNote !== ""
+                text: win.targetNote
+                textFormat: Text.PlainText
+                color: Tide.Tokens.negative
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                wrapMode: Text.WrapAnywhere
+            }
+            Tide.TextButton {
+                objectName: "mergeWindowTargetToggle"
+                visible: !(win.targetRef === "" || win.proposal)
+                text: (win.targetOpen ? "▾ " : "▸ ") + "Zmień cel"
+                onClicked: win.targetOpen = !win.targetOpen
+            }
+            QQC2.ScrollView {
+                id: pickerScroll
+                objectName: "mergeWindowPickerScroll"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(picker.implicitHeight, Math.max(240, frame.height * 0.5))
+                visible: win.pickerShown
+                clip: true
+                contentWidth: availableWidth
+
+                BranchPicker {
+                    id: picker
+                    objectName: "mergeWindowBranchPicker"
+                    width: pickerScroll.availableWidth
+                    active: win.opened
+                    purpose: "merge"
+                    baseRef: win.baseRef
+                    contextKey: win.contextKey
+                    onRequested: text => win.branchesRequested(text)
+                    onShortcutChosen: target => win.chooseTarget(target)
+                    onChosen: target => win.chooseTarget(target)
+                }
+            }
+            Tide.TextButton {
+                objectName: "mergeWindowNewTargetPreview"
+                visible: win.pickerShown && picker.createTarget !== null
+                text: "Podgląd nowego celu"
+                enabled: !!picker.selected && picker.selected.kind === "create" && !picker.loading
+                onClicked: win.chooseTarget(picker.selected)
             }
 
             // --- minimalny podgląd (przewijany) ---
@@ -389,7 +524,7 @@ FocusScope {
                 Layout.fillWidth: true
                 variant: "filled"
                 wrapText: true
-                text: "Scal do " + win.targetName
+                text: win.targetRef !== "" ? "Scal do " + win.targetName : "Scal do… (wybierz cel)"
                 enabled: win.canConfirm
                 opacity: enabled ? 1 : 0.5
                 onClicked: win.confirm()

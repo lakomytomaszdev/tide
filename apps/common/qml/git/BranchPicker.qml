@@ -2,10 +2,18 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
-import "tide" as Tide
+import "../tide" as Tide
 
 ColumnLayout {
     id: picker
+    // Podpis sekcji (12 px, text.muted).
+    component SectionLabel: Text {
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textMuted
+        font.family: Tide.Theme.uiFamily
+        font.pixelSize: 12
+        font.weight: Font.Medium
+    }
     property bool active: false
     property string purpose: "base"
     property string baseRef: ""
@@ -38,6 +46,7 @@ ColumnLayout {
     property int currentIndex: 0
     signal requested(string text)
     signal shortcutChosen(var target)
+    signal chosen(var target)          // wynik wyszukiwania wybrany kliknięciem albo klawiaturą (nie skrót)
     readonly property bool ready: active && selected !== null && !loading && message === ""
 
     function reset() {
@@ -107,6 +116,7 @@ ColumnLayout {
         if (item && item.selectable) {
             newTargetName.text = ""
             selected = item
+            chosen(item)
         }
     }
     onActiveChanged: reset()
@@ -114,7 +124,7 @@ ColumnLayout {
     onPinnedChanged: reset()
     onInitialSelectionChanged: reset()
     spacing: 8
-    FieldLabel { text: picker.purpose === "merge" ? "Lokalny cel scalenia" : picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
+    SectionLabel { text: picker.purpose === "merge" ? "Lokalny cel scalenia" : picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
     Text {
         Layout.fillWidth: true
         text: picker.purpose === "merge" ? "Wybór celu nie zmienia bazy karty. Brakujący checkout powstanie dopiero po potwierdzeniu podglądu. "
@@ -139,7 +149,7 @@ ColumnLayout {
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 12
     }
-    FieldLabel {
+    SectionLabel {
         visible: picker.active && picker.mergeShortcuts.length > 0
         text: "Skróty celów repozytorium"
     }
@@ -198,7 +208,7 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: !picker.pinned
         enabled: picker.active
-        LineInput {
+        BranchInput {
             id: search
             objectName: picker.purpose === "merge" ? "mergeTargetSearch" : "baseSearch"
             Layout.fillWidth: true
@@ -208,13 +218,14 @@ ColumnLayout {
             Keys.onDownPressed: picker.currentIndex = Math.min(picker.searchBranches.length - 1, picker.currentIndex + 1)
             Keys.onUpPressed: picker.currentIndex = Math.max(0, picker.currentIndex - 1)
         }
-        PillButton {
+        Tide.TextButton {
             objectName: picker.purpose === "merge" ? "mergeTargetRefresh" : "baseRefresh"
+            variant: "outline"
             text: "Odśwież"
             onClicked: { picker.refreshRef = picker.selected ? picker.selected.ref : ""; picker.refresh() }
         }
     }
-    FieldLabel {
+    SectionLabel {
         visible: picker.active && !picker.pinned && picker.recentBases.length > 0
         text: "Ostatnie bazy repozytorium"
     }
@@ -324,7 +335,7 @@ ColumnLayout {
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 12
     }
-    LineInput {
+    BranchInput {
         id: newTargetName
         objectName: picker.purpose === "merge" ? "mergeNewTargetName" : ""
         Layout.fillWidth: true
@@ -333,7 +344,7 @@ ColumnLayout {
         placeholder: "Inna pełna nazwa lokalnej gałęzi, np. release/wynik"
         onEdited: {
             if (picker.createTarget && text.length > 0)
-                picker.selected = {ref: "refs/heads/" + text, name: text, commit: picker.createTarget.commit}
+                picker.selected = {ref: "refs/heads/" + text, name: text, commit: picker.createTarget.commit, kind: "create"}
             else picker.selected = null
         }
     }
