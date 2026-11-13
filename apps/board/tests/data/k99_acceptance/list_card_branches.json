@@ -1,0 +1,923 @@
+{
+  "branches": [
+    {
+      "commit": "7dbf0a40ce78d15ee71e2045896532fc56b4b24d",
+      "kind": "local",
+      "name": "master",
+      "reason": "",
+      "ref": "refs/heads/master",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "12c64fe91eff6a5574132402cec7482e50a96d79",
+      "kind": "local",
+      "name": "card/k-100-niestabilne-testy-obciazeniem",
+      "reason": "Cel należy do karty K-100 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-100-niestabilne-testy-obciazeniem",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "308a2da483d0d3bfece002ce3e05b8025b2adb3b",
+      "kind": "local",
+      "name": "card/k-101-makieta-pelnego-planowania-tide",
+      "reason": "Cel należy do karty K-101 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-101-makieta-pelnego-planowania-tide",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "bc93f6e0836fdf8820073045ecc97872ba10374d",
+      "kind": "local",
+      "name": "card/k-102-szybkie-zatwierdzanie-planu-bez",
+      "reason": "Cel należy do karty K-102 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-102-szybkie-zatwierdzanie-planu-bez",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "e27bd44776a86b09668d78ecd601f9f76d1e05db",
+      "kind": "local",
+      "name": "card/k-103-makieta-widoku-zmian-drzewo",
+      "reason": "Cel należy do karty K-103 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-103-makieta-widoku-zmian-drzewo",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "e737a1327c9bb167f903395f2141087d70330b87",
+      "kind": "local",
+      "name": "card/k-104-widok-zmian-wedlug-makiety",
+      "reason": "Cel należy do karty K-104 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-104-widok-zmian-wedlug-makiety",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "31ca06832bc4ad2db6c81aec6e960201cf75d040",
+      "kind": "local",
+      "name": "card/k-105-usluga-postoju-bez-pelnego",
+      "reason": "Cel należy do karty K-105 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-105-usluga-postoju-bez-pelnego",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "a9cd9e33e27c41dd09708d43a1143192954a6f6f",
+      "kind": "local",
+      "name": "card/k-107-pelne-planowanie-tide-grill",
+      "reason": "Cel należy do karty K-107 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-107-pelne-planowanie-tide-grill",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "e32e4e6abfdf9cabd83cb520ab2ceec7561e30ca",
+      "kind": "local",
+      "name": "card/k-112-okno-porzadkowe-silnika-errors",
+      "reason": "Cel należy do karty K-112 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-112-okno-porzadkowe-silnika-errors",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "310363ae8678ceab3621b5e23eb0441c330002f4",
+      "kind": "local",
+      "name": "card/k-113-tick-bez-kosztu-blocked",
+      "reason": "Cel należy do karty K-113 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-113-tick-bez-kosztu-blocked",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "1882983fa69712baad753587ecb705204b07068c",
+      "kind": "local",
+      "name": "card/k-114-widok-karty-gubi-scalone",
+      "reason": "Cel należy do karty K-114 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-114-widok-karty-gubi-scalone",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "1d3482ca5f6cdf912d34df91a91fd6bf882fb6cb",
+      "kind": "local",
+      "name": "card/k-36-git-tide-mapa-galezi",
+      "reason": "Cel należy do karty K-36 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-36-git-tide-mapa-galezi",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "3e17dd3e5ecbfe26986769b0e02fcec4df1a782d",
+      "kind": "local",
+      "name": "card/k-37-opiekun-karty-ai-rozwiazuje",
+      "reason": "Cel należy do karty K-37 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-37-opiekun-karty-ai-rozwiazuje",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "643e24e2807510c3e698ea196e02063dda22fbc7",
+      "kind": "local",
+      "name": "card/k-38-pudelko-karty-odizolowane",
+      "reason": "Cel należy do karty K-38 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-38-pudelko-karty-odizolowane",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "66bd13c8339e9e1f699479c76ef008993e1e3d1e",
+      "kind": "local",
+      "name": "card/k-39-kolejka-harmonogram-pracy-widok",
+      "reason": "Cel należy do karty K-39 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-39-kolejka-harmonogram-pracy-widok",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "21c2a82cf2b8533f628c70256133691d25141cbb",
+      "kind": "local",
+      "name": "card/k-54-szybkie-testy-rownolegly-make",
+      "reason": "Cel należy do karty K-54 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-54-szybkie-testy-rownolegly-make",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "1272884d091a8a268e51e92432c8b1f4faefa512",
+      "kind": "local",
+      "name": "card/k-56-dowodzenie-tide-glosem-notatka",
+      "reason": "Cel należy do karty K-56 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-56-dowodzenie-tide-glosem-notatka",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "ff684a3669323387fe5349a938db99a3dd4f60df",
+      "kind": "local",
+      "name": "card/k-59-skille-krokach-tle",
+      "reason": "Cel należy do karty K-59 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-59-skille-krokach-tle",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "c3cbb0ea3f905aaed73066b67f1385bb2f42bcd5",
+      "kind": "local",
+      "name": "card/k-60-porzadki-tide-drobne-poprawki",
+      "reason": "Cel należy do karty K-60 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-60-porzadki-tide-drobne-poprawki",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "92c27d100b97ac9173f2cb4fc1525685b9826024",
+      "kind": "local",
+      "name": "card/k-62-testy-ticketu-make-test",
+      "reason": "Cel należy do karty K-62 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-62-testy-ticketu-make-test",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "bd607b329f19ee52e3709862d2807ce153826105",
+      "kind": "local",
+      "name": "card/k-64-integracja-k-37-master",
+      "reason": "Cel należy do karty K-64 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-64-integracja-k-37-master",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "61472d3b03ca522ae403f8566aee2ee85375c07f",
+      "kind": "local",
+      "name": "card/k-67-blad-kroku-ticket-nie",
+      "reason": "Cel należy do karty K-67 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-67-blad-kroku-ticket-nie",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "3a2e7555fcfef0357e056cfed0fd36991495a2e0",
+      "kind": "local",
+      "name": "card/k-68-dokladna-mapa-make-test",
+      "reason": "Cel należy do karty K-68 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-68-dokladna-mapa-make-test",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "ea74a0e94589d543400ad09dad80cb5d94beaa07",
+      "kind": "local",
+      "name": "card/k-69-kontrakt-testow-projektu-testy",
+      "reason": "Cel należy do karty K-69 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-69-kontrakt-testow-projektu-testy",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "0be52e6ca04c18e733ac8881a0a49f9ca21b30fb",
+      "kind": "local",
+      "name": "card/k-71-zasady-recenzja-wedlug-ryzyka",
+      "reason": "Cel należy do karty K-71 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-71-zasady-recenzja-wedlug-ryzyka",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "85d4c53cac225303f7d7c4693abd468c42e900d9",
+      "kind": "local",
+      "name": "card/k-73-poprawki-review-poprawek",
+      "reason": "Cel należy do karty K-73 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-73-poprawki-review-poprawek",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "f585b33c36d106fbda74b6a8315d69c1822ed39a",
+      "kind": "local",
+      "name": "card/k-78-pudelko-konsola-agentem-pierwszy",
+      "reason": "Cel należy do karty K-78 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-78-pudelko-konsola-agentem-pierwszy",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "ab3fbd0439e8f5b2bb97d8ede072dbd274b43c3b",
+      "kind": "local",
+      "name": "card/k-88-poprawki-pilne-przeplywu-przed",
+      "reason": "Cel należy do karty K-88 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-88-poprawki-pilne-przeplywu-przed",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "2a56db2ac1c79d835c52e8f5d49bafd64702d622",
+      "kind": "local",
+      "name": "card/k-91-straznik-tresci-przed-push",
+      "reason": "Cel należy do karty K-91 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-91-straznik-tresci-przed-push",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "e51f2331cdfb50ee9116c5c5f89cf67880f826e1",
+      "kind": "local",
+      "name": "card/k-92-okno-tablicy-cpu-migawka",
+      "reason": "Cel należy do karty K-92 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-92-okno-tablicy-cpu-migawka",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "bbb5a1f2a3a2cf6cdefa5d6a8394d0d945b8728b",
+      "kind": "local",
+      "name": "card/k-97-okno-tablicy-decyzje-tickety",
+      "reason": "Cel należy do karty K-97 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-97-okno-tablicy-decyzje-tickety",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "f7f4f7387fac6243a33cc439377aac0638071453",
+      "kind": "local",
+      "name": "card/k-98-wydajnosc-uslugi-odczytow",
+      "reason": "Cel należy do karty K-98 lub jej czynnego kroku.",
+      "ref": "refs/heads/card/k-98-wydajnosc-uslugi-odczytow",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "b35333315cc2e861e08dc9faf7ed032874a05075",
+      "kind": "local",
+      "name": "card/k-99-git-tide-mapa-galezi",
+      "reason": "Celem nie może być gałąź karty.",
+      "ref": "refs/heads/card/k-99-git-tide-mapa-galezi",
+      "remote": "",
+      "selectable": false
+    },
+    {
+      "commit": "aa643dac5845bfbc6237b553505e13c40720d191",
+      "kind": "local",
+      "name": "codex/k-28-full-planning",
+      "reason": "",
+      "ref": "refs/heads/codex/k-28-full-planning",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "353ed8314d83f8d623130a32862cc706ba286764",
+      "kind": "local",
+      "name": "codex/k-28-stage-1",
+      "reason": "",
+      "ref": "refs/heads/codex/k-28-stage-1",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2a0a481709d13e4524d1ed962a9b4bce36875cd2",
+      "kind": "local",
+      "name": "docs/card-decision-ui-mockup",
+      "reason": "",
+      "ref": "refs/heads/docs/card-decision-ui-mockup",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "209ca43040cddffe989f7c499633d63e5c35aaac",
+      "kind": "local",
+      "name": "docs/pt-34-stream-activity-plan",
+      "reason": "",
+      "ref": "refs/heads/docs/pt-34-stream-activity-plan",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2dc334f6af0a246f9785c67360ee32aba4b1b42a",
+      "kind": "local",
+      "name": "feat/machine-bootstrap",
+      "reason": "",
+      "ref": "refs/heads/feat/machine-bootstrap",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "f13033435ff9f1869886398e7a9dc31fe9163775",
+      "kind": "local",
+      "name": "feat/pt-84-hide-stream-overlay",
+      "reason": "",
+      "ref": "refs/heads/feat/pt-84-hide-stream-overlay",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "ebbf19b16278f1072081ac7676e25d46fe41b280",
+      "kind": "local",
+      "name": "feat/pt-88-pt-91-stream-rework",
+      "reason": "",
+      "ref": "refs/heads/feat/pt-88-pt-91-stream-rework",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "e0709f3be835046e3e3af8ff0f2c085ea13e5f08",
+      "kind": "local",
+      "name": "feat/vivaldi-theme",
+      "reason": "",
+      "ref": "refs/heads/feat/vivaldi-theme",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "961ff3c1d46600ce4483b1f6e66d7e590284df2b",
+      "kind": "local",
+      "name": "fix/docker-test-dock-order",
+      "reason": "",
+      "ref": "refs/heads/fix/docker-test-dock-order",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "ccecc35962993a5da3324ec65a0f1948c537cf80",
+      "kind": "local",
+      "name": "fix/pt-36-sidebar-clamp",
+      "reason": "",
+      "ref": "refs/heads/fix/pt-36-sidebar-clamp",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "fb5ee524ab693df43366574be72be5774d8ea8ad",
+      "kind": "local",
+      "name": "fix/reserved-title-soft",
+      "reason": "",
+      "ref": "refs/heads/fix/reserved-title-soft",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "1d37f7c30a281f511fd34200aec96ad5431537ae",
+      "kind": "local",
+      "name": "fix/step-output-dir-writable",
+      "reason": "",
+      "ref": "refs/heads/fix/step-output-dir-writable",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "97dfdb97988437bcc3c2518d29e5098bb65528db",
+      "kind": "local",
+      "name": "fix/test-runs-sandbox-and-timeout",
+      "reason": "",
+      "ref": "refs/heads/fix/test-runs-sandbox-and-timeout",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "5bf07c454698b05217ec646440708d81068c14ec",
+      "kind": "local",
+      "name": "integrate/k-38-master",
+      "reason": "",
+      "ref": "refs/heads/integrate/k-38-master",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "1d4872a88c748dd56e762952a5ad40fe4350489b",
+      "kind": "local",
+      "name": "integrate/k-38-master-1108",
+      "reason": "",
+      "ref": "refs/heads/integrate/k-38-master-1108",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "c3cbb0ea3f905aaed73066b67f1385bb2f42bcd5",
+      "kind": "local",
+      "name": "integrate/k-60-master",
+      "reason": "",
+      "ref": "refs/heads/integrate/k-60-master",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "29428970a6d8a15c7f652dec5cebb4f887fb9324",
+      "kind": "local",
+      "name": "integrate/k-69-master-1109",
+      "reason": "",
+      "ref": "refs/heads/integrate/k-69-master-1109",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "336fcb4fb62276170b5b5e04a68ba7907bba2273",
+      "kind": "local",
+      "name": "ticket/pt-108-integracja-k-28-k",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-108-integracja-k-28-k",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "b07a643e8254c011c2fd296970418ebbcc9174fb",
+      "kind": "local",
+      "name": "ticket/pt-109-przebieg-zatwierdzenie-start",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-109-przebieg-zatwierdzenie-start",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "58e44010770bac284b3a7f859201c7b3ffe52aaa",
+      "kind": "local",
+      "name": "ticket/pt-110-diagnoza-sprawdzenia-zamiast",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-110-diagnoza-sprawdzenia-zamiast",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2878dc5eb5e88b9936559b56031bd55c0ccf2c0c",
+      "kind": "local",
+      "name": "ticket/pt-111-zestaw-prawdziwych-wiadomosci",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-111-zestaw-prawdziwych-wiadomosci",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "3399a47c171b09cee9084668a3a660c38ba6ac47",
+      "kind": "local",
+      "name": "ticket/pt-112-rola-rozpoznawania-pytan-widoku",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-112-rola-rozpoznawania-pytan-widoku",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "53cd0f63f3febe8a83af4b07b39a3982062b1505",
+      "kind": "local",
+      "name": "ticket/pt-113-strojenie-promptu-rozpoznawania",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-113-strojenie-promptu-rozpoznawania",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "769915a6d28b623748711adc7d941249812f1e6e",
+      "kind": "local",
+      "name": "ticket/pt-114-standard-planu-1-3",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-114-standard-planu-1-3",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "5ac74d4f471fd8db3a7400347a71c295a54d0d0b",
+      "kind": "local",
+      "name": "ticket/pt-115-planowanie-kilku-projektach",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-115-planowanie-kilku-projektach",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "1068108540963e39866be769f96bd5a45e77c8da",
+      "kind": "local",
+      "name": "ticket/pt-122-ludzkie-etykiety-krokow-wynikow",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-122-ludzkie-etykiety-krokow-wynikow",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "b3d8529fb41f5c7738329903173b7d82d979f7f0",
+      "kind": "local",
+      "name": "ticket/pt-123-usluga-decyzji-flow-decisions",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-123-usluga-decyzji-flow-decisions",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "bc721b8ddffc8aaaead32e42651db4e256a27043",
+      "kind": "local",
+      "name": "ticket/pt-124-zgoda-wybrane-polecenia-lancucha",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-124-zgoda-wybrane-polecenia-lancucha",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "5d38ffe5e3cfa5d860b7d82a43e013ddcf3046ae",
+      "kind": "local",
+      "name": "ticket/pt-125-blad-tide-rozpoznany-zglaszany",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-125-blad-tide-rozpoznany-zglaszany",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "f3096da0da0d871860258e0839868c4fa612138d",
+      "kind": "local",
+      "name": "ticket/pt-126-pytania-kroku-gotowymi-opcjami",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-126-pytania-kroku-gotowymi-opcjami",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "571a6678ebb5af524d3369b0c37993b97e93cdeb",
+      "kind": "local",
+      "name": "ticket/pt-127-plan-zatwierdzenia-nowy-format",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-127-plan-zatwierdzenia-nowy-format",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "93f6b4af50d21019fbddad3454a3376be774ce62",
+      "kind": "local",
+      "name": "ticket/pt-128-pelna-karta-twoj-ruch",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-128-pelna-karta-twoj-ruch",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "83d46dd0fe66183341a14a28920851985742a1f3",
+      "kind": "local",
+      "name": "ticket/pt-129-historia-ludzkim-jezykiem",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-129-historia-ludzkim-jezykiem",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "e2c8307948b5061badf936653bb349d56bcd3104",
+      "kind": "local",
+      "name": "ticket/pt-130-limit-dostawcy-zatrzymane-kroki",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-130-limit-dostawcy-zatrzymane-kroki",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "b5495d8eae76ac82454871cefd0a95d5d6cd573e",
+      "kind": "local",
+      "name": "ticket/pt-131-sesje-wspolnym-komponencie",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-131-sesje-wspolnym-komponencie",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "6c9d9dc3a09c3f5e316f0a54f0274a942770eac9",
+      "kind": "local",
+      "name": "ticket/pt-132-okno-decyzji-wspolny-komponent",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-132-okno-decyzji-wspolny-komponent",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "34f6edf47ca5cd51560c78f4d1564326f33ea7f2",
+      "kind": "local",
+      "name": "ticket/pt-133-ustawienie-otwierania-karty",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-133-ustawienie-otwierania-karty",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "cb08644612ce063c15b1ad3d03f29a026a0631f4",
+      "kind": "local",
+      "name": "ticket/pt-134-rzadkie-ustawienia-karty-bez",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-134-rzadkie-ustawienia-karty-bez",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "601c4026f12afaa3e013a2233e361e14768a9757",
+      "kind": "local",
+      "name": "ticket/pt-135-contract-usuniecie-starych-pol",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-135-contract-usuniecie-starych-pol",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "e492e472fca557ca9143abc83a2612007bd12d13",
+      "kind": "local",
+      "name": "ticket/pt-136-uruchom-agenta-odmawia-karta",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-136-uruchom-agenta-odmawia-karta",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "0bbbf1bd8fb4a29d83d0a8b46be2d2d2e68113cd",
+      "kind": "local",
+      "name": "ticket/pt-143-rdzen-opiekuna-blad-kroku",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-143-rdzen-opiekuna-blad-kroku",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "68cc7507e2e059c85f066d5db680b042f23bee0a",
+      "kind": "local",
+      "name": "ticket/pt-144-pelna-karta-pokazuje-prace",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-144-pelna-karta-pokazuje-prace",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "9c1fe10114c8fa38e8948b5b39cb288018f47b70",
+      "kind": "local",
+      "name": "ticket/pt-145-opiekun-zmienia-wykonawce",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-145-opiekun-zmienia-wykonawce",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "7bb9b257d143b0747a6ee358db487e20392ef540",
+      "kind": "local",
+      "name": "ticket/pt-146-opiekun-odsyla-plan-precyzyjna",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-146-opiekun-odsyla-plan-precyzyjna",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "b4255191f5c2a3bc34b1646c45922be4b1fd010a",
+      "kind": "local",
+      "name": "ticket/pt-147-opiekun-bledzie-tide-flow",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-147-opiekun-bledzie-tide-flow",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "172e9245771974a7facf98ff7caac103548c4ed8",
+      "kind": "local",
+      "name": "ticket/pt-148-sam-powod-drugi-raz",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-148-sam-powod-drugi-raz",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "32ffa127385516775f542f5fc484a335e92eb1ca",
+      "kind": "local",
+      "name": "ticket/pt-149-porozmawiaj-opiekunem-sesja",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-149-porozmawiaj-opiekunem-sesja",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "6cc03eb92f4c1f5dc108655c5df775aee2b5853d",
+      "kind": "local",
+      "name": "ticket/pt-150-opiekun-ponawia-krok-instrukcja",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-150-opiekun-ponawia-krok-instrukcja",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2f24de53c70c751aeeedcff5ad17e995930f0801",
+      "kind": "local",
+      "name": "ticket/pt-151-ustawienia-opiekuna-wylacznik",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-151-ustawienia-opiekuna-wylacznik",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "c0b74506b836a869e190895c013da402fc2da568",
+      "kind": "local",
+      "name": "ticket/pt-152-opiekun-zglasza-blad-tide",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-152-opiekun-zglasza-blad-tide",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "3ec52aab7b6afe32ac0ebbb68d8025a048ceb705",
+      "kind": "local",
+      "name": "ticket/pt-153-kontekst-opiekuna-zamaskowany",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-153-kontekst-opiekuna-zamaskowany",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "3eb954dec5ada31a19c6b37201854c2922754c36",
+      "kind": "local",
+      "name": "ticket/pt-154-decyzja-opiekun-problemow-bez",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-154-decyzja-opiekun-problemow-bez",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "a04d02852ef575d10af90521f29ef8e5e00b4911",
+      "kind": "local",
+      "name": "ticket/pt-155-luka-zatwierdzonym-planie",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-155-luka-zatwierdzonym-planie",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "87e7a8ad89517d0dbc8448d974951df4815ecad2",
+      "kind": "local",
+      "name": "ticket/pt-156-test-akceptacyjny-przeplywu-03",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-156-test-akceptacyjny-przeplywu-03",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "d13e3ca890f5db486fc8655a5cb908edb42cab59",
+      "kind": "local",
+      "name": "ticket/pt-157-okno-decyzji-blok-opiekun",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-157-okno-decyzji-blok-opiekun",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "3e686d78b6c4e43a6a4a5ac7f1a05b54eea4fe7b",
+      "kind": "local",
+      "name": "ticket/pt-158-piaskownica-kroku-opiekuna-tylko",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-158-piaskownica-kroku-opiekuna-tylko",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "cef23e7c0fc6301a932c9734a1753785f5db19b8",
+      "kind": "local",
+      "name": "ticket/pt-164-prototyp-pudelka-docker-worktree",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-164-prototyp-pudelka-docker-worktree",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "d6f9db4a69ea872bfcba304c1eb3983d92d5632c",
+      "kind": "local",
+      "name": "ticket/pt-165-profil-srodowiska-schemat-tide",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-165-profil-srodowiska-schemat-tide",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "a1efd5b7a37d7f5ffe6921cf91d1539586e45328",
+      "kind": "local",
+      "name": "ticket/pt-166-instalacja-incusa-pula-btrfs",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-166-instalacja-incusa-pula-btrfs",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2e425e71e8ad4a27a50cb9a621b0d2d799ca3a98",
+      "kind": "local",
+      "name": "ticket/pt-167-atrapa-incus-adapter-cli",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-167-atrapa-incus-adapter-cli",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "4e399f51c1351e120aadd8b995dfebf553e52a0d",
+      "kind": "local",
+      "name": "ticket/pt-168-proxy-wyjsciowe-lista-domen",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-168-proxy-wyjsciowe-lista-domen",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "4f3f71a63444bd34c3f7625ebfd446f792037049",
+      "kind": "local",
+      "name": "ticket/pt-169-boxrunner-argv-incus-exec",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-169-boxrunner-argv-incus-exec",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "b468d661183c8f7467ab29d6d039d0883dac7130",
+      "kind": "local",
+      "name": "ticket/pt-170-straznik-refow-tylko-odczytu",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-170-straznik-refow-tylko-odczytu",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "78aedaccb1ac930cf2f0e768951e30669f2087b0",
+      "kind": "local",
+      "name": "ticket/pt-171-docker-pudelku-nesting-obrazy",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-171-docker-pudelku-nesting-obrazy",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "e08701abb0b92f499d3cfe3474ba113b72c4b44a",
+      "kind": "local",
+      "name": "ticket/pt-172-pakiet-zgod-sekcja-srodowisko",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-172-pakiet-zgod-sekcja-srodowisko",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "2b4db57e4236e7cf39a38bcf9855eef745390c3c",
+      "kind": "local",
+      "name": "ticket/pt-173-paczki-danych-uzytkownika-tylko",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-173-paczki-danych-uzytkownika-tylko",
+      "remote": "",
+      "selectable": true
+    },
+    {
+      "commit": "41f10de5dd23514ccf239f8a07b30f5659633077",
+      "kind": "local",
+      "name": "ticket/pt-174-artefakty-testow-katalogu-kroku",
+      "reason": "",
+      "ref": "refs/heads/ticket/pt-174-artefakty-testow-katalogu-kroku",
+      "remote": "",
+      "selectable": true
+    }
+  ],
+  "createTarget": null,
+  "defaultTargetRef": "refs/heads/master",
+  "hasMore": true,
+  "mainRef": "refs/heads/master",
+  "ok": true,
+  "recentBases": [],
+  "recentTargets": [
+    {
+      "commit": "7dbf0a40ce78d15ee71e2045896532fc56b4b24d",
+      "kind": "local",
+      "name": "master",
+      "reason": "",
+      "ref": "refs/heads/master",
+      "remote": "",
+      "selectable": true
+    }
+  ],
+  "trackingTargets": [],
+  "warnings": []
+}

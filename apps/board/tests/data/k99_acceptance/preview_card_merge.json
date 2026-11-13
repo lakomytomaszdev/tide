@@ -1,0 +1,850 @@
+{
+  "baseVersion": 1,
+  "blockedReasons": [
+    {
+      "message": "Konflikty w drzewie scalenia.",
+      "reason": "conflict"
+    },
+    {
+      "message": "Karta nie ma aktualnego domknięcia.",
+      "reason": "not-closed"
+    },
+    {
+      "message": "Krok karty jest jeszcze czynny.",
+      "reason": "active-step"
+    },
+    {
+      "message": "Zmiana planu czeka na zakończenie lub decyzję.",
+      "reason": "plan-change"
+    }
+  ],
+  "canMerge": false,
+  "commitCount": 102,
+  "commits": [
+    {
+      "sha": "b35333315cc2e861e08dc9faf7ed032874a05075",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "7be18ee77ba2390a65eaea4b35f2169d4408766a",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "4acad9966e437d4b2b1f5e8362bea709ae0fa72d",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "6edc5b0c93d9735b5ab95bfe13510f50e2741717",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "78fe48ac2c69bc6d83b086daf4715c06f1779c06",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "27b54413a3089135eba9a9e956d60f6a32fcd0bb",
+      "subject": "Merge ticket PT-401 into card K-99"
+    },
+    {
+      "sha": "afb02bf7ae441802cd44cca27cbf656a5cd0a09d",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "18edf38aa85d09d52f719d5db6f9f194f1c7c058",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "f933943199e6166a628796127bc7020116e91354",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "3d6dd31dfee8e63ac360a29f645f8d8ba924c9e1",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "baf64577223984257f96ef975c8af49952e0bc46",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "1b0197f280b93aacb32f8cb18a43e875272fd42e",
+      "subject": "fix(board): integrate card branch, keep MergeCard-to-main literals out of apps sources"
+    },
+    {
+      "sha": "6afa6c7ee1aead7060065b47e787684b6e1d9cd5",
+      "subject": "Merge branch 'card/k-99-git-tide-mapa-galezi' into ticket/pt-401-jedno-scal-panelu-pelnej"
+    },
+    {
+      "sha": "48c744f1d84ceb06f6e3e8ce3761f912111c44c5",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "6c7537f554c3b9a6fee6831056af1a82478dacf1",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "7855d8777bd2bda23153a26dd9fdea36c21329db",
+      "subject": "Merge ticket PT-395 into card K-99"
+    },
+    {
+      "sha": "679a7b5005aec270a10cf06281ffadae635f48ec",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "2b369d5cc0b6adf8cfedfaec16a6600612185ff6",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "d2821e3ca47b5e73ef8eaacaac5e8400c95ce9f7",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "49f4bddb510fd98cdf1aca05d36fd2c658e53f11",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "669d962927abec77fd95096ccc261b16c4fa757b",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "bff9b519328bda4e8315dbf2e0a9646bbedae75b",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "2edd9ba1bf3ba725f40cbc901fc392e893f7eb44",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "38a2b7964c8b07917d40466f480cbdde0b3e1654",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "4d48cba73ce663ea3e5295559c19a4e29babfa10",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "19a31783093784bb9a5fb60ad100e786335dc6d3",
+      "subject": "feat(worktrees): merge window from the branch map (PT-395)"
+    },
+    {
+      "sha": "36a9584e916775f23693dd3abf1450c3c66076d1",
+      "subject": "test(board): keep removed merge names out of window sources"
+    },
+    {
+      "sha": "83e18ed916bdc1668df0f3c5c1e336c3fea559ab",
+      "subject": "refactor(board): remove MergePreview and MergeTargetPicker"
+    },
+    {
+      "sha": "16800952d3f0bf3a74facf3b31a80247c8963ff4",
+      "subject": "feat(board): single Merge… button and merged line, drop token-less merge path"
+    },
+    {
+      "sha": "4a6440da8da53cac3ccac70ee71bf097bf073730",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "bef1b2d9c5640e011628f262718145007fc6ed56",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "5411b86dc9afe6e666787de6e3fc5b17cf206a20",
+      "subject": "Merge ticket PT-391 into card K-99"
+    },
+    {
+      "sha": "0eb6f3d45ff2d1c6194ef7baab56294f42635dfb",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "b6953dbf690e9bc599a9abc17c9ded1abaa28786",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "737a8839b2dd0d7c72b69037be1c86b2e32f9bf9",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "8d1f8291754c4d694a9db70f5506a8365d6d52bb",
+      "subject": "feat(board): target choice in merge window and shared branch picker (PT-391)"
+    },
+    {
+      "sha": "643a6f0660caac78c4ab3bb9203a15545441c25d",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "36dc310ef8d5e54dba9c8fd16014972cfb199de7",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "f87a2ad48793a7b756ff6f2d404c3fdc4fab8686",
+      "subject": "Merge ticket PT-390 into card K-99"
+    },
+    {
+      "sha": "7e4b29fb65f2564a28b500d8a906fd2bedba1731",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "b7983ef2ba6d12c84c476dbde710ba8a916842a6",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "06739f4fe8077bb2ba242a33c39b4f1247caacf3",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "3305708b79da6efa52a1a7fd18447c1bb981c444",
+      "subject": "feat(board): shared merge window with consent contract replaces MergePreview (PT-390)"
+    },
+    {
+      "sha": "9562b42070f876f1593fdf38f5f1d5c13097e373",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "e35ae52a345147b6be7d15021b393fdd7ee83324",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "6dbdb2bdf2145f53346c57c049c0a65e9a9f0bf2",
+      "subject": "Merge ticket PT-388 into card K-99"
+    },
+    {
+      "sha": "417a6109238535a60860d25dbbf4742ddd3437e3",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "12c02d10e6cf2681624265bcef8bb90fc4393d9f",
+      "subject": "Merge ticket PT-392 into card K-99"
+    },
+    {
+      "sha": "c36e3cac3dab1a7ac4407c4c997ec7c8a97a23d2",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "fdbe49bca806793505f5df6a06e3acb048574236",
+      "subject": "fix(worktrees): use shared start.js formatter for branch map dates (PT-388 review)"
+    },
+    {
+      "sha": "ad654b2ee0dfc0165c1bbda7d8f71c6889983d52",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "4ff539c17e6e3dfcb3cc06ec150d675e8fdb896c",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "d104e1ae7e10053c631e32da25f72474381599b7",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "a600fce2c899da43fedc507f16fd64e7748a95cc",
+      "subject": "Merge ticket PT-389 into card K-99"
+    },
+    {
+      "sha": "e4598f7722ee85fe0404a435c0aaae3192572df7",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "3cc1490b5e8c2682d8d34d7c1ae7f286fb5076e8",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "b33e00c494247e2e1f75fb8930028813dc8be5fb",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "ad33e65d6f56d9876b63a7c7dce7ac9aaf690d4b",
+      "subject": "fix(board): rozpoznawaj korektę bazy po baseVersion > 1 lub bazie różnej od pierwotnej; data startu świeżej karty wraca"
+    },
+    {
+      "sha": "c7e9d1d0a1d21f6d703cb75d9c7d1108379a981d",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "10a94cf71eda680eb6c096467dcc6bbcfd976227",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "ec9725879c7a2cdd382e8637a36e42aea3732abb",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "3abbd9e33b028bdaa68239334c8dfec0c8ccd848",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "b82a7b2d36210bfa37814235f3f4c3cd96eba36f",
+      "subject": "feat(worktrees): Directories/Branches switch and branch map tree mode"
+    },
+    {
+      "sha": "de7dd7899fdc7d55206d9db59189bcd54cc4df6b",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "a3089aa09a3be19e6c17cb61a3b7d29712a5d662",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "56a81392b4a5c9a71b3b5d03847fb490651a708c",
+      "subject": "fix(board): clarify ref_syntax_error contract and startRef clearing docs"
+    },
+    {
+      "sha": "5c8ba2ac135e27f0922be0fe146ffb47bff1481a",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "9138bee0b15d66b5b1aab041539d811bbaf95e98",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "878d5a65d09663d2763a2547bd396681e628dbd3",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "c3a63d34d7975e898d95b9fdcd74718d61c772f0",
+      "subject": "Merge ticket PT-387 into card K-99"
+    },
+    {
+      "sha": "94d244b3ef885369bb00df836a99f1175410a3ed",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "3bb44c568a17b3ef32cbad3afe7e17b83b1897c5",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "592938500f294e39389d53023ef351a32fd23cd3",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "e68b4eca2cd24b37f2f382204da444a31f617fef",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "7e8e04ff3c40a753d7be7ed5162dec3b6108642b",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "0b6ca0920d1ec2955e2b2b1cf939b201b05d900a",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "d1ea37fec8b91424a593aeb0efe9f63ec50f1158",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "a4e51d8a1273ffa9b93e1c587ebd2cca0069e011",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "eaaed8a6ade0c8d88b1311d65f8940a51bb57079",
+      "subject": "test(daemon): wait for card journal to settle in BranchMap D-Bus test (PT-387)"
+    },
+    {
+      "sha": "af37546cd863e248f076d7ca61008ef7459c30c7",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "bc1644532fb35a57673784d926116f7525118f05",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "b331f7707a229b31bc12d1efade02924f1131efb",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "16eb11237a6a17d9d18481a5960245985dbf6127",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "44f154847ab11477a3f2dc187302d5b8bd33c4eb",
+      "subject": "test(daemon): expect closed card and merged ticket in BranchMap D-Bus test (PT-387)"
+    },
+    {
+      "sha": "3f4501cfdce9eb651db72aa894d047aa906b0972",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "e352790f2441dca71f647ebc0c121730c6ee517d",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "44ee0af874fa0843ce21781dc3f7d2b3f65cb558",
+      "subject": "feat(board): show 'Start od' line and 'Zmień gałąź startową…' on card panel and full card"
+    },
+    {
+      "sha": "aaf84e56d003d358b63238a769336baec1989198",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "62cf376dd78e6f3738a82ae1dc3c270d22940528",
+      "subject": "feat(daemon): add Git.BranchMap projection of card journals (PT-387)"
+    },
+    {
+      "sha": "727640eb02cb1ca048bf157a84ed42184d19de6f",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "015a2020093dce01c565a67c2a6c0ae178e3afc3",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "1d8cdddff8a73b8442f7d1f89c162778873584d4",
+      "subject": "feat(board): add card startRef field with shared ref syntax validation"
+    },
+    {
+      "sha": "e431ccc041fa40f762ccb85b9c537c40083d7a7e",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "ac6b382dcdb06113ca45c5568718490b005acac2",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "bb6fdd025c7f8642c9f6ff8cbaad9edc0c198576",
+      "subject": "Merge ticket PT-386 into card K-99"
+    },
+    {
+      "sha": "aab2b074cb53249ee673442c08b9243a943469c6",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "d1f700c5eafe40ba16019ec68bb08e8a73edcb99",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "6b276f854183611353a11826cd51ed1417d31399",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "f42f257ade7f7c9ee6769f48845ca929a7e5af66",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "52fe4cc48079bf3f5b23506eb2042f7f799b0f33",
+      "subject": "docs(plan): update card ticket plan"
+    },
+    {
+      "sha": "2f411d2ccd62a0289142a3a2af58455f13248235",
+      "subject": "Merge master into card K-99"
+    },
+    {
+      "sha": "2560be68849daa95f28eaf68220bd5a9708798f0",
+      "subject": "docs(plan): update card ticket plan"
+    }
+  ],
+  "conflictCount": 2,
+  "conflicts": [
+    "daemon/tide_daemon/board/store.py",
+    "docs/tide-daemon.md"
+  ],
+  "fileCount": 65,
+  "files": [
+    {
+      "newPath": "apps/board/backend.py",
+      "oldPath": "apps/board/backend.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/qml/BoardPage.qml",
+      "oldPath": "apps/board/qml/BoardPage.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/qml/BoardView.qml",
+      "oldPath": "apps/board/qml/BoardView.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/qml/CardPanel.qml",
+      "oldPath": "apps/board/qml/CardPanel.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/qml/LaunchDialog.qml",
+      "oldPath": "apps/board/qml/LaunchDialog.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "",
+      "oldPath": "apps/board/qml/MergePreview.qml",
+      "status": "D"
+    },
+    {
+      "newPath": "",
+      "oldPath": "apps/board/qml/MergeTargetPicker.qml",
+      "status": "D"
+    },
+    {
+      "newPath": "apps/board/tests/test_base_change.py",
+      "oldPath": "apps/board/tests/test_base_change.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/tests/test_branches.py",
+      "oldPath": "apps/board/tests/test_branches.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/tests/test_card_full_view.py",
+      "oldPath": "apps/board/tests/test_card_full_view.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/tests/test_diff_view.py",
+      "oldPath": "apps/board/tests/test_diff_view.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/tests/test_merge_targets.py",
+      "oldPath": "apps/board/tests/test_merge_targets.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/board/tests/test_merge_window.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/board/tests/test_start_line.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/board/tests/test_view.py",
+      "oldPath": "apps/board/tests/test_view.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/common/qml/card/CardFullView.qml",
+      "oldPath": "apps/common/qml/card/CardFullView.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/common/qml/card/CardStartLine.qml",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/common/qml/git/BranchInput.qml",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/common/qml/git/BranchPicker.qml",
+      "oldPath": "apps/board/qml/BranchPicker.qml",
+      "status": "R095"
+    },
+    {
+      "newPath": "apps/common/qml/git/MergeWindow.qml",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/common/qml/git/start.js",
+      "oldPath": "apps/common/qml/git/start.js",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/common/windowconfig.py",
+      "oldPath": "apps/common/windowconfig.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/worktrees/backend.py",
+      "oldPath": "apps/worktrees/backend.py",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/worktrees/qml/BranchesPage.qml",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/worktrees/qml/WorktreeItem.qml",
+      "oldPath": "apps/worktrees/qml/WorktreeItem.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/worktrees/qml/WorktreesView.qml",
+      "oldPath": "apps/worktrees/qml/WorktreesView.qml",
+      "status": "M"
+    },
+    {
+      "newPath": "apps/worktrees/qml/branches.js",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/worktrees/tests/mergeprobe.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/worktrees/tests/test_branches.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "apps/worktrees/tests/test_merge.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "daemon/tests/test_board_core.py",
+      "oldPath": "daemon/tests/test_board_core.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tests/test_board_dbus.py",
+      "oldPath": "daemon/tests/test_board_dbus.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tests/test_cardflow_base.py",
+      "oldPath": "daemon/tests/test_cardflow_base.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tests/test_cardflow_merge_confirm.py",
+      "oldPath": "daemon/tests/test_cardflow_merge_confirm.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tests/test_git_dbus.py",
+      "oldPath": "daemon/tests/test_git_dbus.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tests/test_gitread_branchmap.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "daemon/tide_daemon/app.py",
+      "oldPath": "daemon/tide_daemon/app.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/board/model.py",
+      "oldPath": "daemon/tide_daemon/board/model.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/board/store.py",
+      "oldPath": "daemon/tide_daemon/board/store.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/cardflow/gitops.py",
+      "oldPath": "daemon/tide_daemon/cardflow/gitops.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/dbus_service.py",
+      "oldPath": "daemon/tide_daemon/dbus_service.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/git_monitor.py",
+      "oldPath": "daemon/tide_daemon/git_monitor.py",
+      "status": "M"
+    },
+    {
+      "newPath": "daemon/tide_daemon/gitread/branchmap.py",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/plans/2026-11-11-k-99-flow.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-386.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-387.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-388.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-389.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-390.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-391.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-392.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-393.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-394.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-395.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-396.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-397.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-398.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-399.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-400.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-401.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-402.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-403.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-471.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/agents/tickets/k-99-flow/pt-472.md",
+      "oldPath": "",
+      "status": "A"
+    },
+    {
+      "newPath": "docs/tide-daemon.md",
+      "oldPath": "docs/tide-daemon.md",
+      "status": "M"
+    }
+  ],
+  "id": "K-99",
+  "localChanges": {
+    "staged": [],
+    "unstaged": [
+      {
+        "paths": [
+          "widgets/lib/ScenesCard.qml"
+        ],
+        "status": " M"
+      },
+      {
+        "paths": [
+          "widgets/stream/desk/contents/ui/motion/README.md"
+        ],
+        "status": " M"
+      },
+      {
+        "paths": [
+          "widgets/stream/desk/contents/ui/motion/alert.webp"
+        ],
+        "status": " M"
+      },
+      {
+        "paths": [
+          "widgets/stream/desk/contents/ui/motion/peek.webp"
+        ],
+        "status": " M"
+      },
+      {
+        "paths": [
+          "widgets/stream/desk/contents/ui/motion/raid.webp"
+        ],
+        "status": " M"
+      },
+      {
+        "paths": [
+          "widgets/stream/desk/contents/ui/motion/transition.webp"
+        ],
+        "status": " M"
+      }
+    ],
+    "untracked": [
+      {
+        "paths": [
+          "docs/public-release-grill-brief.md"
+        ],
+        "status": "??"
+      }
+    ]
+  },
+  "localCollisionCount": 0,
+  "localCollisions": {
+    "staged": [],
+    "unstaged": [],
+    "untracked": []
+  },
+  "message": "Konflikty w drzewie scalenia.",
+  "ok": true,
+  "previewToken": "569bcac0d96c2bb52b56a7ddaeb3054647a7f6d0cb2f30d2e03be0b4c1f09a55",
+  "readyToMerge": false,
+  "reason": "conflict",
+  "resultTree": "72b9f3a048d1c6110a7c42955a7b77adb5d23db0",
+  "sourceBranch": "card/k-99-git-tide-mapa-galezi",
+  "sourceCommit": "b35333315cc2e861e08dc9faf7ed032874a05075",
+  "sourceRef": "refs/heads/card/k-99-git-tide-mapa-galezi",
+  "targetBranch": "master",
+  "targetCommit": "7dbf0a40ce78d15ee71e2045896532fc56b4b24d",
+  "targetPreparation": {
+    "createRef": false,
+    "createWorktree": false,
+    "nameConflict": false,
+    "parentSymlink": false,
+    "path": "<HOME>/DevWorkspace/plasma-tide",
+    "pathOccupied": false,
+    "remoteCommit": "",
+    "remoteRef": "",
+    "startCommit": "7dbf0a40ce78d15ee71e2045896532fc56b4b24d"
+  },
+  "targetRef": "refs/heads/master",
+  "targetWorktree": "<HOME>/DevWorkspace/plasma-tide",
+  "targetWorktreeExists": true,
+  "warnings": [
+    "Podgląd jest tylko odczytem. Nie potwierdza ani nie wykonuje scalenia."
+  ]
+}
