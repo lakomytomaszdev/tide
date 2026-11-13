@@ -5,7 +5,7 @@ SUITES = {
     "kwin": [("kwin/tests", "test*.py")],
     "colors": [("theme/colors/tests", "test*.py")],
     "syntax": [("theme/syntax/tests", "test*.py")],
-    "scripts": [("scripts/tests", "test*.py")],
+    "scripts": [("scripts/tests", "test*.py"), ("scripts/k99/tests", "test*.py")],
     "board": [("apps/board/tests", "test*.py")],
     "daemon": [("daemon/tests", "test*.py")],
     "issues": [("daemon/tests", "test_issues*.py"), ("apps/issues/tests", "test*.py")],
