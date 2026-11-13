@@ -2638,6 +2638,70 @@ odczycie → `HistoryChanged` przed operacjami git i zapisem; generacja w toku p
 a projekcja bazy na Tablicę porównuje historię świeżo tylko przed faktycznym zapisem pól (`project_card_base(guard=…)`).
 Po zapisie odtworzenia faza czyta kartę ponownie (licznik zapisów), więc projekcja widzi własny zapis.
 
+**Karty w spoczynku (K-105 PT-412).** Zakończona karta bez żadnej pracy nie przechodzi co 5 s pełnego przebiegu karty
+(`_tick_card`, strażnik postoju `_guard_card`, `_queue_notices`); tick robi dla niej tylko lekkie sprawdzenie. Moduł:
+`cardflow/rest.py`.
+
+- *Definicja.* Warunek spoczynku to **jedna funkcja** `rest.at_rest(probe)` nad **rejestrem czynników
+  wykluczających** `rest.FACTORS`. Każdy czynnik ma nazwę i odpowiada na pytanie „ta karta ma pracę”; karta jest
+  w spoczynku tylko wtedy, gdy żaden czynnik jej nie wyklucza. Wyjątek albo błąd odczytu w czynniku wyklucza spoczynek
+  (`Verdict.error`). Czynniki czytają stan karty (`Journal.state`), kontekst odczytu Tablicy ticku i pamięć silnika;
+  nic nie zapisują.
+- *Czynniki rejestru* (kolejność sprawdzania):
+  `card-unfinished` — karta nie ma `card.finished` albo nie stoi w Gotowe/Archiwum (także karta usunięta z Tablicy);
+  `steps` — krok albo krok opiekuna trwa, albo Konsola kroku interaktywnego jest otwarta;
+  `intents` — zamiar akcji bez wyniku, także w tle (`youtrack-note`);
+  `held` — tożsamość procesu chroniona (`held`, K-38);
+  `k38-public` — karta K-38 (inwentaryzacja publicznych procesów biegnie tylko w jej pełnym przebiegu);
+  `main-merge` — scalenie do głównej czeka (`main-merge.waiting`) albo zamiar bez punktu kontrolnego `projected`;
+  `base` — propozycja, prośba albo zmiana bazy karty w toku (`baseproposal.blocked`, `card.base-requested`);
+  `outside` — polecenie poza piaskownicą tej karty trwa albo czeka (także próba testów po scaleniu i wpis w żywej
+  kolejce silnika);
+  `caretaker` — opiekun pracuje albo jego wynik czeka na akcję;
+  `stage-errors` — błąd etapu (`flow.error`) czeka na ponowienie;
+  `decisions` — decyzja czeka (`caretaker._waiting_decisions`: pytanie, zgoda, plan, review — zasilają `_caretake`);
+  `plan` — plan czeka na review, zatwierdzenie albo poprawę;
+  `reviews` — werdykt review albo odrzucenie ticketu czeka na odtworzenie (`_recover_verdicts`,
+  `_recover_review_rejections`);
+  `tracker` — notatka YouTracka po scaleniu ticketu czeka na wysłanie (projekt z YouTrackiem);
+  `notices` — powiadomienie czeka na wysłanie (w pamięci silnika albo wynik kroku bez `step.notice` i decyzji);
+  `queues` — karta ma operację w kolejce (niżej).
+- *Kolejki.* Nazwany punkt wejścia `rest.has_queued_operation` („karta ma operację w kolejce”) nad rejestrem źródeł
+  `rest.QUEUES`: `heavyqueue` (kolejka poleceń poza piaskownicą z kolejką ciężkich K-39 PT-373 — trwające i czekające,
+  ciężkie i lekkie, z próbami testów po scaleniu; źródła jak pole `queue` migawki, `queueview.operations`, oraz żywa
+  kolejka silnika) i `stepqueue` (kolejka kroków u dostawcy K-39 PT-377 — każdy wpis czekania). Każda oczekująca albo
+  trwająca operacja którejkolwiek kolejki wyklucza spoczynek **każdej** karty, także gdy należy do innej karty; błąd
+  odczytu stanu kolejki też. Kolejki odczytuje się raz na tick, przy pierwszym pytaniu. Obie kolejki są w bazie
+  ticketu i są podpięte przez PT-412; **kolejne kolejki (np. dalsza silnikowa część K-39, PT-378/381) podpinają się
+  wyłącznie przez `rest.register_queue`**, nie osobnym warunkiem w ticku. Ograniczenie: polecenie poza piaskownicą
+  z `outside.started` bez `outside.finished` na zakończonej karcie jest w kolejce tak samo jak w polu `queue` migawki,
+  więc trzyma wszystkie karty poza spoczynkiem, dopóki nie zniknie z kolejki.
+- *Zasada dla następców.* **Każdy nowy czynnik pracy musi wykluczać spoczynek.** Czynnik dopisuje się w jednym
+  miejscu — `rest.register(nazwa, pytanie, has_work)` albo wpis w `rest.FACTORS` (i nazwa na liście wyżej) — a nie
+  rozproszonym warunkiem w ticku. Tu podpinają się K-108 (unieważnienie spoczynku po zmianie blokera), K-109
+  (`command.*`), K-107 (otwarte etapy i Konsola) i silnikowa część K-39. Praca bez czynnika w rejestrze nie jest
+  obsłużona, dopóki karta jest w spoczynku (najdłużej do okresu kontroli pełnej).
+- *Lekkie sprawdzenie karty w spoczynku* (w każdym ticku): wersja dziennika (`Journal.version`, pamięć PT-411),
+  kontrola zgodności z kopią (`Journal.check`, PT-416 — bez zmian, więc revert dziennika w Tablicy wraca z kopii
+  z ostrzeżeniem w najbliższym ticku), kolumna i `move_id` z kontekstu odczytu Tablicy ticku, `at_rest`, rejestracja
+  repozytorium karty w strażniku worktree (`worktree_guard`) i w `_main_branches` (jak dotąd, przed decyzją
+  o spoczynku — strażnik działa także dla repozytorium, którego wszystkie karty są w spoczynku) oraz zajęte worktree
+  i ukryte sesje (`busy`/`hidden`) ze stanu karty z pamięci. Pętla odtwarzania na początku ticku (PT-459) nadal
+  obejmuje każdą kartę.
+- *Powrót pełnego przebiegu.* Pamięć `rest.RestMemory` trzyma po udanym pełnym przebiegu karty, która była wtedy
+  w spoczynku, znacznik (wersja dziennika, kolumna, `move_id`, chwila). Pełny przebieg wraca przy: zmianie wersji
+  dziennika (także własny zapis i zapis spoza procesu), zmianie kolumny albo ruchu karty na Tablicy (ruch obsługuje
+  pełny przebieg jak dotąd), pierwszym ticku nowego silnika (pusta pamięć), upływie okresu kontroli pełnej
+  (`rest.PERIOD` = `FULL_READ_PERIOD`, 10 min, zegar `Journal.monotonic`), wyjątku w poprzednim pełnym przebiegu
+  (bez znacznika) i gdy którykolwiek czynnik wykluczy spoczynek. Znacznik powstaje dopiero po pełnym przebiegu bez
+  wyjątku, w którym żaden czynnik nie wykluczał spoczynku — karta wykluczona np. operacją kolejki wraca do spoczynku
+  dopiero po kolejnym pełnym przebiegu.
+- *Ścieżki pełnego przebiegu, których zakończona karta nie potrzebuje* (dowód pokrycia: notka PT-412):
+  `_complete_manual_finish`, `start(…, _resume=True)`, `_advance_card`, `_caretake`, `_queue_notices`, `_guard_card`
+  i `_recover_transfer_requests` same pomijają kartę z `card.finished`; `_recover_started_steps` wykonuje także pętla
+  odtwarzania (każda karta); `_outside_history(card)` jest tylko odczytem; `_sync_plan_cards` odtwarza projekcję kartek
+  planu z dziennika — po zmianie plików z zewnątrz wraca przy najbliższej zmianie dziennika albo kontroli pełnej.
+
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
 Gotowe i Archiwum bez stanu, Backlog — „wstrzymana”. W Do zrobienia: krok trwa albo scalanie czeka → W toku; pytanie,
