@@ -50,6 +50,9 @@ from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUM
 
 ORDER_STEP = 10
 TMP_PREFIX = ".tide-tmp-"
+# K-113 #3: wpis zmieniony (ctime) w tym oknie przed odciskiem nie pozwala zapamiętać wczytania — kolejny zapis
+# w tej samej ziarnistości znaczników czasu (jiffy jądra) mógłby nie zmienić odcisku. Jak „racily clean” w gicie.
+_RACY_NS = 50_000_000
 GITIGNORE = f"""# Pliki tymczasowe zapisu Tide i edytorów — nie trafiają do historii tablicy.
 {TMP_PREFIX}*
 *.swp
@@ -148,6 +151,9 @@ class BoardStore:
         # K-98 #3: licznik zapisów plików Tablicy w tym procesie; kontekst odczytu (`BoardRead`) po jego zmianie
         # wczytuje Tablicę ponownie (zapis w ticku unieważnia kontekst ticku).
         self.generation = 0
+        # K-113 #3: pamięć ostatniego udanego wczytania dla kontekstu ticku — (odcisk wejść sprzed wczytania, Board);
+        # wyłącznie `load_for_tick`, nigdy publiczne `load()`, transakcje zapisu ani kontekst odświeżenia.
+        self._tick_memory: tuple | None = None
 
     # --- odczyt --------------------------------------------------------------------------------
 
@@ -240,6 +246,75 @@ class BoardStore:
     def load(self) -> Board:
         with self.transaction():
             return self._load()
+
+    def load_for_tick(self) -> Board:
+        """K-113 #3: wczytanie Tablicy dla kontekstu ticku (`BoardRead` z `invalidate_on_write=True`).
+
+        Gdy odcisk wejść `load()` (`_load_fingerprint`) jest równy odciskowi ostatniego udanego wczytania tą drogą,
+        a pochodne stanu spoza Tablicy w pamiętanym `Board` nadal się zgadzają (`_derived_current`), zwraca ten sam
+        obiekt bez transakcji i bez czytania treści plików. Inaczej zwykłe `load()` — ta sama transakcja, te same
+        błędy, ta sama granica „tylko pliki wewnątrz Tablicy”; wpis pamięci dostaje odcisk sprzed wczytania, a błąd
+        wczytania nie jest pamiętany. `Board` z pamięci jest tylko do odczytu (dzielą go kolejne ticki)."""
+        key = self._load_fingerprint()
+        memory = self._tick_memory
+        if key is not None and memory is not None and memory[0] == key and _derived_current(memory[1]):
+            return memory[1]
+        self._tick_memory = None
+        board = self.load()
+        if key is not None:
+            self._tick_memory = (key, board)
+        return board
+
+    def _load_fingerprint(self):
+        """Odcisk wejść `_load()` bez czytania treści plików; None — tych wejść nie da się bezpiecznie pamiętać.
+
+        Skład: `generation` (zapis w tym procesie), `realpath` katalogu Tablicy, błędy kroku z magazynu zatwierdzeń
+        (`_step_approval_errors`, stan w pamięci), plik znacznika, nazwy w `tags/`, `projects/` i `cards/`, `lstat`
+        każdego czytanego pliku i tych katalogów (dla dowiązań także `realpath` i `stat` celu),
+        `projects/<slug>/box.yaml` (z katalogiem projektu), ścieżka i metadane magazynu zatwierdzeń kontraktów.
+        None, gdy czeka nieodtworzona intencja akceptacji zgłoszenia (odtwarza ją transakcja `load()`), gdy `lstat`
+        daje błąd inny niż brak pliku, albo gdy któryś wpis zmienił się w ostatnim `_RACY_NS` (ta sama ziarnistość
+        znaczników czasu mogłaby ukryć kolejną zmianę o tym samym rozmiarze w tym samym i-węźle)."""
+        root = self.root
+        try:
+            intents = os.listdir(os.path.join(root, ".git", "tide-acceptances"))
+        except FileNotFoundError:
+            intents = []
+        except OSError:
+            return None
+        if any(name.endswith(".json") and not name.endswith(".done.json") for name in intents):
+            return None
+        approvals = self.approvals_path or contract_approval.state_path()
+        entries = [MARKER_FILE, "tags", "projects", "cards"]
+        names = {}
+        try:
+            for folder in ("tags", "projects", "cards"):
+                try:
+                    listed = sorted(os.listdir(os.path.join(root, folder)))
+                except (FileNotFoundError, NotADirectoryError):
+                    listed = None
+                names[folder] = listed
+                for name in listed or ():
+                    if name.endswith(".md") and not name.startswith("."):
+                        entries.append(os.path.join(folder, name))
+                        if folder == "projects":
+                            entries.append(os.path.join(folder, name[:-3]))
+                            entries.append(os.path.join(folder, name[:-3], project_tests.PROFILE_FILE))
+            paths = [(rel, os.path.join(root, rel)) for rel in entries]
+            paths += [("<approvals-dir>", os.path.dirname(approvals)), ("<approvals>", approvals)]
+            stats, newest = [], 0
+            for rel, path in paths:
+                key, changed = _entry_key(path)
+                stats.append((rel, key))
+                newest = max(newest, changed)
+        except OSError:
+            return None
+        if newest > time.time_ns() - _RACY_NS:
+            return None
+        errors = tuple(sorted((slug, str(e.get("path")), str(e.get("message")))
+                              for slug, e in self._step_approval_errors.items()))
+        return (self.generation, os.path.realpath(root), errors, approvals,
+                tuple(sorted(names.items())), tuple(stats))
 
     def _load(self) -> Board:
         board = Board()
@@ -1808,6 +1883,42 @@ def _inside(path: str, root: str) -> bool:
     real_root = os.path.realpath(root)
     real = os.path.realpath(path)
     return real == real_root or real.startswith(real_root + os.sep)
+
+
+def _stat_key(st) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _entry_key(path: str) -> tuple:
+    """Wpis odcisku wczytania (K-113 #3): `lstat` ścieżki (urządzenie, i-węzeł, typ i prawa, właściciel, rozmiar,
+    mtime, ctime), dla dowiązania także `realpath` (od niego zależy granica `_inside`) i `stat` celu. Bez czytania
+    treści i bez `realpath` dla zwykłych plików. Zwraca (klucz, najnowszy ctime); brak pliku — (None, 0).
+    Inny błąd `lstat` — OSError (odcisk niepewny)."""
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None, 0
+    key, newest = _stat_key(st), st.st_ctime_ns
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            target = os.stat(path)
+        except OSError as exc:
+            key += (os.path.realpath(path), exc.errno)
+        else:
+            key += (os.path.realpath(path), _stat_key(target))
+            newest = max(newest, target.st_ctime_ns)
+    return key, newest
+
+
+def _derived_current(board: Board) -> bool:
+    """Czy pola projektów wyliczone przy wczytaniu ze stanu spoza Tablicy (istnienie repozytorium, domyślne
+    `ai-docs` z `docs/agents` repozytorium — model.parse_project) są nadal aktualne dla pamiętanego `Board`."""
+    for project in board.projects.values():
+        if project.repo_missing != (bool(project.repo) and not os.path.isdir(project.repo)):
+            return False
+        if not project.ai_docs_set and project.ai_docs != default_ai_docs(project.repo):
+            return False
+    return True
 
 
 def _rel(root: str, path: str) -> str:

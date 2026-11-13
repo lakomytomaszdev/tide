@@ -15,6 +15,11 @@ i przekazuje jawnie do `_project_base`, `_tick_card`, `_project`, `_tracker_note
 odświeżenia zachowuje kontrakt z #1: najwyżej jedno wczytanie na odświeżenie i jedna wersja Tablicy w opublikowanym
 wyniku, także gdy tick równolegle zapisuje Tablicę. Ścieżki ze skutkiem ubocznym (start kroku, ruch karty, scalenie)
 nadal czytają świeżo, bez kontekstu.
+
+K-113 #3 (PT-467): kontekst ticku wczytuje Tablicę przez `BoardStore.load_for_tick` — pamięć ostatniego udanego
+wczytania według odcisku plików Tablicy (bez czytania treści). Niezmieniona Tablica nie jest wczytywana ani parsowana
+ponownie w kolejnym ticku; każda zmiana (GUI, git, edycja ręczna, zapis w procesie) daje świeże `load()`. Kontekst
+odświeżenia nadal wczytuje przez publiczne `load()`, bez pamięci.
 """
 
 
@@ -25,6 +30,8 @@ class BoardRead:
     kolejnych. Z `invalidate_on_write=True` (kontekst ticku, K-98 #3) zapis Tablicy w tym procesie
     (`store.generation`) unieważnia kontekst i następne użycie wczytuje ją ponownie; domyślnie (odświeżenie, #1)
     kontekst trzyma jedną wczytaną wersję do końca odświeżenia.
+    Kontekst ticku wczytuje przez `store.load_for_tick` (pamięć według odcisku plików, K-113 #3), odświeżenie przez
+    `store.load()`.
     Błąd wczytania jest zapamiętany i rzucany ponownie, więc nieudany odczyt też liczy się raz.
     Obiekt `Board` traktujemy jako tylko do odczytu."""
 
@@ -65,8 +72,11 @@ class BoardRead:
         if self._board is None:
             if self._error is not None:
                 raise self._error
+            # K-113 #3: tylko kontekst ticku korzysta z pamięci wczytania magazynu (odcisk plików Tablicy);
+            # kontekst odświeżenia i magazyn bez tej metody (atrapy w testach) wczytują świeżo przez `load()`.
+            load = getattr(type(self._store), "load_for_tick", None) if self._invalidate_on_write else None
             try:
-                self._board = self._store.load()
+                self._board = load(self._store) if callable(load) else self._store.load()
             except Exception as exc:
                 self._error = exc
                 raise

@@ -4639,6 +4639,28 @@ Tablicę (kontrakt #1). Ścieżki ze skutkiem ubocznym (`moved`, start i wznowie
 i stanem unknown; liczniki pełnych odczytów i wczytań Tablicy; porównanie bazy z HEAD:
 `daemon/tests/perf_tick_recovery_compare.sh`).
 
+**Pamięć wczytania Tablicy w kontekście ticku (K-113 #3, PT-467).** Kontekst ticku wczytuje Tablicę przez
+`BoardStore.load_for_tick`: gdy **odcisk wejść** `load()` jest równy odciskowi ostatniego udanego wczytania tą drogą,
+zwraca ten sam `Board` (tylko do odczytu, dzielony przez kolejne ticki) bez transakcji, bez czytania treści plików
+i bez parsowania. Odcisk (`_load_fingerprint`) obejmuje `store.generation` (zapis w tym procesie), `realpath` katalogu
+Tablicy, plik znacznika `board.md`, nazwy w `tags/`, `projects/` i `cards/`, `lstat` tych katalogów i każdego
+czytanego pliku (`st_dev`, `st_ino`, typ i prawa, właściciel, `st_size`, `st_mtime_ns`, `st_ctime_ns`; dla dowiązania
+także `realpath` i `stat` celu — od nich zależy granica „tylko pliki wewnątrz Tablicy”), katalog i
+`projects/<slug>/box.yaml` każdego projektu, ścieżkę i metadane magazynu zatwierdzeń kontraktów testów (plik
+i katalog) oraz błędy magazynu zatwierdzeń z kroków (`approval_for_step`, stan w pamięci). Odcisk nie czyta treści
+i nie robi `realpath` dla zwykłych plików. Podmiana pliku przy tym samym rozmiarze i przestawionym z powrotem mtime
+zmienia `st_ctime_ns` (zapis w miejscu) albo `st_ino` (podmiana przez rename). Pamięć jest pomijana (zwykłe `load()`
+w każdym ticku), gdy czeka nieodtworzona intencja akceptacji zgłoszenia (`.git/tide-acceptances/*.json` — odtwarza ją
+transakcja `load()`), gdy `lstat` daje błąd inny niż brak pliku, albo gdy któryś wpis zmienił się (ctime) w ostatnich
+50 ms (`_RACY_NS`): kolejna zmiana w tej samej ziarnistości znaczników czasu mogłaby nie zmienić odcisku — jak
+„racily clean” w gicie. Pola projektu wyliczane ze stanu spoza Tablicy (brak repozytorium, domyślne `ai-docs`
+z `docs/agents`) są sprawdzane przy każdym trafieniu; różnica daje świeże wczytanie. Inny odcisk albo brak pamięci
+to zwykłe `load()`: ta sama transakcja (z odtworzeniem intencji), te same błędy i granica `_inside` przy każdym
+świeżym wczytaniu; wpis pamięci dostaje odcisk sprzed wczytania (zmiana w trakcie wczytania daje kolejne wczytanie),
+a błąd wczytania nie jest pamiętany. Każda zmiana Tablicy — GUI, `git`, ręczna edycja, zapis w procesie — daje
+świeże wczytanie w następnym kontekście ticku. Publiczne `load()`, transakcje zapisu i kontekst odświeżenia
+`Snapshot` (#1) pamięci nie używają. Pozostałe bezpośrednie `store.load()` w ticku przełącza K-113 #5.
+
 **Odczyty podczas zajętej kolejki mutacji (K-98 #2, PT-343).** Kolejka mutacji (jednowątkowy worker `tide-cardflow`)
 pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:
 

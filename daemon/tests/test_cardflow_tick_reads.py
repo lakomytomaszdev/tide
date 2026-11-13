@@ -453,7 +453,9 @@ class BoardTickContextTest(TickFixture):
         self.engine.tick()
         with Counting(self.engine)() as count:
             self.engine.tick()
-        self.assertEqual(count.loads, ["read"], "tick bez zapisu Tablicy wczytuje ją najwyżej raz")
+        # K-113 #3: kontekst ticku bierze Tablicę z pamięci magazynu (0 wczytań), chyba że zapis z poprzedniego ticku
+        # mieści się w oknie `_RACY_NS` (1 wczytanie). Ścisłe „bez load” w ciepłym ticku sprawdza K-113 #5.
+        self.assertIn(count.loads, ([], ["read"]), "tick bez zapisu Tablicy wczytuje ją najwyżej raz")
 
     def test_board_write_in_the_tick_invalidates_the_context_and_counts_its_reads_separately(self):
         self.engine.tick()
@@ -472,7 +474,7 @@ class BoardTickContextTest(TickFixture):
         self.assertEqual(collections.Counter(count.loads), {"read": 2, "write": 2}, count.loads)
         with Counting(self.engine)() as count:
             self.engine.tick()
-        self.assertEqual(count.loads, ["read"])
+        self.assertIn(count.loads, ([], ["read"]), "K-113 #3: pamięć wczytania albo jedno wczytanie")
 
     def test_user_move_detected_from_the_context_is_recorded_once(self):
         self.engine.tick()
