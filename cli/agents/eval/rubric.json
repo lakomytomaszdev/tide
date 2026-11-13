@@ -5,5 +5,7 @@
   {"id":4,"criterion":"Zachowano zakres po restarcie, warunek bez restartu działa oraz odrzucony reset wszystkich filtrów z powodem utraty wyborów."},
   {"id":5,"criterion":"Mierzalne kroki Beta → zamknięcie → start → Beta i S-12, przy zachowanych tekście wyszukiwania i stanie."},
   {"id":6,"criterion":"Usunięty projekt: Wszystkie projekty i komunikat o niedostępnym dawnym wyborze; brak automatycznej karty."},
-  {"id":7,"criterion":"filtr.png i opis.txt wskazane i potwierdzone kopiami CLI. Drugi obraz bez bajtów, bez fikcyjnego załączenia; stan draft."}
+  {"id":7,"criterion":"filtr.png i opis.txt wskazane i potwierdzone kopiami CLI. Drugi obraz bez bajtów, bez fikcyjnego załączenia; stan draft."},
+  {"id":8,"criterion":"Sedno czytane osobno mówi, co zrobić i po co: wybór projektu ma przetrwać restart, odrzucony reset filtrów z powodem, sposób sprawdzenia użytkownika. Bez kryteriów, wymagań i zakresu, których użytkownik nie podał; Opis sprawy nie powtarza Sedna."},
+  {"id":9,"criterion":"Pytania otwarte mają zdanie dla planującego i dwie listy. Zły plik zapisu jest na liście do sprawdzenia w projekcie jako niepotwierdzony. Lista do użytkownika zawiera tylko pytania zmieniające zakres albo „brak”; żadne nie jest rozstrzygnięte za użytkownika."}
 ]

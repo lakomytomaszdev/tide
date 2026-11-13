@@ -1,18 +1,70 @@
 # Sprawa z rozmowy
 
-Zapisz ocenialny raport Markdown o problemie lub oczekiwaniu użytkownika. Korzystaj
-wyłącznie z rozmowy i jawnie dostarczonych dowodów. Nie skanuj projektu. Nie wymyślaj
+Zapisz raport Markdown o problemie lub oczekiwaniu użytkownika. Raport czyta najpierw
+użytkownik, który decyduje o przyjęciu. Po przyjęciu cały raport staje się opisem karty:
+bez tej rozmowy czytają go planujący, wykonawcy i recenzenci. Korzystaj wyłącznie
+z rozmowy i jawnie dostarczonych dowodów. Nie skanuj projektu. Nie wymyślaj
 plików, ścieżek, logów, stosów błędów, przeprowadzonych testów ani diagnozy.
 Nie twórz HTML-a, kart, ticketów ani planu implementacji. Nie akceptuj sprawy za użytkownika.
 
-Rozdziel fakty potwierdzone konkretnym dowodem, relacje użytkownika, oczekiwania,
-hipotezy/założenia do sprawdzenia oraz niewiadome i braki dowodów. Opis ekranu przez
-użytkownika nie jest niezależnym odczytem obrazu. Jeśli możesz obejrzeć dostarczony
-obraz, podaj dokładnie, co potwierdza, i czego nie pokazuje. Oczekiwanie nie jest
-zachowaniem już działającym. Zachowaj warunki wystąpienia, częstotliwość, zakres,
-wyjątki i odrzucone warianty wraz z powodem odrzucenia. Kryteria mają podawać
-obserwowalne kroki i wynik, włącznie z przypadkami brzegowymi i ograniczeniami.
-Nagłówki i komplet sekcji same w sobie nie są dowodem jakości syntezy.
+## Układ raportu
+
+Raport ma dokładnie trzy sekcje drugiego poziomu, w tej kolejności: `## Sedno`,
+`## Pytania otwarte`, `## Opis sprawy`. Sedno i Pytania otwarte są zleceniem dla
+planującego, Opis sprawy to materiał, do którego sięga w razie potrzeby. Nagłówki
+i komplet sekcji same w sobie nie są dowodem jakości syntezy.
+
+### Sedno
+
+Krótki, samodzielny opis: czytelnik, który przeczyta tylko tę sekcję, wie, co ma zostać
+zrobione i po co. Zwykle kilka akapitów albo krótka lista; długość rośnie z liczbą decyzji
+użytkownika, a nie z ilością materiału. Zawiera:
+
+- problem albo potrzebę i oczekiwany wynik słowami użytkownika. Oczekiwanie nie jest
+  zachowaniem już działającym;
+- zakres i to, co poza zakresem, wraz z warunkami wystąpienia, częstotliwością i wyjątkami;
+- decyzje użytkownika oraz odrzucone warianty wraz z powodem odrzucenia;
+- sposób sprawdzenia podany przez użytkownika: obserwowalne kroki i wynik, włącznie
+  z przypadkami brzegowymi i ograniczeniami.
+
+Nie dopisuj własnych kryteriów akceptacji, wymagań ani zakresu. Ułoży je planujący,
+który zobaczy projekt. Własny pomysł, którego użytkownik nie wypowiedział, może trafić
+najwyżej do pytań otwartych.
+
+### Pytania otwarte
+
+To, co pozostaje nierozstrzygnięte, w dwóch listach. Pusta lista to jedno słowo „brak”.
+
+- **Do użytkownika**: odpowie tylko użytkownik (cel, zakres, priorytet, wybór wariantu).
+  Tylko pytania, od których zależy zakres albo kształt pracy. Każde w jednym zdaniu,
+  z dopiskiem, co od niego zależy. Bez pytań o rzeczy, które da się sprawdzić w projekcie.
+- **Do sprawdzenia w projekcie**: to, co da się ustalić w repozytorium albo przez
+  uruchomienie. Tu trafiają też hipotezy/założenia z rozmowy, opisane jako niepotwierdzone.
+
+Pod nagłówkiem sekcji zapisz dosłownie zdanie: „Planujący: sprawdź w projekcie to, co da
+się sprawdzić; pytania do użytkownika zadaj mu, a gdy pracujesz bez pytań, zapisz przy
+każdym jawne założenie w specyfikacji.” Dzięki temu pytania przechodzą ze sprawy na kartę
+i do planu, a użytkownik widzi przyjęte założenia, zanim zatwierdzi plan.
+
+### Opis sprawy
+
+Materiał z rozmowy, zwięźle. Rozdziel relacje użytkownika (najważniejsze dosłownie),
+fakty potwierdzone konkretnym dowodem oraz niewiadome i braki dowodów. Oczekiwania są już
+w Sednie, nie powtarzaj ich. Opis ekranu przez użytkownika nie jest niezależnym odczytem
+obrazu. Jeśli możesz obejrzeć dostarczony obraz, podaj dokładnie, co potwierdza i czego
+nie pokazuje. Faktem jest także to, co ta rozmowa rzeczywiście ustaliła przed zgłoszeniem
+(przeczytany plik, wynik polecenia): podaj wtedy źródło.
+
+Nie streszczaj instrukcji projektu, stanu repozytorium ani innego kontekstu, który sesja
+dostała sama z siebie. Planujący przeczyta je w projekcie, w aktualnej wersji. Przytocz
+z nich tylko to, co jest dowodem w tej sprawie albo co wskazał użytkownik.
+
+## Pytania do użytkownika po zapisie
+
+Nie wstrzymuj zapisu sprawy pytaniami. Po `finish` pokaż użytkownikowi listę „Do
+użytkownika” i zaznacz, że może odpowiedzieć teraz albo zostawić pytania planującemu.
+Gdy odpowie, popraw ten sam S-N przez `resume`: odpowiedź przenieś do Sedna jako decyzję,
+a pytanie usuń z listy. Nie odpowiadaj na te pytania za użytkownika.
 
 ## Zapis i wznowienie
 

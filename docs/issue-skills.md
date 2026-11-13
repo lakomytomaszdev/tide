@@ -33,6 +33,32 @@ operacji CLI oraz dwa wejścia: plugin Claude Code `tide` i skill Codexa `tide-i
 Raport opisuje problem i oczekiwanie, a przyjęcie sprawy pozostaje decyzją użytkownika.
 Nie uruchamia implementacji ani nie tworzy karty.
 
+## Układ raportu
+
+Raport sprawy ma trzy sekcje: **Sedno**, **Pytania otwarte** i **Opis sprawy**. Przyjęcie
+(`backlog`, `go`) przenosi raport w całości do opisu karty, a opis karty trafia dosłownie
+do polecenia planującego, wykonawcy i recenzenta. Dlatego na górze stoi to, czego ci
+czytelnicy potrzebują, a materiał dowodowy jest pod spodem.
+
+- **Sedno** mówi samodzielnie, co ma zostać zrobione i po co: problem albo potrzeba, zakres,
+  decyzje i odrzucone warianty, sposób sprawdzenia podany przez użytkownika. Synteza nie
+  dopisuje własnych kryteriów akceptacji. Powstawałyby bez wglądu w projekt, a planujący
+  i tak układa je w specyfikacji, już po przeczytaniu kodu.
+- **Pytania otwarte** dzielą się na dwie listy. „Do użytkownika” to pytania, na które
+  odpowie tylko on i od których zależy zakres. „Do sprawdzenia w projekcie” to rzeczy do
+  ustalenia w repozytorium oraz niepotwierdzone hipotezy z rozmowy.
+- **Opis sprawy** to relacje użytkownika, fakty z dowodem i braki dowodów. Nie streszcza
+  instrukcji projektu ani stanu repozytorium, które sesja dostała sama z siebie: planujący
+  czyta je w projekcie, w aktualnej wersji.
+
+Pytania idą dalej trzema drogami. Po zapisie sesja pokazuje listę „Do użytkownika”;
+odpowiedź poprawia ten sam S-N i trafia do Sedna jako decyzja. Pytania bez odpowiedzi
+zostają w raporcie, więc po przyjęciu są w opisie karty i można na nie odpowiedzieć
+edycją opisu przed zleceniem. Sekcja zaczyna się stałym zdaniem dla planującego: sprawdza
+w projekcie to, co da się sprawdzić, pytania do użytkownika zadaje w Pełnym planowaniu,
+a w Lekkim zapisuje przy każdym jawne założenie w specyfikacji, którą użytkownik widzi
+przed zatwierdzeniem planu.
+
 ## Instalacja i wywołania
 
 Instalacja komponentu CLI obejmuje paczkę agentów. W trakcie testów uruchamiamy ją
@@ -124,14 +150,15 @@ nieudanym procesie, przerwaniu i SIGTERM, a następnie usuwa całe tymczasowe HO
 Katalog wyniku jest nowy, by nie nadpisywać wcześniejszej oceny. Zawiera wersje programów,
 żądane i odczytane z transkryptów modele, wejście, raporty, transkrypty, wyniki CLI,
 sprawdzone odczytem CLI kopie załączników i niewypełnioną rubrykę dla każdego programu.
-Po przebiegu oceń wszystkie siedem pozycji `rubric.json` na podstawie raportu oraz
+Po przebiegu oceń wszystkie dziewięć pozycji `rubric.json` na podstawie raportu oraz
 wyników CLI: pass/fail z dokładnym cytatem lub wskazaniem fragmentu. Zapisz werdykt
-pass tylko przy siedmiu pass; utrata warunku, odrzuconego wariantu lub fikcyjny dowód
+pass tylko przy dziewięciu pass; utrata warunku, odrzuconego wariantu lub fikcyjny dowód
 oznacza fail. Nagłówki ani asercje argumentów procesu nie zastępują tej oceny.
 Nie deklaruj spełnienia kryterium syntezy bez obu rzeczywistych raportów i rubryk.
 
 Zapisana [ocena rzeczywistej syntezy Codexa dla PT-224](agents/pt-224/evidence/codex/evaluation.md)
-zawiera raport, transkrypt, metadane, rubrykę 7/7 i osobne dowody odczytu załączników
+zawiera raport, transkrypt, metadane, rubrykę 7/7 (wersja sprzed pozycji 8 i 9 o układzie
+raportu) i osobne dowody odczytu załączników
 przez CLI. Ocena Claude w tym tickecie pozostaje do uzupełnienia; dowód jednego
 programu nie zamyka kryterium obu syntez.
 
