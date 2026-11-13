@@ -11,7 +11,7 @@ from unittest.mock import patch
 from tools import test_runner as runner
 from tools import test_changed_benchmark as benchmark
 from tools.test_dependencies import ImportGraph
-from tools.test_suites import FILE_TEST_MODULES, SERVICE_CONTRACT_MODULES, SUITES
+from tools.test_suites import COORDINATION_PATHS, FILE_TEST_MODULES, SERVICE_CONTRACT_MODULES, SUITES
 
 
 class DependencySelectionTest(unittest.TestCase):
@@ -310,6 +310,106 @@ class RepositorySelectionTest(unittest.TestCase):
                 self.assertTrue(set(SERVICE_CONTRACT_MODULES) <= set(selection.modules))
                 self.assertLess(len(selection.modules), len(all_modules))
                 print(f"[PT-258] {source}.py: {len(selection.modules)} modułów; cały cardflow: {len(whole)}")
+
+
+class CoordinationSelectionTest(unittest.TestCase):
+    """PT-473: pliki koordynacji nie wybierają testów, klucze FILE_TEST_MODULES tak."""
+    ENTRIES = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
+    BASE_CHANGE = "daemon/tests/test_cardflow_base_change.py"
+    PT201 = "docs/agents/tickets/k-50-flow/pt-201.md"
+    PT208 = "docs/agents/tickets/k-50-flow/pt-208.md"
+
+    def select(self, *paths):
+        return runner.changed_modules(paths, self.ENTRIES)
+
+    def test_prefix_list_is_literal_directories_and_not_too_broad(self):
+        self.assertEqual(COORDINATION_PATHS, ("docs/agents/masterplan/", "docs/agents/interwencje/",
+                                              "docs/agents/plans/"))
+        for prefix in COORDINATION_PATHS:
+            self.assertTrue(prefix.endswith("/"))
+            self.assertNotIn("*", prefix)
+            self.assertTrue((runner.ROOT / prefix).is_dir())
+        self.assertNotIn("docs/", COORDINATION_PATHS)
+        self.assertNotIn("docs/agents/", COORDINATION_PATHS)
+
+    def test_no_suite_directory_starts_with_a_coordination_prefix(self):
+        for name, entries in SUITES.items():
+            for directory, _ in entries:
+                with self.subTest(suite=name, directory=directory):
+                    self.assertFalse((directory.rstrip("/") + "/").startswith(COORDINATION_PATHS))
+
+    def test_file_test_modules_keys_select_exactly_their_modules(self):
+        expected = {
+            "docs/agents/plans/followups/replay-code.md": {
+                "daemon/tests/test_cardflow_base_change.py",
+                "daemon/tests/test_cardflow_base_change_dbus.py", "daemon/tests/test_install.py"},
+            "docs/agents/plans/2026-11-05-k-50-flow.md": {self.BASE_CHANGE},
+            self.PT201: {self.BASE_CHANGE}, self.PT208: {self.BASE_CHANGE},
+        }
+        for path, modules in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(tuple(sorted(modules)), tuple(sorted(FILE_TEST_MODULES[path])))
+                selection = self.select(path)
+                self.assertFalse(selection.full)
+                self.assertEqual(set(selection.modules), modules)
+                self.assertEqual(selection.skipped_coordination, 0)
+
+    def test_keys_outside_coordination_prefixes_bypass_markdown_rule_only_exactly(self):
+        self.assertEqual(self.select(self.PT201, self.PT208).modules, [self.BASE_CHANGE])
+        for path in ("docs/agents/tickets/k-50-flow/pt-202.md", "docs/agents/tickets/k-50-flow/README.md",
+                     "docs/agents/tickets/inny/pt-201.md"):
+            with self.subTest(path=path):
+                selection = self.select(path)
+                self.assertEqual(selection.modules, [])
+                self.assertFalse(selection.full)
+
+    def test_other_markdown_stays_zero_also_next_to_a_key(self):
+        for path in ("docs/testing.md", "README.md"):
+            with self.subTest(path=path):
+                self.assertEqual(self.select(path).modules, [])
+                self.assertEqual(self.select(path, self.PT201).modules, [self.BASE_CHANGE])
+
+    def test_coordination_only_diff_selects_zero_for_every_extension_and_deletion(self):
+        paths = [f"{prefix}{name}" for prefix in COORDINATION_PATHS
+                 for name in ("raport.json", "raport.html", "nowy-dziennik.tsv", "notka.txt", "skrypt.py",
+                              "plan.md", "podkatalog/usuniety.md", "bez-rozszerzenia")]
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertFalse((runner.ROOT / path).exists())
+                selection = self.select(path)
+                self.assertEqual(selection.modules, [])
+                self.assertFalse(selection.full)
+                self.assertEqual(selection.skipped_coordination, 1)
+        self.assertEqual(self.select(*paths).skipped_coordination, len(paths))
+
+    def test_mixed_diff_selects_the_same_as_the_code_file_alone(self):
+        code = "daemon/tide_daemon/cardflow/engine.py"
+        expected = self.select(code)
+        self.assertTrue(expected.modules)
+        mixed = self.select("docs/agents/plans/x.json", "docs/agents/masterplan/y.html", code)
+        self.assertEqual(mixed.modules, expected.modules)
+        self.assertFalse(mixed.full)
+        self.assertEqual(mixed.skipped_coordination, 2)
+
+    def test_paths_outside_the_list_keep_todays_selection(self):
+        self.assertEqual(self.select("docs/testing.md").modules, [])
+        for path in ("docs/settings.json", "docs/example.py", "docs/agents/masterplan-old/x.json",
+                     "docs/agents/k-38/dane.json", "docs/agents/plans-old/x.json"):
+            with self.subTest(path=path):
+                selection = self.select(path)
+                self.assertTrue(selection.full)
+                self.assertEqual(selection.skipped_coordination, 0)
+
+    def test_cli_list_reports_zero_modules_and_skipped_coordination_paths(self):
+        output = io.StringIO()
+        paths = ["docs/agents/masterplan/a.json", "docs/agents/interwencje/dziennik.tsv"]
+        with patch.object(runner, "git_paths", return_value=paths), \
+                patch("sys.argv", ["runner", "--dirs", "daemon/tests", "--changed", "--list"]), \
+                patch.object(runner, "execute", side_effect=AssertionError("tylko lista")), \
+                redirect_stdout(output):
+            self.assertEqual(runner.main(runner.ROOT), 0)
+        self.assertIn("Wybrane moduły: 0", output.getvalue())
+        self.assertIn("Pominięte ścieżki koordynacji: 2", output.getvalue())
 
 
 class SelectionBenchmarkTest(unittest.TestCase):
