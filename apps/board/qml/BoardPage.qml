@@ -1945,6 +1945,7 @@ Rectangle {
         }
         onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId => page.openDiff(cardId)
+        onBaseChangeRequested: cardId => { if (page.openFull(cardId)) page.openBaseChange(cardId) }
         onMergeMainRequested: cardId =>
             page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
         onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)

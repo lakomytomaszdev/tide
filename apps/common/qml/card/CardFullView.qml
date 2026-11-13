@@ -647,24 +647,13 @@ Rectangle {
                 }
             }
 
-            RowLayout {
+            // „Start od: …” (K-99, PT-389) zastępuje surowe „Baza: refs/heads/… · SHA”.
+            CardStartLine {
+                objectName: "fullStartLine"
                 Layout.fillWidth: true
-                visible: view.baseChangeAvailable && !!view.flow
-                Text {
-                    Layout.fillWidth: true
-                    text: "Baza: " + (view.flow && view.flow.base && view.flow.base.baseRef || "unknown")
-                          + " · " + (view.flow && view.flow.base && view.flow.base.baseCommit || "unknown")
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    color: Tide.Tokens.textMuted
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                }
-                Tide.TextButton {
-                    objectName: "fullBaseChange"
-                    text: "Podejrzyj korektę bazy"
-                    onClicked: view.baseChangeRequested()
-                }
+                derived: view.derived
+                changeAllowed: view.baseChangeAvailable
+                onChangeRequested: view.baseChangeRequested()
             }
             ColumnLayout {
                 objectName: "fullMainMerge"
