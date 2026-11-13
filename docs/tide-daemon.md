@@ -2668,8 +2668,8 @@ historia, ani jako „brak zmian”. Wpisy znikają razem z pamięcią ścisłą
 `Journal.state`, wspólna funkcja `state.copy_state`). Z pamięci korzystają wyłącznie odczyty bez skutku: faza ticku
 (`HistoryPhase` jest widokiem jednego ticku nad pamięcią; zapamiętany błąd fazy nadal rzucany w obrębie fazy),
 bariera `_outside_history(card)`, inwentaryzacja K-38, `_recover_started_steps` z fazy (zapis przez `Journal.unchanged`),
-`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; nowy `fold`
-tylko dla historii z pominiętymi próbami K-38; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
+`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; filtr prób
+K-38 z pamięci według wersji dziennika od K-113 PT-466, akapit niżej; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
 przy `box.enabled=true` (`box/lifecycle.tick`, `active_steps`, `packs.cleanup` — ta sama pamięć ścisła PT-411 co przed
 PT-415, teraz bez nowego `fold` co tick), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`,
 `_recover_console_openings`) oraz czekanie na polecenie outside i próbę testów po scaleniu (`_outside_ready`,
@@ -2685,6 +2685,25 @@ Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.h
 inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
 Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
+
+**Pamięć filtra prób uzgadniania sieci (K-113 PT-466).** `boxstep.recover_network` bierze z
+`trialhold.network_state` wynik filtra prób K-38 karty: zdarzenia bez wstrzymanych prób (`trialhold.held`) i bez
+chronionych tożsamości oraz stan z nich złożony (nowy `fold` tylko, gdy coś pominięto). Wynik jest pamiętany w osobnej
+pamięci wartości wyliczonych (`Journal.derive_events(…, slot="network")`) według tej samej wersji dziennika co pamięć
+PT-411/PT-415 (wpis pamięci ścisłego odczytu i jego `JournalVersion`: dev/ino/rozmiar/mtime/ctime/`generation`/seq) —
+nie według samego licznika zapisów procesu. Filtr jest liczony zawsze z dokładnie tych zdarzeń, które dała faza ticku,
+bez dodatkowego odczytu dziennika; zdarzenia innej wersji niż bieżący wpis pamięci ścisłej dają wyliczenie bez zapisu.
+Granice unieważnienia: dopisanie (także spoza procesu, np. inna kopia usługi albo Tablica), ucięcie i podmiana pliku
+(nowy i-węzeł, inny rozmiar lub `ctime`), zapis tego procesu, okresowy pełny odczyt i usunięcie karty z rejestru
+(`forget_except`) dają nowe wyliczenie tylko dla tej karty. Błąd odczytu i nieznana tożsamość nie trafiają do pamięci
+(w fazie zostają błędem tej fazy): karta nie dostaje zwolnień, refguard ani polityk sieci w tym i kolejnych tickach,
+dopóki historia jest zła. Pamięć niczego nie autoryzuje — każda mutacja (porty, refguard, zasoby kroku, polityka sieci)
+dalej wymaga świeżego porównania `HistoryPhase.unchanged`; wywołanie bez fazy (odtworzenie zamiaru startu) czyta
+świeżo bez pamięci. Wołający dostaje własne listy i kopię stanu (`copy_state`). Uzgadnianie nie jest wyłączane flagą
+`box.enabled`: kroki pudełka sprzed wyłączenia dostają zwolnienie zasobów i refguard jak dotąd. Rozpoznanie próby
+(`trialpolicy.blocked_event`) to jedno wyrażenie skompilowane przy wczytaniu modułu (alternatywa numerów
+`LEGACY | EXCLUDED`, te same granice co dawna reguła); moduł nadal nie importuje pakietu usługi, bo launcher Konsoli
+wczytuje go przez `runpy`. Rozgrzany tick bez zmian w dziennikach nie ocenia prób w uzgadnianiu sieci dla żadnej karty.
 
 **Pętla odtwarzania na początku ticku (K-105 PT-459).** `FlowEngine._replay_starts` obejmuje każdą kartę z dziennikiem
 (także zakończoną) i bierze jej historię oraz stan procesu karty z fazy ticku (`trialhold.process_state` z

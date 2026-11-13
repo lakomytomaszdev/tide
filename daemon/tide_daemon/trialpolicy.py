@@ -18,10 +18,17 @@ def blocked(ticket: str) -> bool:
     return str(ticket).upper() in LEGACY | EXCLUDED
 
 
+# K-113 PT-466: jedno wyrażenie skompilowane przy wczytaniu modułu zamiast osobnego wyszukiwania każdego numeru.
+# Te same granice co dawna reguła (na numer): bez litery i cyfry przed numerem, bez cyfry po nim, bez względu
+# na wielkość liter (ta sama flaga także dla granic). Alternatywa z cofaniem znajduje dopasowanie dokładnie wtedy,
+# gdy pasuje któryś pojedynczy numer.
+_TRIAL = re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(re.escape(t) for t in sorted(LEGACY | EXCLUDED))
+                    + r")(?![0-9])", re.I)
+
+
 def blocked_event(step) -> bool:
     return blocked(step.get("ticket") or "") or any(
-        re.search(r"(?<![A-Za-z0-9])" + ticket + r"(?![0-9])", str(step.get(key) or ""), re.I)
-        for ticket in LEGACY | EXCLUDED for key in ("step", "key", "branch"))
+        _TRIAL.search(str(step.get(key) or "")) for key in ("step", "key", "branch"))
 
 
 def require_ticket(ticket: str) -> None:
