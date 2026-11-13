@@ -81,7 +81,7 @@ class WaveFlowTest(FlowInProcess):
     def test_pause_finishes_running_step_and_resume_starts_review(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
-        self.approve(card)
+        mapping = self.approve(card)["map"]
         self.assertTrue(wait_until(lambda: len(self.ticket_starts(card)) == 2, timeout=5))
         box = []
         self.flow.set_paused(card, True, box.append)
@@ -95,7 +95,15 @@ class WaveFlowTest(FlowInProcess):
         self.flow.set_paused(card, False, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=25))
+        # PT-366: `plan.finished` pada dopiero po kroku domknięcia karty, więc po wznowieniu przed nim jest cały łańcuch:
+        # review i scalenie #1/#2, krok #3, jego review i scalenie, krok close. Czekamy na każdy etap osobno, na
+        # zdarzeniu dziennika; przy porażce dziennik (z `ts`) wskazuje etap, który nie zdążył.
+        def merged(*numbers):
+            done = {e["key"] for e in self.results(card, "merge") if e.get("ok")}
+            return {mapping[n] for n in numbers} <= done
+        self.assertTrue(wait_until(lambda: merged("#1", "#2"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: merged("#3"), timeout=20), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=15), self.events(card))
 
     def local_config(self):
         from tide_daemon.models import config
@@ -168,6 +176,11 @@ class WaveFlowTest(FlowInProcess):
             self.restart()
             self.local_config()
             self.wait_column(card, "review", timeout=15)
+            # PT-366: „review” bywa widoczne chwilę przed startem lokalnego kroku close karty, który zajmuje
+            # ten sam slot (wykonawca Lokalny). Czekamy na koniec karty i kończymy tick monitora: zapis
+            # step.finished poprzedza zwolnienie slotu, a card.closed pada dopiero po końcu kroku close.
+            self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=20), self.events(card))
+            self.stop_flow()
             self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("kind") != "close"]), 2)
             self.assertFalse(isolated.busy())
 

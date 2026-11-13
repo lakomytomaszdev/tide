@@ -1,6 +1,7 @@
 """Anulowanie rzeczywistego gita, jego potomków i kolejki monitora bez magistrali pulpitu."""
 import json
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,37 @@ from . import flowfakes
 from .privatebus import app
 
 
+# Bezpiecznik, nie synchronizacja: test czeka na zdarzenia (zapis atrapy do FIFO, wyjście procesu przez
+# pidfd, koniec future). Limit tylko przerywa zawieszony test; atrapa śpi 120 s przy timeout=120, więc
+# 20 s nadal odróżnia anulowanie od naturalnego końca gita, a zostawia zapas na kolejkę planisty pod obciążeniem.
+GUARD = 20
+
+
+def _read_until_writer_closes(fd, timeout):
+    """Czyta FIFO otwarte bez blokowania, aż piszący je zamknie; cała treść naraz, bez pustego odczytu."""
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    chunks, deadline = [], time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not poller.poll(remaining * 1000):
+            raise AssertionError("atrapa gita nie zgłosiła gotowości (slow-pid)")
+        try:
+            chunk = os.read(fd, 4096)
+        except BlockingIOError:
+            continue
+        if not chunk:
+            return b"".join(chunks).decode()
+        chunks.append(chunk)
+
+
+def _exited(pidfd, timeout):
+    """pidfd staje się czytelny, gdy proces zakończy się (także wnuk, na którego nikt nie czeka)."""
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    return bool(poller.poll(timeout * 1000))
+
+
 class CancellationTest(unittest.TestCase):
     def test_cancel_kills_git_and_its_child_and_rejects_later_commands(self):
         with tempfile.TemporaryDirectory() as folder, ThreadPoolExecutor(max_workers=1) as pool:
@@ -26,6 +58,11 @@ class CancellationTest(unittest.TestCase):
             script.write_text(Path(__file__).with_name("slow_git.py").read_text())
             script.chmod(0o755)
             (root / "slow-arm").touch()
+            # Atrapa zapisuje PID-y do `slow-pid` po starcie dziecka; FIFO zamienia ten zapis w sygnał
+            # gotowości (koniec zapisu = zamknięcie przez atrapę) zamiast odpytywania pliku z terminem.
+            os.mkfifo(root / "slow-pid")
+            ready = os.open(root / "slow-pid", os.O_RDONLY | os.O_NONBLOCK)
+            self.addCleanup(os.close, ready)
             cancel = Cancellation()
             git = Git(cancel=cancel)
             git.env["TIDE_LIFECYCLE_DIR"] = folder
@@ -33,17 +70,21 @@ class CancellationTest(unittest.TestCase):
             # systemowego programu dopuszczonego przez granicę hostowego Git.
             future = pool.submit(cancel.run, [str(script), "worktree", "list", "--porcelain"],
                                  timeout=120, env=git.env)
-            deadline = time.monotonic() + 3
             try:
-                while not (root / "slow-pid").exists() and time.monotonic() < deadline:
-                    time.sleep(.01)
-                self.assertTrue((root / "slow-pid").exists())
-                pids = [int(p) for p in (root / "slow-pid").read_text().split()]
+                pids = [int(p) for p in _read_until_writer_closes(ready, GUARD).split()]
+                self.assertEqual(len(pids), 2)  # git i jego dziecko
+                # pidfd otwarte, gdy oba procesy na pewno żyją (śpią 120 s): bez pomyłki z ponownym PID-em.
+                exits = [os.pidfd_open(p) for p in pids]
+                for pidfd in exits:
+                    self.addCleanup(os.close, pidfd)
                 started = time.monotonic()
                 cancel.close()
                 with self.assertRaises(CancelledError):
-                    future.result(timeout=2)
-                self.assertLess(time.monotonic() - started, 2)
+                    future.result(timeout=GUARD)
+                self.assertLess(time.monotonic() - started, GUARD)
+                # Cancellation czeka tylko na lidera grupy; SIGKILL dla dziecka jest asynchroniczny
+                # i pod obciążeniem dociera po powrocie future. Czekamy na jego wyjście, nie na upływ czasu.
+                self.assertTrue(all(_exited(pidfd, GUARD) for pidfd in exits))
                 self.assertTrue(all(not flowfakes.alive(p) for p in pids))
                 with self.assertRaises(CancelledError):
                     git.run(folder, "status")

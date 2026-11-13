@@ -33,6 +33,7 @@ TICKET = "PT-2"
 MAKEFILE = ("test-changed:\n"
             "\t@echo \"przebieg BASE=$(BASE)\"\n"
             "\t@if [ -f slow ]; then sleep 3; fi\n"
+            "\t@if [ -f report ]; then cat report; fi\n"
             "\t@if [ -f fail ]; then echo 'test PT-1 pada'; exit 3; fi\n"
             "\t@echo ok\n")
 RULE = "make test-changed *"
@@ -234,6 +235,61 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertEqual(len(self.starts(name)), 1, "zakończona próba nie startuje drugi raz")
         self.assertEqual(len(self.finished()), 1)
         self.assert_history_ok()
+
+    # --- pola diagnostyczne K-100 (PT-423) ------------------------------------------------------
+
+    def runner_report(self, results):
+        """Nagłówek uruchamiacza w wyniku `make` (plik `report`) wskazuje katalog z `summary.json`."""
+        folder = tempfile.mkdtemp(prefix="merge-check-report-")
+        self.addCleanup(subprocess.run, ["rm", "-rf", folder], check=False)
+        with open(os.path.join(folder, "summary.json"), "w", encoding="utf-8") as fh:
+            json.dump({"seconds": 1.0, "jobs": 1, "results": results}, fh)
+        with open(os.path.join(self.repo, "report"), "w", encoding="utf-8") as fh:
+            fh.write(f"Moduły: {len(results)}, JOBS=1, logi: {folder}\n")
+
+    def test_failed_check_records_failed_modules_and_machine_load(self):
+        self.remember_rule()
+        self.engine.machine_load = lambda: ([7.1, 6.5, 5.0], 12)
+        with open(os.path.join(self.repo, "fail"), "w", encoding="utf-8") as fh:
+            fh.write("1")
+        self.runner_report([
+            {"module": "daemon/tests/test_a.py", "returncode": 0, "failures": [], "errors": []},
+            {"module": "daemon/tests/test_b.py", "returncode": 1, "failures": ["test_b.B.test_x"],
+             "errors": ["test_b.B.test_y"], "unexpected_successes": []}])
+        self.tick()
+        self.run_to_end()
+        name = self.name()
+        self.assertEqual([(e["exit"], e["failedModules"], e["failedTests"]) for e in self.finished()],
+                         [(2, ["daemon/tests/test_b.py"], ["test_b.B.test_x", "test_b.B.test_y"])])
+        self.assertEqual([(e["loadavg"], e["cores"]) for e in self.starts(name)], [([7.1, 6.5, 5.0], 12)])
+        self.assertEqual([(e["loadavg"], e["cores"]) for e in self.of("outside.finished")], [([7.1, 6.5, 5.0], 12)])
+        self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")], "pola nie zmieniają wyniku próby")
+        self.assert_history_ok()
+
+    def test_missing_summary_and_broken_load_probe_do_not_stop_the_check(self):
+        self.remember_rule()
+
+        def broken():
+            raise RuntimeError("odczyt obciążenia padł")
+        self.engine.machine_load = broken
+        with open(os.path.join(self.repo, "fail"), "w", encoding="utf-8") as fh:
+            fh.write("1")
+        self.tick()
+        self.run_to_end()
+        name = self.name()
+        self.assertEqual([(e["exit"], e["failedModules"], e["failedTests"]) for e in self.finished()], [(2, [], [])])
+        self.assertEqual([(e["loadavg"], e["cores"]) for e in self.starts(name)], [(None, None)])
+        self.assertEqual([(e["loadavg"], e["cores"]) for e in self.of("outside.finished")], [(None, None)])
+        self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")])
+        self.assert_history_ok()
+
+    def test_passing_check_has_an_empty_list_of_failed_modules(self):
+        self.remember_rule()
+        self.runner_report([{"module": "daemon/tests/test_a.py", "returncode": 0, "failures": [], "errors": []}])
+        self.tick()
+        self.run_to_end()
+        self.assertEqual([(e["exit"], e["failedModules"], e["failedTests"]) for e in self.finished()], [(0, [], [])])
+        self.assertEqual(self.held(), [])
 
     # --- odmowa i ponowienie --------------------------------------------------------------------
 
