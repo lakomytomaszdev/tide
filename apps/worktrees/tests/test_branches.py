@@ -217,6 +217,8 @@ class LogicTest(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="tide-wt-branches-logic-")
         self.addCleanup(shutil.rmtree, tmp)
         shutil.copy(os.path.join(REPO, "apps", "worktrees", "qml", "branches.js"), tmp)
+        os.mkdir(os.path.join(tmp, "git"))
+        shutil.copy(os.path.join(REPO, "apps", "common", "qml", "git", "start.js"), os.path.join(tmp, "git"))
         path = os.path.join(tmp, "Probe.qml")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write('''import QtQuick
@@ -229,7 +231,7 @@ Item {
     }
 }
 ''' % (json.dumps(map_reply()), body))
-        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1", TZ="Europe/Warsaw")
         log = subprocess.run(["qml6", path], env=env, capture_output=True, text=True, timeout=60).stderr
         match = re.search(r"OUT (.*)$", log, re.M)
         self.assertIsNotNone(match, log[-2000:])
@@ -249,7 +251,7 @@ Item {
                              'B.stateText({kind: "card", state: "merged", merged: {targetRef: "refs/remotes/origin/main", '
                              'date: ""}}), B.stateText({kind: "card", state: "merged", merged: {targetRef: "", '
                              'date: "2026-02-03T00:00:00Z"}})]')
-        self.assertEqual(out, ["zamknięty", "scalona", "scalona do origin/main", "scalona (03.02)"])
+        self.assertEqual(out, ["zamknięty", "scalona", "scalona do origin/main", "scalona (3.02)"])
 
     def test_detail_adds_the_board_column_to_cards_only(self):
         out = self.run_logic('reply.nodes.map(n => B.detailText(n))')
@@ -283,9 +285,9 @@ Item {
         out = self.run_logic('[B.mapRequest("alfa"), B.cardDiffRequest("K-11"), B.errorText({message: "Źle"}), '
                              'B.errorText({}), B.hasBranches(reply), B.hasBranches({nodes: []}), '
                              'B.pickProject([{slug: "a"}, {slug: "b"}], "b"), B.pickProject([{slug: "a"}], "z"), '
-                             'B.pickProject([], "z"), B.shortDate("zły")]')
+                             'B.pickProject([], "z"), B.stateText({kind: "card", state: "merged", merged: {date: "zły"}})]')
         self.assertEqual(out, [{"project": "alfa"}, {"source": "card", "card": "K-11"}, "Źle",
-                               "Nie udało się odczytać mapy gałęzi.", True, False, "b", "a", "", ""])
+                               "Nie udało się odczytać mapy gałęzi.", True, False, "b", "a", "", "scalona"])
 
 
 @unittest.skipUnless(shutil.which("qml6"), "brak qml6")

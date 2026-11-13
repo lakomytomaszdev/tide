@@ -1,6 +1,8 @@
 .pragma library
 // Tryb „Gałęzie” okna Worktrees (K-99, PT-388): drzewo z odpowiedzi `Git.BranchMap({project})` i teksty stanu.
 // Czysta logika bez QML — testowana osobno i w sondzie okna.
+// Skróty gałęzi i dat to wspólny formatter „startu” (git/start.js), bez kopii.
+.import "git/start.js" as Start
 
 // Etykiety kolumn Tablicy (daemon/tide_daemon/board/model.py, COLUMNS); mapa zwraca ID kolumny.
 const COLUMN_LABELS = {
@@ -8,25 +10,12 @@ const COLUMN_LABELS = {
     done: "Gotowe", archived: "Archiwum"
 }
 
-function shortRef(ref) {
-    const text = String(ref || "")
-    for (const prefix of ["refs/heads/", "refs/remotes/"])
-        if (text.indexOf(prefix) === 0) return text.slice(prefix.length)
-    return text
-}
-
-// „2026-11-11T09:30:00+01:00” → „11.11” (z samego zapisu, bez strefy czasowej widza); zły zapis → "".
-function shortDate(ts) {
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ts || ""))
-    return m ? m[3] + "." + m[2] : ""
-}
-
 // Stan węzła jako tekst: karta — „w toku”, „domknięta”, „scalona do master (11.11)”; ticket — „scalony”
 // (z celem i datą, gdy są), „w toku”, „zamknięty” (karta domknięta bez scalenia ticketu) albo „odrzucony”.
 function stateText(node) {
     const merged = node.merged || null
     const suffix = merged
-        ? [merged.targetRef ? "do " + shortRef(merged.targetRef) : "", merged.date ? "(" + shortDate(merged.date) + ")" : ""]
+        ? [merged.targetRef ? "do " + Start.shortRef(merged.targetRef) : "", Start.shortDate(merged.date) ? "(" + Start.shortDate(merged.date) + ")" : ""]
             .filter(x => x !== "").join(" ")
         : ""
     if (node.kind === "card") {
@@ -42,7 +31,7 @@ function stateText(node) {
 
 // Pierwszy wiersz węzła: karta — ID, tytuł; ticket — ID, tytuł; baza — krótka nazwa refu.
 function titleText(node) {
-    if (node.kind === "base") return shortRef(node.ref) || node.branch || node.id
+    if (node.kind === "base") return Start.shortRef(node.ref) || node.branch || node.id
     if (node.kind === "unknown-base") return node.title || "Nieznana baza"
     const id = node.kind === "card" ? node.card : node.ticket
     return node.title ? id + " · " + node.title : String(id || "")
