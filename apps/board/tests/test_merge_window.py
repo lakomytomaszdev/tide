@@ -571,9 +571,9 @@ class SourceTest(unittest.TestCase):
                                                   '"../tide" as Tide', '"start.js" as Start']))
 
     def test_windows_have_no_merge_without_token_path_or_old_merge_components(self):
-        """K-99 #16: w oknach (`apps/`) nie ma drogi scalenia bez tokenu (`MergeCardToMain`, `mergeCardToMain`,
-        `mergeMainRequested`) ani starych komponentów scalania i ich przycisków — żadnego odwołania, nawet w komentarzu.
-        Ten plik jest jedynym miejscem, które wymienia te nazwy (jako wzorce wyszukiwania)."""
+        """K-99 #16: w oknach (`apps/`) nie ma drogi scalenia bez tokenu ani starych komponentów scalania i ich
+        przycisków — żadnego odwołania, nawet w komentarzu. Nazwy w tym teście są rozbite na fragmenty, żeby
+        wyszukiwanie po literalnej nazwie zwracało pusty wynik."""
         patterns = re.compile("|".join((r"MergeCard" + "ToMain", r"mergeCard" + "ToMain", r"mergeMain" + "Requested",
                                         r"Merge" + "Preview", r"MergeTarget" + "Picker", r"cardPreview" + "Merge",
                                         r"cardMerge" + "Main", r"cardMerge" + "Choose", r"fullPreview" + "Merge",
@@ -589,7 +589,7 @@ class SourceTest(unittest.TestCase):
                         if patterns.search(line):
                             found.append(f"{os.path.relpath(path, REPO)}:{number}")
         self.assertEqual(found, [])
-        for gone in ("apps/board/qml/MergePreview.qml", "apps/board/qml/MergeTargetPicker.qml"):
+        for gone in ("apps/board/qml/Merge" + "Preview.qml", "apps/board/qml/MergeTarget" + "Picker.qml"):
             self.assertFalse(os.path.exists(os.path.join(REPO, gone)), gone)
 
     def test_board_backend_does_not_allow_merge_without_token(self):
