@@ -20,7 +20,7 @@ from tide_daemon.cardflow import (
     historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
     mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,
     projectconsent, queueview, rest, reviewgate, riskview, startorder, state, stepnotes, stepqueue,
-    targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
+    stepresults, targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,7 +34,7 @@ IMPORTED_MODULES = (
     historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
     mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,
     projectconsent, queueview, rest, reviewgate, riskview, startorder, state, stepnotes, stepqueue,
-    targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
+    stepresults, targetprep, testpolicy, testrerun, ticketentry, ticketlimit, tracker, trialhold, waiting)
 ENGINE_FREE_MODULES = tuple(sorted(Path(module.__file__).resolve().relative_to(ROOT).as_posix()
                                    for module in IMPORTED_MODULES))
 
