@@ -98,3 +98,24 @@ function canChangeStart(derived) {
     if (tickets.length > 0) return true
     return !(Array.isArray(flow.steps) ? flow.steps : []).some(s => !s.historical)
 }
+
+// --- Scalenie karty (K-99, PT-401) ----------------------------------------------------------------------
+// „Scalono do master (11.11 19:02)” z `flow.merge` (cel zapisany w zdarzeniu scalenia) i czasu tego zdarzenia (`ts`,
+// czas lokalny, ta sama data d.MM co w „Start od”). Brak celu → „Scalono (cel niezapisany)”; brak czasu → bez nawiasu.
+// Karta niescalona → "".
+function shortTime(date) {
+    if (typeof date !== "string" || date === "") return ""
+    const d = new Date(date)
+    if (isNaN(d.getTime())) return ""
+    const pad = n => (n < 10 ? "0" : "") + n
+    return pad(d.getHours()) + ":" + pad(d.getMinutes())
+}
+
+function mergedLine(flow) {
+    if (!flow || !flow.merged) return ""
+    const merge = flow.merge && typeof flow.merge === "object" ? flow.merge : {}
+    const target = shortRef(merge.targetRef || merge.targetBranch || "")
+    const when = [shortDate(merge.ts), shortTime(merge.ts)].filter(p => p !== "").join(" ")
+    const suffix = when ? " (" + when + ")" : ""
+    return target === "" ? "Scalono (cel niezapisany)" + suffix : "Scalono do " + target + suffix
+}

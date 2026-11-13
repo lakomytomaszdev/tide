@@ -127,7 +127,6 @@ Item {
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
         onEnvironmentApproveRequested: (tag, id, yaml, onlyPlan) => view.backend.approveCardEnvironment(tag, id, yaml, onlyPlan)
-        onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)
         onMergeRequested: (tag, id, request) => view.backend.mergeCard(tag, id, request)
         onPreviewBaseChangeRequested: (tag, id, request) => view.backend.previewCardBaseChange(tag, id, request)

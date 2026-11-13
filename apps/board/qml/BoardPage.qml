@@ -152,7 +152,6 @@ Rectangle {
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal environmentApproveRequested(string tag, string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
-    signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
     signal mergeRequested(string tag, string cardId, string request)
     signal previewBaseChangeRequested(string tag, string cardId, string request)
@@ -177,23 +176,19 @@ Rectangle {
         const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
         return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
     }
-    // Stan przejściowy (do K-99 #16): „Wybierz cel” i „Scal do głównej” bez domyślnego celu otwierają od razu okno
-    // scalania z wyborem celu (domyślny cel i skróty z `ListCardBranches`), nie MergeTargetPicker.
-    function chooseMerge(cardId) {
-        openMergeWindow(cardId, "", "")
-    }
-    // Okno scalania (K-99, PT-390, #6): z celem z panelu i pełnej karty od razu prosi o jego podgląd, bez celu
-    // (`target` pusty) bierze domyślny cel z odpowiedzi `ListCardBranches`. Zgodę wysyła tylko jego „Scal do <cel>”.
-    function previewMerge(cardId, target, targetRef) {
-        openMergeWindow(cardId, target, targetRef)
-    }
-    function openMergeWindow(cardId, target, targetRef) {
+    // Jedyne wejście do okna scalania (K-99, PT-390/#6, PT-401): „Scal…” z panelu i pełnej karty. Gdy baza karty jest
+    // znana i jest gałęzią lokalną, okno od razu prosi o podgląd dla niej; bez niej bierze domyślny cel i skróty
+    // z odpowiedzi `ListCardBranches`. Zgodę wysyła tylko jego „Scal do <cel>”.
+    function openMergeWindow(cardId) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
         const base = card && card.derived && card.derived.flow && card.derived.flow.base
+        const known = base && base.status === "known"
+        const heads = known && (base.baseRef || "").indexOf("refs/heads/") === 0
+        const target = heads ? base.baseRef.substring(11) : ""
         mergeWindow.contextKey = mergeContext(cardId)
-        mergeWindow.baseRef = base && base.status === "known" ? base.baseRef : ""
+        mergeWindow.baseRef = known ? base.baseRef : ""
         mergeWindow.startLine = card && card.derived ? Start.cardStartLine(card.derived.flow) : ""
-        mergeWindow.open(cardId, target ? targetRef || "refs/heads/" + target : "", target)
+        mergeWindow.open(cardId, target ? "refs/heads/" + target : "", target)
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -1937,10 +1932,7 @@ Rectangle {
         onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId => page.openDiff(cardId)
         onBaseChangeRequested: cardId => { if (page.openFull(cardId)) page.openBaseChange(cardId) }
-        onMergeMainRequested: cardId =>
-            page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
-        onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
-        onChooseMergeRequested: cardId => page.chooseMerge(cardId)
+        onMergeRequested: cardId => page.openMergeWindow(cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -2070,7 +2062,6 @@ Rectangle {
         onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
-        mergePreviewAvailable: true
         // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
         ticketSettingsEnabled: true
         onTicketSettingsRequested: id => page.openTicketSettings(id)
@@ -2094,9 +2085,7 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
-        onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
-        onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
-        onChooseMergeRequested: page.chooseMerge(page.fullCardId)
+        onMergeRequested: page.openMergeWindow(page.fullCardId)
         onBranchDiffRequested: page.openDiff(page.fullCardId)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)

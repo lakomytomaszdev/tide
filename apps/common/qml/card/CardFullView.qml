@@ -29,6 +29,7 @@ import "../tide" as Tide
 import "decision.js" as Decision
 import "move.js" as Move
 import "settings.js" as Settings
+import "../git/start.js" as Start
 import "ticket.js" as TicketLib
 
 Rectangle {
@@ -118,16 +119,12 @@ Rectangle {
     // Ustawienia ticketu (PT-332): kafelek przekazuje prośbę dalej; przycisk na kafelku dodaje kolejny ticket karty.
     property bool ticketSettingsEnabled: false
     signal ticketSettingsRequested(string ticketId)
-    // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
-    signal mergeMainRequested()
-    signal previewMergeRequested(string target)
-    signal chooseMergeRequested()
-    readonly property string defaultMergeTarget: flow && flow.base && flow.base.status === "known"
-                                                 && (flow.base.baseRef || "").indexOf("refs/heads/") === 0
-                                                 ? flow.base.baseRef.substring(11) : ""
+    // Jedno „Scal…” domkniętej, niescalonej karty (K-99, PT-401): gospodarz otwiera okno scalania z podglądem
+    // dla domyślnego celu. Karta scalona pokazuje „Scalono do …” zamiast przycisku.
+    signal mergeRequested()
+    readonly property bool merged: Boolean(flow && flow.merged)
     signal baseChangeRequested()
     property bool baseChangeAvailable: false
-    property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
@@ -658,10 +655,11 @@ Rectangle {
             ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
-                visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
+                visible: view.merged || Boolean(view.mainPhase && view.mainPhase.state === "you")
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
+                    visible: !view.merged
                     text: "Karta jest domknięta na swojej gałęzi. Wybierz cel, sprawdź podgląd i potwierdź scalenie."
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
@@ -670,32 +668,24 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
                 Tide.TextButton {
-                    objectName: "fullPreviewMerge"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    visible: view.mergePreviewAvailable
-                    text: "Podgląd scalenia do " + (view.defaultMergeTarget || "…")
-                    enabled: view.defaultMergeTarget !== ""
-                    variant: "outline"
-                    onClicked: view.previewMergeRequested(view.defaultMergeTarget)
-                }
-                Tide.TextButton {
-                    objectName: "fullMergeMain"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    text: view.defaultMergeTarget ? "Scal do " + view.defaultMergeTarget : "Scal…"
+                    objectName: "fullMerge"
+                    text: "Scal…"
+                    visible: !view.merged
                     enabled: !view.mergeBusy
                     Accessible.name: text
-                    onClicked: {
-                        if (view.defaultMergeTarget) view.previewMergeRequested(view.defaultMergeTarget)
-                        else view.chooseMergeRequested()
-                    }
+                    onClicked: view.mergeRequested()
                 }
-                Tide.TextButton {
-                    objectName: "fullMergeChoose"
-                    text: "Scal…"
-                    visible: view.defaultMergeTarget !== ""
-                    onClicked: view.chooseMergeRequested()
+                Text {
+                    objectName: "fullMerged"
+                    Layout.fillWidth: true
+                    visible: view.merged
+                    text: Start.mergedLine(view.flow)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.mint
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                    wrapMode: Text.Wrap
+                    Accessible.name: text
                 }
             }
 

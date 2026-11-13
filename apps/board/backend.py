@@ -68,7 +68,7 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "TalkToCaretaker", "AbandonStep", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "SetCardPaused",
-          "ApproveCardEnvironment", "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
+          "ApproveCardEnvironment", "EditCardPlan", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
 TASKS_PATH, TASKS_IFACE ="/Tasks", "org.tide.Daemon.Tasks"
@@ -552,10 +552,6 @@ class Backend(QObject):
         """`Git.Diff` (K-36, wspólny widok diffa apps/common/qml/git/DiffView.qml): żądanie JSON, odpowiedź przez
         `replied(tag, json)`. Odczyt — nie przeładowuje migawki."""
         self._write(tag, "Diff", [request])
-
-    @pyqtSlot(str, str)
-    def mergeCardToMain(self, tag: str, card_id: str) -> None:
-        self._write(tag, "MergeCardToMain", [card_id])
 
     @pyqtSlot(str, str, str)
     def previewCardMerge(self, tag: str, card_id: str, request: str) -> None:

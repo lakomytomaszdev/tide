@@ -7,7 +7,7 @@
   minimalny podgląd (stan zdaniem, konflikty, powody blokad, ostrzeżenia, „Szczegóły”) i teksty z gita jako zwykły tekst,
 - komponent bez zależności od Tablicy i bez wywołań usługi (źródło), kolory tylko z palety,
 - Tablica: zmiana kontekstu karty zamyka okno i odrzuca spóźnioną odpowiedź, „Zmiany gałęzi” otwiera widok diffa
-  karty (K-36) nad oknem, Esc wraca do okna; żaden przycisk nie emituje martwej drogi `mergeMainRequested`.
+  karty (K-36) nad oknem, Esc wraca do okna; w oknach nie ma drogi scalenia bez tokenu ani starych komponentów.
 """
 import json
 import os
@@ -570,21 +570,33 @@ class SourceTest(unittest.TestCase):
         self.assertEqual(sorted(imports), sorted(['QtQuick', 'QtQuick.Layouts', 'QtQuick.Controls as QQC2',
                                                   '"../tide" as Tide', '"start.js" as Start']))
 
-    def test_no_button_emits_dead_merge_main_path(self):
-        """K-99 #5: droga bez tokenu (`mergeMainRequested` → `MergeCardToMain`) to martwe okablowanie do #16 —
-        sygnał jest zadeklarowany i obsłużony, ale nic go nie emituje (przed tą zmianą i po niej)."""
-        emitted = []
+    def test_windows_have_no_merge_without_token_path_or_old_merge_components(self):
+        """K-99 #16: w oknach (`apps/`) nie ma drogi scalenia bez tokenu (`MergeCardToMain`, `mergeCardToMain`,
+        `mergeMainRequested`) ani starych komponentów scalania i ich przycisków — żadnego odwołania, nawet w komentarzu.
+        Ten plik jest jedynym miejscem, które wymienia te nazwy (jako wzorce wyszukiwania)."""
+        patterns = re.compile("|".join((r"MergeCard" + "ToMain", r"mergeCard" + "ToMain", r"mergeMain" + "Requested",
+                                        r"Merge" + "Preview", r"MergeTarget" + "Picker", r"cardPreview" + "Merge",
+                                        r"cardMerge" + "Main", r"cardMerge" + "Choose", r"fullPreview" + "Merge",
+                                        r"fullMerge" + "Main", r"fullMerge" + "Choose")))
+        found = []
         for root, _dirs, files in os.walk(os.path.join(REPO, "apps")):
             for name in files:
-                if not name.endswith((".qml", ".js")):
+                if not name.endswith((".qml", ".js", ".py")) or name == os.path.basename(__file__):
                     continue
                 path = os.path.join(root, name)
                 with open(path, encoding="utf-8") as fh:
                     for number, line in enumerate(fh, 1):
-                        code = line.split("//")[0]
-                        if re.search(r"(?<![\w.])(?:\w+\.)?mergeMainRequested\(", code) and "signal " not in code:
-                            emitted.append(f"{os.path.relpath(path, REPO)}:{number}")
-        self.assertEqual(emitted, [])
+                        if patterns.search(line):
+                            found.append(f"{os.path.relpath(path, REPO)}:{number}")
+        self.assertEqual(found, [])
+        for gone in ("apps/board/qml/MergePreview.qml", "apps/board/qml/MergeTargetPicker.qml"):
+            self.assertFalse(os.path.exists(os.path.join(REPO, gone)), gone)
+
+    def test_board_backend_does_not_allow_merge_without_token(self):
+        with open(os.path.join(REPO, "apps/board/backend.py"), encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn('"MergeCard"', source)
+        self.assertNotIn("MergeCard" + "ToMain", source)
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
@@ -607,10 +619,10 @@ class BoardMergeWindowTest(ProbeCase):
         out = self.probe(STATE_PY + r'''
 click(card("K-8"))
 out["rows"] = []
-for name in ("fullPreviewMerge", "fullMergeMain"):
+for _ in range(2):   # ponowne otwarcie po Escape liczy podgląd od nowa
     replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/master", "targetBranch": "master",
                     "previewToken": "t"})
-    click(named(name))
+    click(named("fullMerge"))
     until(lambda: not obj("mergeWindow").property("busy"))
     out["rows"].append([obj("mergeWindowTarget").property("text"), obj("mergeWindowStart").property("text"),
                         obj("mergeWindowMerge").property("enabled"), calls()[-1][:2], json.loads(calls()[-1][2])])
@@ -633,7 +645,7 @@ out["calls"] = [c[0] for c in calls()]
 click(card("K-8"))
 replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/master", "targetBranch": "master",
                 "previewToken": "t"})
-click(named("fullMergeMain"))
+click(named("fullMerge"))
 until(lambda: not obj("mergeWindow").property("busy"))
 # Odpowiedź MergeCard wstrzymana do zmiany kontekstu karty (spóźniona odpowiedź z usługi).
 held = []
@@ -665,7 +677,7 @@ out["calls"] = [c[0] for c in calls()]
 click(card("K-8"))
 replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/master", "targetBranch": "master",
                 "previewToken": "t"})
-click(named("fullMergeMain"))
+click(named("fullMerge"))
 until(lambda: not obj("mergeWindow").property("busy"))
 click(named("mergeWindowChanges"))
 out["diff"] = [js("page.diffOpen"), js("page.diffCardId"), obj("mergeWindow").property("opened")]

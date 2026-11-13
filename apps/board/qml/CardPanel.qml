@@ -23,6 +23,7 @@ import "tide" as Tide
 import "board.js" as Logic
 import "cardDocs.js" as Docs
 import "card" as CardUi
+import "git/start.js" as Start
 
 Rectangle {
     id: panel
@@ -94,13 +95,8 @@ Rectangle {
     signal baseChangeRequested(string cardId)       // „Zmień gałąź startową…”: pełna karta z podglądem korekty bazy
     readonly property string cardBranch: card && card.derived && card.derived.flow && card.derived.flow.cardBranch
                                          ? card.derived.flow.cardBranch : ""
-    signal mergeMainRequested(string cardId)
-    signal previewMergeRequested(string cardId, string target)
-    signal chooseMergeRequested(string cardId)
-    readonly property var mergeBase: card && card.derived && card.derived.flow ? card.derived.flow.base : null
-    readonly property string defaultMergeTarget: mergeBase && mergeBase.status === "known"
-                                                 && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
-                                                 ? mergeBase.baseRef.substring(11) : ""
+    signal mergeRequested(string cardId)            // „Scal…”: okno scalania z podglądem dla domyślnego celu
+    readonly property bool merged: Boolean(card && card.derived && card.derived.flow && card.derived.flow.merged)
 
     // PT-316: decyzja dotyczy pytania pokazanego w panelu — ticket i runda idą razem z wyborem (JSON dla usługi).
     function reviewChoice(choice) {
@@ -627,33 +623,24 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 7
+                // Jedno „Scal…” dla karty domkniętej i niescalonej (K-99, PT-401); scalonej — tylko napis.
                 PillButton {
-                    objectName: "cardPreviewMerge"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: "Podgląd scalenia do " + (target || "…")
-                    enabled: !panel.busy && target !== ""
-                    onClicked: panel.previewMergeRequested(panel.card.id, target)
-                }
-                PillButton {
-                    objectName: "cardMergeMain"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: target ? "Scal do " + target : "Scal…"
-                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
-                                                && panel.card.derived.flow.merged)
-                    onClicked: {
-                        if (target) panel.previewMergeRequested(panel.card.id, target)
-                        else panel.chooseMergeRequested(panel.card.id)
-                    }
-                }
-                PillButton {
-                    objectName: "cardMergeChoose"
+                    objectName: "cardMerge"
                     text: "Scal…"
-                    visible: panel.defaultMergeTarget !== ""
-                    onClicked: panel.chooseMergeRequested(panel.card.id)
+                    visible: !panel.merged
+                    enabled: !panel.busy
+                    onClicked: panel.mergeRequested(panel.card.id)
+                }
+                Text {
+                    objectName: "cardMerged"
+                    Layout.fillWidth: true
+                    visible: panel.merged
+                    text: Start.mergedLine(panel.card && panel.card.derived ? panel.card.derived.flow : null)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.mint
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
                 }
             }
             QQC2.TextArea {

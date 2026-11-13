@@ -506,12 +506,60 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         out = self.probe(STATE_PY + """
 click(card("K-8"))
 out["visible"] = js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
-                   "return all(v, 'fullMergeMain')[0].visible })()")
-click(named("fullMergeMain"))
+                   "return all(v, 'fullMerge')[0].visible })()")
+click(named("fullMerge"))
 out["call"] = calls()[-1][:2]
 """, data)
         self.assertTrue(out["visible"])
         self.assertEqual(out["call"], ["PreviewCardMerge", "K-8"])
+
+    COUNT_MERGE = ("(function n(it) { if (!it) return 0; let k = (it.visible && it.text === 'Scal…' "
+                   "&& it.objectName !== '') ? 1 : 0; "
+                   "for (const c of it.children) k += n(c); return k })")
+
+    def merge_state(self, state, merge=None):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                flow = item["derived"]["flow"]
+                flow["mainBranch"] = "master"
+                flow["base"] = {"status": "known", "baseRef": "refs/heads/master"}
+                if merge:
+                    flow.update(merged=True, mainMerged=True, merge=merge)
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = state
+        return data
+
+    def test_closed_unmerged_full_card_has_exactly_one_merge_button(self):
+        out = self.probe(STATE_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-8"))
+out["count"] = js(COUNT + "(page.cardFullView)")
+out["buttons"] = js("(" + ALL + ")(page.cardFullView, 'fullMerge').length")
+out["text"] = obj("fullMerge").property("text")
+''', self.merge_state("you"))
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["buttons"], 1)
+        self.assertEqual(out["text"], "Scal…")
+
+    def test_full_card_in_progress_has_no_merge_button(self):
+        out = self.probe(STATE_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-8"))
+out["count"] = js(COUNT + "(page.cardFullView)")
+''', self.merge_state("todo"))
+        self.assertEqual(out["count"], 0)
+
+    def test_merged_full_card_shows_merged_line_without_merge_button(self):
+        merge = {"targetBranch": "master", "targetRef": "refs/heads/master", "ts": "2026-11-11T18:02:00Z"}
+        out = self.probe(STATE_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-8"))
+out["count"] = js(COUNT + "(page.cardFullView)")
+merged = obj("fullMerged")
+out["line"] = [merged.property("visible"), merged.property("text")]
+''', self.merge_state("done", merge))
+        self.assertEqual(out["count"], 0)
+        self.assertTrue(out["line"][0])
+        self.assertRegex(out["line"][1], r"^Scalono do master \(\d{1,2}\.\d{2} \d{2}:\d{2}\)$")
 
     def test_named_main_requires_confirmation_and_cancel_is_only_a_read(self):
         data = full_d(self.data)
@@ -537,9 +585,9 @@ for index, target in enumerate(names):
               "targetWorktree": "/repo", "targetWorktreeExists": True,
               "localCollisions": {"staged": [], "unstaged": [], "untracked": []}, "localCollisionCount": 0,
               "commits": [], "commitCount": 0, "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0}
-    out["labels"].append(obj("fullMergeMain").property("text"))
+    out["labels"].append(obj("fullMerge").property("text"))
     replies.append(result)
-    click(named("fullMergeMain"))
+    click(named("fullMerge"))
     until(lambda: not obj("mergeWindow").property("busy"))
     assert calls()[-1][0] == "PreviewCardMerge"
     # Anulowanie ani Escape nie są zgodą, nawet przy canMerge=true i check:auto.
@@ -550,7 +598,7 @@ for index, target in enumerate(names):
     assert not obj("mergeWindow").property("opened")
     assert calls()[-1][0] == "PreviewCardMerge"
     replies.append(result)
-    click(named("fullMergeMain"))
+    click(named("fullMerge"))
     until(lambda: not obj("mergeWindow").property("busy"))
     out["texts"].append(obj("mergeWindowDetails").property("text"))
     out["targets"].append(obj("mergeWindowTarget").property("text"))
@@ -565,7 +613,7 @@ for index, target in enumerate(names):
     out["toasts"].append(js("page.toast"))
 out["calls"] = calls()
 ''', data)
-        self.assertEqual(out["labels"], ["Scal do " + name for name in names for _ in range(2)])
+        self.assertEqual(out["labels"], [label for name in names for label in ("Scal…", "Scal do " + name)])
         for index, name in enumerate(names):
             self.assertIn("refs/heads/" + name, out["texts"][index])
             self.assertIn("b" * 40, out["texts"][index])
@@ -592,7 +640,7 @@ click(card("K-8"))
 result = {"ok": True, "canMerge": True, "targetBranch": "develop", "targetRef": "refs/heads/develop",
           "targetCommit": "b" * 40, "previewToken": "old"}
 replies.append(result)
-click(named("fullMergeMain"))
+click(named("fullMerge"))
 until(lambda: not obj("mergeWindow").property("busy"))
 replies.append({"ok": False, "error": "stale-preview", "message": "Potwierdź nowy podgląd"})
 click(named("mergeWindowMerge"))
@@ -646,12 +694,12 @@ out["calls"] = calls()
                     {**result, "commits": [], "commitCount": 0, "files": [], "fileCount": 0}]
         out = self.probe(STATE_PY + "\nvariants = " + repr(variants) + r'''
 click(card("K-8"))
-out["label"] = obj("fullPreviewMerge").property("text")
+out["label"] = obj("fullMerge").property("text")
 before = js("JSON.stringify(page.snapshot.cards)")
 out["texts"], out["states"], out["conflicts"], out["blocked"], out["warnings"], out["enabled"] = [], [], [], [], [], []
 for index, result in enumerate(variants):
     replies.append(result)
-    click(named("fullPreviewMerge"))
+    click(named("fullMerge"))
     until(lambda: not obj("mergeWindow").property("busy"))
     out["texts"].append(obj("mergeWindowDetails").property("text"))
     out["states"].append(obj("mergeWindowState").property("text"))
@@ -667,7 +715,7 @@ out["opened"] = obj("mergeWindow").property("visible")
 out["same"] = before == js("JSON.stringify(page.snapshot.cards)")
 out["calls"] = calls()
 ''', data)
-        self.assertEqual(out["label"], "Podgląd scalenia do release/complete-target-name")
+        self.assertEqual(out["label"], "Scal…")
         self.assertFalse(out["opened"])
         self.assertTrue(out["same"])
         self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": result["targetRef"]}] * 4)
@@ -718,7 +766,7 @@ out["consents"] = []
 out["enabled"] = []
 for result in variants:
     replies.append(result)
-    click(named("fullPreviewMerge"))
+    click(named("fullMerge"))
     until(lambda: not obj("mergeWindow").property("busy"))
     out["texts"].append(obj("mergeWindowDetails").property("text"))
     out["consents"].append(obj("mergeWindowConsent").property("text"))

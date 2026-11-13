@@ -2622,7 +2622,7 @@ out["call"] = calls()[-1]
 
 
 class ClosingPanelTest(ProbeCase):
-    def test_panel_merge_preview_uses_named_target_and_closes_without_writing(self):
+    def test_panel_merge_opens_window_with_default_target_and_closes_without_writing(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:
             if card["id"] == "K-6":
@@ -2633,9 +2633,9 @@ class ClosingPanelTest(ProbeCase):
                 card["boardColumn"] = "review"
         out = self.probe(FIND_PY + '''
 click(card("K-6"))
-out["label"] = obj("cardPreviewMerge").property("text")
+out["label"] = obj("cardMerge").property("text")
 replies.append({"ok": False, "error": "git-error", "message": "Nie można odczytać drzewa"})
-click(at(FIND + "(page.cardPanel, 'cardPreviewMerge')"))
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
 until(lambda: not obj("mergeWindow").property("busy"))
 out["text"] = obj("mergeWindowError").property("text")
 out["state"] = obj("mergeWindowState").property("text")
@@ -2645,14 +2645,82 @@ out["calls"] = calls()
 out["busy"] = js("page.cardPanel.busy")
 out["column"] = js("page.cardPanel.card.boardColumn")
 ''', data=data)
-        self.assertEqual(out["label"], "Podgląd scalenia do release/full-target")
+        self.assertEqual(out["label"], "Scal…")
         self.assertEqual(out["text"], "Nie można odczytać drzewa")
         self.assertEqual(out["state"], "Podgląd nieudany")
-        # PT-390: „Podgląd scalenia do…” z panelu otwiera nowe okno scalania z domyślnym celem (tylko do odczytu).
+        # PT-390: „Scal…” z panelu otwiera okno scalania z domyślnym celem (tylko do odczytu).
         self.assertEqual(out["target"], ["K-6 → release/full-target", "refs/heads/release/full-target"])
         self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/release/full-target"}])
         self.assertFalse(out["busy"])
         self.assertEqual(out["column"], "review")
+
+    COUNT_MERGE = ("(function n(it) { if (!it) return 0; let k = (it.visible && it.text === 'Scal…' "
+                   "&& it.objectName !== '') ? 1 : 0; "
+                   "for (const c of it.children) k += n(c); return k })")
+
+    def merge_card(self, derived_flow):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "mainBranch": "develop", "cardBranch": "card/k-6-eksport",
+                    "base": {"status": "known", "baseRef": "refs/heads/develop"},
+                    "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}, **derived_flow}}
+                card["boardColumn"] = "review"
+        return data
+
+    def test_panel_has_exactly_one_merge_button_for_closed_unmerged_card(self):
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+out["merged"] = js(FIND + "(page.cardPanel, 'cardMerged').visible")
+''', data=data)
+        self.assertEqual(out["count"], 1)
+        self.assertFalse(out["merged"])
+
+    def test_panel_merge_button_opens_window_and_previews_default_target(self):
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + '''
+click(card("K-6"))
+replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/develop", "targetBranch": "develop",
+                "previewToken": "t"})
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
+until(lambda: not obj("mergeWindow").property("busy"))
+out["window"] = [obj("mergeWindow").property("opened"), obj("mergeWindowTarget").property("text")]
+out["calls"] = calls()
+''', data=data)
+        self.assertEqual(out["window"], [True, "K-6 → develop"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["PreviewCardMerge", "K-6"]])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/develop"})
+
+    def test_panel_card_in_progress_has_no_merge_button(self):
+        data = self.merge_card({"closed": False, "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+out["closing"] = obj("cardFlowClosing").property("visible")
+''', data=data)
+        self.assertEqual(out["count"], 0)
+        self.assertFalse(out["closing"])
+
+    def test_panel_merged_card_shows_merged_line_instead_of_button(self):
+        merge = {"targetBranch": "master", "targetRef": "refs/heads/master", "ts": "2026-11-11T18:02:00Z"}
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": True, "mainMerged": True,
+                                "merge": merge})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+merged = obj("cardMerged")
+out["line"] = [merged.property("visible"), merged.property("text")]
+out["expected"] = js("(function () { const d = new Date('2026-11-11T18:02:00Z'); const p = n => (n < 10 ? '0' : '') + n; "
+                     "return 'Scalono do master (' + d.getDate() + '.' + p(d.getMonth() + 1) + ' ' "
+                     "+ p(d.getHours()) + ':' + p(d.getMinutes()) + ')' })()")
+''', data=data)
+        self.assertEqual(out["count"], 0)
+        self.assertTrue(out["line"][0])
+        self.assertEqual(out["line"][1], out["expected"])
+        self.assertRegex(out["line"][1], r"^Scalono do master \(\d{1,2}\.\d{2} \d{2}:\d{2}\)$")
 
     def test_closed_card_exposes_diff_main_merge_and_return(self):
         data = json.loads(json.dumps(self.data))
@@ -2676,12 +2744,12 @@ out["panelStays"] = js("page.panelOpen")
 obj("cardClosingFeedback").setProperty("text", "Dopisz błąd eksportu")
 click(at(FIND + "(page.cardPanel, 'cardReturnForChanges')"))
 out["returnCall"] = calls()[-1]
-click(at(FIND + "(page.cardPanel, 'cardMergeMain')"))
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
 out["mergeCall"] = calls()[-1]
 until(lambda: not obj("mergeWindow").property("busy"))
 out["window"] = [obj("mergeWindow").property("opened"), obj("mergeWindowTarget").property("text")]
 """, data=data)
-        self.assertEqual(out["window"], [True, "K-6 → develop"], "„Scal do <domyślny>” otwiera okno scalania")
+        self.assertEqual(out["window"], [True, "K-6 → develop"], "„Scal…” otwiera okno scalania z podglądem")
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
         # K-36 #17: „Diff gałęzi” (usługowe CardBranchDiff + pole tekstowe) → „Zmiany gałęzi” (Git.Diff, widok diffa).

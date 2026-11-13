@@ -243,7 +243,7 @@ FocusScope {
         return r && Array.isArray(r.warnings) ? r.warnings.map(w => String(w)) : []
     }
 
-    // „Szczegóły”: SHA źródła i celu, drzewo wyniku, kody oraz reszta dotychczasowej treści `MergePreview`
+    // „Szczegóły”: SHA źródła i celu, drzewo wyniku, kody oraz reszta dotychczasowej treści podglądu
     // (przygotowanie celu, kolizje lokalne, commity, pliki). Czytelne sekcje zamiast tego tekstu dokłada K-99 #18.
     function detailsText(r) {
         if (!r) return ""
