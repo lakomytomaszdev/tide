@@ -825,6 +825,66 @@ z danych właściciela.
 Kolejność dla koordynatora: `build-data`, potem cztery polecenia `measure` (`before false`, `before true`, `after false`,
 `after true`), każde osobno.
 
+### Zmiany usługi mierzone przez K-105
+
+Opisy pełne są w sekcji „Przepływ karty: „Od razu” (PT-58)” (pamięć ścisłego odczytu, kontroli zgodności i historii
+procesów, pętla odtwarzania, karty w spoczynku); tu tylko krótki spis z odsyłaczami:
+
+- **PT-411 — pamięć historii między tickami.** Ścisły odczyt historii karty (`Journal.read_complete`) jest pamiętany
+  między tickami i unieważniany wersją dziennika; okresowy pełny odczyt weryfikuje pamięć, a przyrost pamięci jest
+  ograniczony (akapit „Pamięć ścisłego odczytu (K-105 #2, PT-411)”).
+- **PT-415 — pamięć historii procesów i stanu procesu karty** nad pamięcią PT-411 (akapit „Pamięć historii procesów
+  i stanu procesu karty (K-105 PT-415)”): odczyty bez skutku nie wykonują nowego `fold` co tick.
+- **PT-416 — lekka kontrola zgodności z kopią** (`Journal.check`, dziennik w Tablicy ↔ kopia usługi; akapit „Pamięć
+  kontroli zgodności (K-105, PT-416)”): w każdym ticku bez pełnego odczytu.
+- **PT-459 (praca „#2”) — pętla odtwarzania na pamięci** (`FlowEngine._replay_starts`, akapit „Pętla odtwarzania na
+  początku ticku (K-105 PT-459)”): korzysta z pamięci PT-411/PT-415 zamiast własnych pełnych odczytów.
+- **PT-412 — karty w spoczynku**: rejestr czynników spoczynku, wykluczenie przez operacje kolejek i okres kontroli
+  pełnej; opis i lista czynników w akapicie „Karty w spoczynku (K-105 PT-412)”.
+- **PT-413 — pamięć oceny ryzyka w prezentacji** (`cardflow/riskview.py`): publikacja migawki w wątku głównym nie
+  rozwiązuje ścieżek (`realpath`) przy każdej publikacji; ocena ryzyka polecenia „uruchom poza piaskownicą” pochodzi z pamięci
+  kluczowanej (karta, wersja dziennika, polecenie, korzenie), ograniczonej do 256 kart i działającej wyłącznie w zakresie
+  odczytu prezentacji (`Engine.derived`). Zgoda automatyczna, kontrola przed startem, `run-always` i decyzja merge-check
+  liczą ryzyko świeżo i pamięci nie widzą.
+
+### Wyniki przed/po w reproduktorze (PT-414, 13.11.2026)
+
+Wynik reproduktora jest **wskaźnikiem**: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej). Strona „przed” to kod bazy
+karty `efeb3e87929318196386a9c62b22c099542f0ac3`, strona „po” — gałąź ticketu `05868ada43eba1e6d2c43e5f2bfb519763f74882`
+(PT-411, PT-412, PT-413, PT-415, PT-416, PT-459 scalone do gałęzi karty). Dane: 46 kart, 59,5 MB dzienników, budowa 52,5 s.
+Każda konfiguracja to osobne polecenie `perf_k105_queue.py measure`; rozstrzyga pierwsza ważna próba. Próg: **każde okno
+≤ 30 %** rdzenia (16 rdzeni, limit loadavg 8,0).
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed, `box.enabled=false` | 1–3 | **nieważne** (loadavg 12,2–12,8 ≥ 8,0, także przed startem) | 74–94 | 85,5 / 94,5; 85,4 / 91,3; 74,4 / 75,6 | brak ważnej próby (3 z 3) |
+| przed, `box.enabled=true` | 1 | ważna | 83,62; 83,05; 83,75; 82,75; 82,78; 83,32; 82,97; 82,97; 82,92; 82,80 | 83,09 / 83,75 | **niespełniony** (10 z 10 okien) |
+| po, `box.enabled=false` | 1 | ważna | 45,08; 45,30; 45,17; 45,73; 45,42; 45,22; 44,98; 45,48; 45,07; 48,02 | 45,55 / 48,02 | **niespełniony** (10 z 10 okien) |
+| po, `box.enabled=true` | 1 | ważna | 45,85; 45,83; 45,98; 45,30; 45,00; 45,45; 45,40; 45,20; 44,90; 44,35 | 45,33 / 45,98 | **niespełniony** (10 z 10 okien) |
+
+Diagnostyka bez progu (osobne okno po oknach CPU):
+
+| Konfiguracja | `engine.tick` (udział / próbki na s) | CPU wątku przepływu | `Snapshot` p95 | `RssAnon` przed → po | `MemoryCurrent` przed → po |
+|---|---|---|---|---|---|
+| przed, `true` | 0,198 / 55,1 | 82,3 % | 280 ms | 544,2 → 546,1 MB | 744,0 → 728,6 MB |
+| po, `false` | 0,096 / 33,0 | 45,0 % | 239 ms | 539,3 → 584,4 MB | 633,3 → 678,6 MB |
+| po, `true` | 0,102 / 32,8 | 44,8 % | 242 ms | 550,2 → 551,8 MB | 644,3 → 645,7 MB |
+
+Wnioski z reproduktora (nie są oceną produkcji):
+
+- **Poprawa, ale nie do progu.** Gałąź ticketu obniża CPU całego procesu z ok. 83 % do ok. 45 % rdzenia przy
+  `box.enabled=true` (o ok. 38 punktów) — nadal 15 punktów ponad progiem w każdym oknie. Dla `box.enabled=false` nie ma
+  ważnego „przed”, więc nie ma porównania; „po” (45,6 %) jest równie ponad progiem.
+- **Prawie całe CPU zajmuje wątek przepływu** (`tide-cardflow`: ok. 45 z 45,3 % przy „po”). Najcięższa ścieżka w próbniku
+  „po” to `engine.tick › boxstep.recover_network › trialhold.held › trialpolicy.blocked_event` (ok. 1400 z ok. 1970
+  próbek `engine.tick`, czyli ok. 71 %) z wyrażeniem regularnym (`re.search`/`_compile`) wykonywanym przy każdym ticku,
+  także przy `box.enabled=false`; za nią odczyt kart `store.load › _read_doc › realpath` (ok. 370 próbek). To wskazanie
+  miejsca do dalszej optymalizacji; ticket PT-414 nie zmienia kodu usługi.
+- Pamięć (diagnostyka bez progu) jest stała w obrębie okien (± ok. 2 MB `RssAnon`), z wyjątkiem „po, `false`”
+  (+ ok. 45 MB `RssAnon`, `VmHWM` 674 MB) — jednej próby nie wystarczy do wniosku o trendzie.
+- **Niespełniony próg to ważny wynik, nie błąd pomiaru**: nie daje domknięcia z akceptacją i jest otwartym blokerem M0,
+  dopóki pomiar produkcji nie pokaże ≤ 30 % w każdym oknie w obu ustawieniach `box.enabled`.
+
 ### Procedura produkcji po instalacji (właściciel)
 
 Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, nie zmienia konfiguracji (także
