@@ -344,6 +344,9 @@ class ApprovalTest(unittest.TestCase):
         self.assertTrue(out["refused"])
 
 
+STAMPED = {"user.tide.recipe": json.dumps({"hash": "abc123"})}      # odcisk przepisu: pudełko Tide
+
+
 class FakeHost:
     def __init__(self, sim, root, steps=None):
         self.sim, self.proc_root, self.hz, self.cpu_count = sim, root, HZ, 8
@@ -551,8 +554,8 @@ class ProductionScriptTest(Base):
             if argv[0] == "systemctl":                                              # host: pusto
                 return self._done("")
             if argv[1] == "list":
-                return self._done(json.dumps([{"name": "tide-box-1", "status": "Running"},
-                                              {"name": "stara", "status": "Stopped"}]))
+                return self._done(json.dumps([{"name": "tide-box-1", "status": "Running", "config": STAMPED},
+                                              {"name": "stara", "status": "Stopped", "config": STAMPED}]))
             return self._done("tide-step-K-1-PT-1.service loaded active running krok\n")
         host = self._system_host(True, runner)
         self.assertEqual(host.active_steps(), ["box:tide-box-1:tide-step-K-1-PT-1.service"])
@@ -578,11 +581,127 @@ class ProductionScriptTest(Base):
             if argv[0] == "systemctl":
                 return self._done("")
             if argv[1] == "list":
-                return self._done(json.dumps([{"name": "b", "status": "Running"}]))
+                return self._done(json.dumps([{"name": "b", "status": "Running", "config": STAMPED}]))
             return self._done("", code=1)
         host = self._system_host(True, runner)
         with self.assertRaises(prod.HostReadError):
             host.active_steps()
+
+    def _incus(self, instances, exec_result=None):
+        """Atrapa `incus`: host pusty, `list` zwraca instancje, `exec` — wynik z `exec_result(argv)`; zapisuje wywołania."""
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "systemctl":
+                return self._done("")
+            if argv[1] == "list":
+                return self._done(json.dumps(instances))
+            return exec_result(argv)
+        return runner, calls
+
+    def _no_bus(self, argv):
+        return subprocess.CompletedProcess(argv, 1, "", "Failed to connect to bus: No medium found\n")
+
+    def test_foreign_container_gets_no_exec_and_is_listed(self):
+        runner, calls = self._incus([{"name": "obcy", "status": "Running", "config": {"user.foo": "x"}},
+                                     {"name": "bez-config", "status": "Running"},
+                                     {"name": "pusty", "status": "Running", "config": {"user.tide.recipe": ""}},
+                                     {"name": "tide-1", "status": "Running", "config": STAMPED}],
+                                    lambda argv: self._done("tide-step-K-1-PT-1.service loaded active running x\n"))
+        host = self._system_host(True, runner)
+        self.assertEqual(host.active_steps(), ["box:tide-1:tide-step-K-1-PT-1.service"])
+        self.assertEqual(host.ignored_instances(), ["bez-config", "obcy", "pusty"])
+        execs = [c for c in calls if len(c) > 1 and c[1] == "exec"]
+        self.assertEqual(len(execs), 1)
+        self.assertIn("tide-1", execs[0])
+
+    def test_both_stamp_shapes_mark_a_tide_box(self):
+        instances = [{"name": "json", "status": "Running", "config": {"user.tide.recipe": '{"hash":"abc","v":1}'}},
+                     {"name": "hash", "status": "Running", "config": {"user.tide.recipe": "abc123"}},
+                     {"name": "bezhash", "status": "Running", "config": {"user.tide.recipe": '{"v":1}'}},
+                     {"name": "pusty-hash", "status": "Running", "config": {"user.tide.recipe": '{"hash":""}'}},
+                     {"name": "lista", "status": "Running", "config": {"user.tide.recipe": "[1]"}}]
+        runner, calls = self._incus(instances, lambda argv: self._done(""))
+        host = self._system_host(True, runner)
+        host.active_steps()
+        self.assertEqual(host.ignored_instances(), ["bezhash", "lista", "pusty-hash"])
+        self.assertEqual(sum(1 for c in calls if len(c) > 1 and c[1] == "exec"), 2)
+
+    def test_tide_box_without_bus_is_a_note_not_an_error_once_per_box(self):
+        runner, _ = self._incus([{"name": "tide-1", "status": "Running", "config": STAMPED}], self._no_bus)
+        host = self._system_host(True, runner)
+        for _ in range(3):
+            self.assertEqual(host.active_steps(), [])
+        self.assertEqual(len(host.box_notes()), 1)
+        self.assertIn("tide-1", host.box_notes()[0])
+
+    def test_other_exec_errors_in_a_tide_box_still_raise(self):
+        for result in (subprocess.CompletedProcess([], 1, "", "inny błąd"),
+                       subprocess.CompletedProcess([], 255, "", "Error: Instance not found"),
+                       subprocess.CompletedProcess([], 0, "", "Failed to connect to bus")):
+            runner, _ = self._incus([{"name": "tide-1", "status": "Running", "config": STAMPED}],
+                                    lambda argv, r=result: r)
+            host = self._system_host(True, runner)
+            if result.returncode == 0:
+                self.assertEqual(host.active_steps(), [])        # kod 0: nie jest błędem magistrali
+            else:
+                with self.assertRaises(prod.HostReadError):
+                    host.active_steps()
+
+    def test_timeout_in_tide_box_raises(self):
+        def boom(argv):
+            raise subprocess.TimeoutExpired(argv, 60)
+        runner, _ = self._incus([{"name": "tide-1", "status": "Running", "config": STAMPED}], boom)
+        host = self._system_host(True, runner)
+        with self.assertRaises(prod.HostReadError):
+            host.active_steps()
+
+    def test_wait_idle_foreign_and_busless_box_keeps_the_measurement_valid(self):
+        runner, _ = self._incus([{"name": "obcy", "status": "Running", "config": {}},
+                                 {"name": "tide-1", "status": "Running", "config": STAMPED}], self._no_bus)
+        host = self._system_host(True, runner)
+        sim = Sim(self.root)
+        host.clock, host.sleep = sim.clock, sim.sleep
+        idle = prod.wait_idle(host, 30.0, poll_s=15.0)
+        self.assertTrue(idle["reached"])
+        self.assertIsNone(idle["readError"])
+        self.assertEqual(len(idle["boxNotes"]), 1)
+        self.assertIn("tide-1", idle["boxNotes"][0])
+        self.assertEqual(idle["ignoredInstances"], ["obcy"])
+
+    def test_wait_idle_incus_list_failure_is_invalid(self):
+        def runner(argv, **kwargs):
+            return self._done("") if argv[0] == "systemctl" else self._done("", code=1)
+        host = self._system_host(True, runner)
+        sim = Sim(self.root)
+        host.clock, host.sleep = sim.clock, sim.sleep
+        idle = prod.wait_idle(host, 30.0, poll_s=15.0)
+        self.assertFalse(idle["reached"])
+        self.assertTrue(idle["readError"])
+
+    def test_wait_idle_tide_box_exec_error_is_invalid(self):
+        runner, _ = self._incus([{"name": "tide-1", "status": "Running", "config": STAMPED}],
+                                lambda argv: subprocess.CompletedProcess(argv, 1, "", "inny błąd"))
+        host = self._system_host(True, runner)
+        sim = Sim(self.root)
+        host.clock, host.sleep = sim.clock, sim.sleep
+        idle = prod.wait_idle(host, 30.0, poll_s=15.0)
+        self.assertFalse(idle["reached"])
+        self.assertIn("inny błąd", idle["readError"])
+
+    def test_box_disabled_has_no_incus_calls_and_empty_notes(self):
+        host = self._system_host(False, lambda argv, **kw: self._done(""))
+        sim = Sim(self.root)
+        host.clock, host.sleep = sim.clock, sim.sleep
+        idle = prod.wait_idle(host, 0.0, poll_s=15.0)
+        self.assertEqual((idle["boxNotes"], idle["ignoredInstances"]), ([], []))
+        self.assertTrue(all(c.args[0][0] == "systemctl" for c in prod.subprocess.run.call_args_list))
+
+    def test_fake_host_without_new_attributes_gives_empty_fields(self):
+        host = FakeHost(Sim(self.root), self.root)
+        idle = prod.wait_idle(host, 0.0, poll_s=15.0)
+        self.assertEqual((idle["boxNotes"], idle["ignoredInstances"]), ([], []))
 
 
 if __name__ == "__main__":

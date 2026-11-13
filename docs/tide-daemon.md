@@ -956,8 +956,12 @@ w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i rap
 1. Po `make install` i restarcie usługi (nie w trakcie pracy agentów): `/usr/bin/python3 scripts/measure_idle_prod.py
    --out ~/pomiar-k105-box-<false|true>.json`. Skrypt sprawdza loadavg i **wymaga ciągłego postoju bez kroków w toku przez
    10 min** (`--wait-idle-min`, kryterium M0) przed rozgrzewką: odpytuje tylko odczyty kroków (bez żądań do usługi), a każdy
-   krok zeruje licznik. Kroki szuka na hoście (`systemctl --user`) i — przy `box.enabled=true` — w uruchomionych
-   pudełkach (`incus exec … systemctl --user`, jak usługa); błąd odczytu unieważnia pomiar, nie oznacza „bez kroków”.
+   krok zeruje licznik. Kroki szuka na hoście (`systemctl --user`) i — przy `box.enabled=true` — tylko w uruchomionych
+   **pudełkach Tide** (`incus exec … systemctl --user`), czyli instancjach z niepustym odciskiem przepisu `user.tide.recipe`
+   (tak jak w usłudze). Obce działające instancje (bez odcisku) są pomijane bez `incus exec` i wymienione w wyniku
+   (`idle.ignoredInstances`). Pudełko Tide bez magistrali użytkownika (`Failed to connect to bus`) nie ma kroków: skrypt
+   zapisuje uwagę w `idle.boxNotes` (raz na pudełko), a pomiar pozostaje ważny. Każdy inny błąd (`incus list`, `incus exec`,
+   przekroczony czas, błąd odczytu) unieważnia pomiar, nie oznacza „bez kroków”.
    Czas postoju podany przez właściciela (`--owner-idle-min`, zapisywany w wyniku jako niezweryfikowany) zalicza się do
    wymaganych 10 min (skraca czekanie tylko o tyle, nie je zastępuje). Po `--max-wait-min` (domyślnie 30) bez osiągnięcia
    postoju wynik jest nieważny. Dalej rozgrzewka, 10 okien CPU `MainPID` na czystym postoju, potem osobno próbnik 60 s (przez plik żądania usługi) i seria

@@ -43,6 +43,7 @@ SERVICE = "org.tide.Daemon"
 DEFAULT_WAIT_IDLE_MIN = 10.0
 POLL_S = 15.0
 NOT_SET = (2 ** 64 - 1,)
+NO_BUS = "Failed to connect to bus"
 
 
 def forbidden_output(path):
@@ -52,6 +53,16 @@ def forbidden_output(path):
     board = os.path.realpath(os.environ.get("TIDE_BOARD_DIR") or os.path.join(home, "DevWorkspace", "tide-board"))
     blocked = [os.path.join(home, ".local", "share"), os.path.join(home, ".config"), board]
     return next((b for b in blocked if real == b or real.startswith(b + os.sep)), None)
+
+
+def _is_tide_box(item, state):
+    """Pudełko Tide jak w usłudze: niepusty odcisk `user.tide.recipe` (słownik z niepustym `hash` albo sam hash)."""
+    config = item.get("config")
+    raw = config.get(state.RECIPE_KEY) if isinstance(config, dict) else None
+    stamp = state.parse_stamp(raw) if isinstance(raw, str) else None
+    if isinstance(stamp, dict):
+        stamp = stamp.get("hash")
+    return isinstance(stamp, str) and bool(stamp.strip())
 
 
 class HostReadError(RuntimeError):
@@ -65,6 +76,13 @@ class SystemHost:
         self.unit = unit
         self.board = board or os.environ.get("TIDE_BOARD_DIR") or os.path.expanduser("~/DevWorkspace/tide-board")
         self.clock, self.sleep = time.monotonic, time.sleep
+        self._box_notes, self._ignored = {}, set()      # uwagi (raz na pudełko) i obce instancje z całego czekania
+
+    def box_notes(self):
+        return [self._box_notes[name] for name in sorted(self._box_notes)]
+
+    def ignored_instances(self):
+        return sorted(self._ignored)
 
     def show(self, prop):
         done = subprocess.run(["systemctl", "--user", "show", "-p", prop, "--value", self.unit],
@@ -81,27 +99,34 @@ class SystemHost:
 
     def active_steps(self):
         """Jednostki kroków i poleceń `outside` w toku (tylko odczyt, bez wywołań usługi): na hoście `systemctl --user`,
-        a przy `box.enabled=true` także w pudełkach (`incus exec … systemctl --user`, jak usługa). Błąd odczytu
-        zgłasza `HostReadError` — pomiar jest wtedy nieważny, a nie „bez kroków”."""
+        a przy `box.enabled=true` także w działających **pudełkach Tide** (`incus exec … systemctl --user`, jak
+        usługa). Pudełko Tide to instancja z niepustym odciskiem przepisu `user.tide.recipe` w `config` (jak w usłudze:
+        `state.RECIPE_KEY` i `state.parse_stamp`); działające instancje bez odcisku są obce — bez `incus exec`, tylko
+        wymienione w `ignored_instances()`. Pudełko Tide bez magistrali użytkownika (kod ≠ 0 i `Failed to connect to
+        bus` w stderr) nie ma kroków — to uwaga w `box_notes()` (raz na pudełko), pomiar pozostaje ważny. Każdy inny
+        błąd odczytu zgłasza `HostReadError` — pomiar jest wtedy nieważny, a nie „bez kroków”."""
         steps = self._list_units(["systemctl"], "host")
         if self.box_enabled():
             steps += self._box_steps()
         return steps
 
-    def _list_units(self, prefix, label):
+    def _list_units(self, prefix, label, box=None):
         argv = [*prefix, "--user", "list-units", "--plain", "--no-legend", "--state=active,activating",
                 "tide-step-*", "tide-outside-*"]
         try:
             done = subprocess.run(argv, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as exc:
             raise HostReadError(f"odczyt kroków ({label}) nie powiódł się: {exc}")
+        if done.returncode != 0 and box and NO_BUS in (done.stderr or ""):
+            self._box_notes.setdefault(box, f"pudełko {box}: brak magistrali użytkownika ({NO_BUS}) — bez kroków")
+            return []
         if done.returncode != 0:
             raise HostReadError(f"odczyt kroków ({label}): kod {done.returncode}: {done.stderr.strip()[:200]}")
         return [f"{label}:{line.split()[0]}" for line in done.stdout.splitlines() if line.strip()]
 
     def _box_steps(self):
         sys.path.insert(0, os.path.join(REPO, "daemon"))
-        from tide_daemon.box import settings            # noqa: E402
+        from tide_daemon.box import settings, state     # noqa: E402
         cfg = settings.load()
         binary = os.environ.get("TIDE_INCUS_BIN") or "incus"
         try:
@@ -117,10 +142,13 @@ class SystemHost:
             name = item.get("name") if isinstance(item, dict) else None
             if not name or str(item.get("status", "")).lower() != "running":
                 continue
+            if not _is_tide_box(item, state):
+                self._ignored.add(name)                 # obca instancja: bez `incus exec`
+                continue
             prefix = [binary, "exec", "--project", cfg.project, name, "-T", "--user", str(cfg.agent_uid),
                       "--group", str(cfg.agent_gid), "--", "/usr/bin/env", "-i",
                       f"XDG_RUNTIME_DIR=/run/user/{cfg.agent_uid}", "systemctl"]
-            steps += self._list_units(prefix, "box:" + name)
+            steps += self._list_units(prefix, "box:" + name, box=name)
         return steps
 
     def box_enabled(self):
@@ -187,6 +215,7 @@ def wait_idle(host, need_s, owner_idle_min=None, max_wait_s=None, poll_s=POLL_S)
     credit = max(0.0, (owner_idle_min or 0.0) * 60.0)
     started = host.clock()
     idle_since, steps, error, resets = None, [], None, 0
+    notes, ignored = set(), set()
     while True:
         now = host.clock()
         try:
@@ -194,6 +223,9 @@ def wait_idle(host, need_s, owner_idle_min=None, max_wait_s=None, poll_s=POLL_S)
         except HostReadError as exc:
             error = str(exc)
             break
+        finally:
+            notes.update(getattr(host, "box_notes", list)())
+            ignored.update(getattr(host, "ignored_instances", list)())
         if steps:
             idle_since, credit, resets = None, 0.0, resets + 1     # krok w toku: postój liczy się od nowa
         elif idle_since is None:
@@ -209,6 +241,7 @@ def wait_idle(host, need_s, owner_idle_min=None, max_wait_s=None, poll_s=POLL_S)
     reached = error is None and not steps and idle_since is not None and idle_s >= need_s
     return {"stepsAtCheck": steps, "waitedS": round(now - started, 1), "requiredIdleS": need_s,
             "idleS": round(idle_s, 1), "reached": reached, "stepResets": resets, "readError": error,
+            "boxNotes": sorted(notes), "ignoredInstances": sorted(ignored),
             "ownerIdleMinutes": owner_idle_min,
             "ownerIdleNote": "czas postoju podany przez właściciela, niezweryfikowany; zaliczony do wymaganego postoju"
             if owner_idle_min is not None else None}
