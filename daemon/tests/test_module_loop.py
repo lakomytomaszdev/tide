@@ -135,15 +135,20 @@ class ModuleLoopTest(unittest.TestCase):
                 self.assertIn(f"Tryb: odtworzenie: {label}", files["report.md"])
                 self.assertIn("NIE jest dowód", files["report.md"])
 
-    def test_slow_mode_passes_seed_per_run_without_burners(self):
+    def test_slow_mode_passes_seed_per_run_without_burners_and_is_not_proof(self):
         env = Env([QUIET], [{}])
         summary, code, files = self.loop(env, mode="slow", slow_seed="417")
-        self.assertEqual(code, 0)
+        # Powolny silnik jest eksperymentalny (kalibracja PT-366 nieudana): N/N zielonych to nie dowód.
+        self.assertEqual(code, module_loop.EXIT_REPRODUCTION)
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["mode_kind"], "eksperyment")
+        self.assertIn("Tryb eksperymentalny", files["report.md"])
+        self.assertIn("tryb eksperymentalny: brak porażki, ale to NIE jest dowód", files["report.md"])
         self.assertEqual(env.envs, [{"TIDE_TEST_SLOW": f"domyslny:417:{n}"} for n in (1, 2, 3)])
         self.assertEqual([run["seed"] for run in summary["runs"]], [f"domyslny:417:{n}" for n in (1, 2, 3)])
         self.assertIsNone(FakeBurners.last, "powolny silnik nie uruchamia palników")
         self.assertEqual((summary["burners"], summary["threshold"]), (0, None))
-        self.assertIn("Tryb: dowód: powolny-silnik", files["report.md"])
+        self.assertIn("Tryb: eksperyment: powolny-silnik", files["report.md"])
         self.assertIn("| domyslny:417:2 |", files["report.md"])
 
     def test_slow_mode_without_seed_records_generated_seed(self):

@@ -414,7 +414,7 @@ SIGTERM, grupy procesów; `PR_SET_PDEATHSIG` zabija także palnik wstrzymany po 
 
 ```sh
 /usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py              # dowód: palniki ograniczone
-/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --slow 417   # dowód: powolny silnik
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --slow 417   # eksperyment: powolny silnik
 /usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --reproduce  # odtworzenie: palniki 1,5×
 /usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --pool       # odtworzenie: pula
 /usr/bin/python3 tools/module_loop.py <moduł> --pool --with <moduł…> --runs 2 --output <katalog>
@@ -428,9 +428,10 @@ Wspólne parametry: `--runs`, `--wait` (najdłuższy czas dojścia do progu, s),
 Dowód stabilności testu ma mierzyć wyścigi w teście, a nie przeciążenie maszyny (08–12.11 pętle 20× trybu puli
 przy loadavg 50–90 trwały godzinami i padały z przeciążenia). Dowód poprawki niestabilnego testu to:
 
-1. **20 przebiegów w trybie dowodowym** — palniki ograniczone albo powolny silnik — N/N ważnych z zielonym
-   badanym modułem (kod 0). Moduły z usługą przez prywatną magistralę D-Bus dowodzą palnikami ograniczonymi,
-   gdy powolny silnik nie odtwarza dla nich porażki (notka kalibracji K-100, PT-417).
+1. **20 przebiegów palnikami ograniczonymi** (jedyny tryb dowodowy) — N/N ważnych z zielonym badanym modułem
+   (kod 0). Powolny silnik (`--slow`) jest eksperymentalny: w kalibracji PT-417 (trzy serie w oknie ciszy
+   12/13.11) nie odtworzył znanej porażki PT-366, więc nie daje dowodu. Kalibracja jest pozycją następczą:
+   [followups/slow-engine-calibration.md](agents/plans/followups/slow-engine-calibration.md).
 2. **W oknie ciszy:** loadavg1 przed palnikami < 8 i żadne inne polecenie `outside` nie trwa. Pętle uruchamiamy
    w oknach: noc **23:30–06:00 z czwartku na piątek i z piątku na sobotę** oraz **sobota 06:00–09:00**.
 3. **Pula (`--pool`) i palniki 1,5× (`--reproduce`) tylko do odtworzenia** porażki; nie dają kodu 0 i nie są
@@ -450,7 +451,9 @@ przy loadavg 50–90 trwały godzinami i padały z przeciążenia). Dowód popra
   aż do wstrzymania wszystkich. Cel: `--target` (domyślnie liczba rdzeni dostępnych procesowi), próg startu
   przebiegu: 0,8 × cel (`--threshold`). Raport podaje maksimum loadavg1 z próbek i zakres czynnych palników;
   maksimum ponad cel to ostrzeżenie (gdy cel przekracza sam test, palniki są już wstrzymane).
-- **Dowód — powolny silnik (`--slow [ZIARNO]`):** bez palników. Każdy przebieg dostaje
+- **Eksperyment — powolny silnik (`--slow [ZIARNO]`):** nieskalibrowany, nie daje dowodu ani kodu 0 (raport
+  mówi to wprost; kod 4 przy braku porażki). Służy do szukania kolejności zdarzeń i dalszej kalibracji
+  ([followups/slow-engine-calibration.md](agents/plans/followups/slow-engine-calibration.md)). Bez palników. Każdy przebieg dostaje
   `TIDE_TEST_SLOW=<profil>:<ziarno>:<numer przebiegu>` (profil `--slow-profile`, domyślnie `domyslny`; ziarno
   bez wartości — z zegara), a fikstury i atrapy `daemon/tests/` wstrzykują deterministyczne opóźnienia
   (`daemon/tests/slowengine.py`), które wymuszają kolejności zdarzeń losowane zwykle przez obciążenie. Raport
@@ -490,8 +493,8 @@ loadavg1 poniżej progu w trakcie lub na końcu (krótki moduł, przejścia uruc
 
 ### Raport i kody wyjścia
 
-Raport (`summary.json`, `report.md`): SHA, polecenie, tryb (`dowód: palniki-ograniczone | powolny-silnik`,
-`odtworzenie: palniki-1,5x | pula`), badany moduł i towarzysze, `[OSOBNO]`, rdzenie, palniki, cel i próg
+Raport (`summary.json`, `report.md`): SHA, polecenie, tryb (`dowód: palniki-ograniczone`,
+`eksperyment: powolny-silnik`, `odtworzenie: palniki-1,5x | pula`), badany moduł i towarzysze, `[OSOBNO]`, rdzenie, palniki, cel i próg
 loadavg1, `JOBS`, profil i ziarno powolnego silnika, okno ciszy (loadavg przed palnikami, wykryte inne
 `outside`: karta, krok, polecenie), a dla przebiegu: ziarno, loadavg 1/5/15 na starcie i końcu, minimum
 i maksimum loadavg1 z próbek, zakres czynnych palników, ważność i powody nieważności (z innymi `outside`:
@@ -500,8 +503,8 @@ modułu i towarzyszy. Porażki towarzyszy nie zmieniają kodu, ale raport je lic
 
 Kody: **0** — dowód: N/N ważnych przebiegów z zielonym badanym modułem w trybie dowodowym; **1** — porażka
 badanego modułu albo nieważny przebieg; **2** — błąd (próg nieosiągnięty przed pierwszym przebiegiem,
-przerwanie); **3** — poza oknem ciszy; **4** — tryb odtworzenia bez porażki (raport mówi wprost, że to nie jest
-dowód). Testy: `daemon/tests/test_module_loop.py` (narzędzie), `daemon/tests/test_slowengine.py` (powolny silnik).
+przerwanie); **3** — poza oknem ciszy; **4** — tryb odtworzenia albo eksperymentalny bez porażki (raport mówi
+wprost, że to nie jest dowód). Testy: `daemon/tests/test_module_loop.py` (narzędzie), `daemon/tests/test_slowengine.py` (powolny silnik).
 
 ### Punkt opóźnienia powolnego silnika
 

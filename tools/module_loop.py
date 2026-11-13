@@ -7,8 +7,9 @@ wywołuje unittest samo. Tryby:
 - dowód — palniki ograniczone (domyślny): palniki w czystym Pythonie trzymają loadavg1 w paśmie 0,8–1,0 × cel
   (domyślnie liczba rdzeni), nigdy powyżej — regulacja liczbą czynnych palników (SIGSTOP/SIGCONT) z liczbą
   procesów gotowych do biegu, w tym procesów samego testu;
-- dowód — powolny silnik (`--slow [ZIARNO]`): bez palników; uruchamiacz dostaje `TIDE_TEST_SLOW=<profil>:<ziarno>:
-  <przebieg>`, a fikstury i atrapy `daemon/tests/` wstrzykują deterministyczne opóźnienia (tests/slowengine.py);
+- eksperyment — powolny silnik (`--slow [ZIARNO]`): bez palników; uruchamiacz dostaje `TIDE_TEST_SLOW=<profil>:
+  <ziarno>:<przebieg>`, a fikstury i atrapy `daemon/tests/` wstrzykują deterministyczne opóźnienia
+  (tests/slowengine.py). Tryb nieskalibrowany (PT-417: nie odtworzył porażki PT-366), więc nie daje dowodu;
 - odtworzenie — palniki 1,5× (`--reproduce`): ⌈1,5 × rdzenie⌉ palników bez regulacji, badany moduł sam;
 - odtworzenie — pula (`--pool`): badany moduł z towarzyszami w jednym wywołaniu uruchamiacza, palniki 1,5×.
 
@@ -19,8 +20,8 @@ ciszy (domyślnie 8) albo trwało inne `outside`.
 
 Raport (`summary.json`, `report.md`) trafia do katalogu wyjścia. Kody wyjścia: 0 — dowód: N/N ważnych przebiegów
 z zielonym badanym modułem w trybie dowodowym; 1 — porażka albo nieważny przebieg; 2 — błąd (próg obciążenia
-nieosiągnięty przed pierwszym przebiegiem, przerwanie); 3 — poza oknem ciszy; 4 — tryb odtworzenia bez porażki
-(to nie jest dowód). Instrukcja: docs/testing.md, „Pętla przebiegów modułu pod obciążeniem”.
+nieosiągnięty przed pierwszym przebiegiem, przerwanie); 3 — poza oknem ciszy; 4 — tryb odtworzenia albo
+eksperymentalny bez porażki (to nie jest dowód). Instrukcja: docs/testing.md, „Pętla przebiegów modułu pod obciążeniem”.
 """
 import argparse
 import json
@@ -70,11 +71,11 @@ DEFAULT_COMPANIONS = (
 # Tryb → (rodzaj, nazwa w raporcie). Tylko rodzaj „dowód” może dać kod 0.
 MODES = {
     "bounded": ("dowód", "palniki-ograniczone"),
-    "slow": ("dowód", "powolny-silnik"),
+    "slow": ("eksperyment", "powolny-silnik"),     # nieskalibrowany (PT-417, followups/slow-engine-calibration.md)
     "burners": ("odtworzenie", "palniki-1,5x"),
     "pool": ("odtworzenie", "pula"),
 }
-PROOF, REPRODUCTION = "dowód", "odtworzenie"
+PROOF, REPRODUCTION, EXPERIMENT = "dowód", "odtworzenie", "eksperyment"
 BAND = (0.8, 1.0)            # pasmo loadavg1 palników ograniczonych względem celu
 AIM = 0.9                    # liczba procesów gotowych, do której dąży regulacja (× cel)
 START_LIMIT = 1.5            # loadavg1 na starcie > START_LIMIT × rdzenie → przebieg nieważny
@@ -618,7 +619,8 @@ def _verdict(summary):
     if not summary["quiet"]:
         return f"POZA OKNEM CISZY — wszystkie przebiegi nieważne (kod {summary['exit_code']})"
     if summary["exit_code"] == EXIT_REPRODUCTION:
-        return f"tryb odtworzenia: brak porażki, ale to NIE jest dowód (kod {summary['exit_code']})"
+        what = "tryb eksperymentalny" if summary["mode_kind"] == EXPERIMENT else "tryb odtworzenia"
+        return f"{what}: brak porażki, ale to NIE jest dowód (kod {summary['exit_code']})"
     return f"NIEZALICZONE (kod {summary['exit_code']})"
 
 
@@ -640,6 +642,10 @@ def write_report(summary, output):
     if summary["mode_kind"] == REPRODUCTION:
         lines.append("- **Tryb odtworzenia:** służy do odtwarzania porażki; wynik nie jest dowodem stabilności "
                      "i nigdy nie daje kodu 0.")
+    if summary["mode_kind"] == EXPERIMENT:
+        lines.append("- **Tryb eksperymentalny:** powolny silnik nie jest skalibrowany (nie odtworzył znanej porażki "
+                     "PT-366); wynik nie jest dowodem stabilności i nigdy nie daje kodu 0. Dowód K-100: palniki "
+                     "ograniczone.")
     if summary["mode"] == "pool":
         full = summary["parallel_modules"] >= summary["jobs"]
         lines.append(f"- Moduły równoległe w wywołaniu: {summary['parallel_modules']} przy JOBS={summary['jobs']} "
@@ -678,7 +684,8 @@ def build_parser():
     parser.add_argument("--runs", type=int, default=20, help="liczba przebiegów (domyślnie 20)")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--slow", nargs="?", const="", metavar="ZIARNO",
-                       help="dowód: powolny silnik bez palników (ziarno domyślnie z zegara, zapisane w raporcie)")
+                       help="eksperyment (bez dowodu, nieskalibrowany): powolny silnik bez palników "
+                            "(ziarno domyślnie z zegara, zapisane w raporcie)")
     modes.add_argument("--reproduce", action="store_true",
                        help="odtworzenie: ⌈1,5 × rdzenie⌉ palników bez regulacji (nie daje dowodu)")
     modes.add_argument("--pool", action="store_true",
