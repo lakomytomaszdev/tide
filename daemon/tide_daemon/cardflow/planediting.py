@@ -76,11 +76,11 @@ class PlanEditing:
             options.sort(key=lambda e: (e.name == author.name, tuple(e.classes) == ("lekki",),
                                         e.provider != author.provider))
             if not options:
-                from .engine import FlowError
+                from .errors import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
             selected_name = st.plan_reviewer or options[0].name
             if selected_name not in {e.name for e in options}:
-                from .engine import FlowError
+                from .errors import FlowError
                 raise FlowError("bad-reviewer", "wybierz niezależnego recenzenta autora tej wersji planu")
             selected = execution.resolve(selected_name, catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-review", self._review_prompt(card, proposal))
@@ -109,7 +109,7 @@ class PlanEditing:
                 raise ValueError("verdict musi być APPROVE albo REQUEST_CHANGES")
             report["findings"] = review_findings.normalize(report.get("findings"))
         except (OSError, ValueError, AttributeError) as error:
-            from .engine import FlowError
+            from .errors import FlowError
             reason = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else ""
             raise FlowError("bad-plan-review", "recenzent nie zapisał poprawnego plan-review.json"
                             + (f": {reason}" if reason else "")) from None
@@ -308,7 +308,7 @@ class PlanEditing:
     def _returned_feedback(request):
         """Tekst dla planującego z odesłania: zaznaczone uwagi recenzenta (`findings`) i/lub własny tekst
         (`feedback`). Niezaznaczone uwagi okno w ogóle nie przysyła."""
-        from .engine import FlowError
+        from .errors import FlowError
         own = request.get("feedback", "")
         if own is None:
             own = ""
@@ -328,7 +328,7 @@ class PlanEditing:
         (PT-146, tylko z silnika, nie z D-Bus): ta sama walidacja i te same zapisy, `plan.returned` dostaje pola
         `caretaker`/`caretakerStep`/`caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
         (`_advance_user_revision`), poza parą „zamiar → wynik” akcji opiekuna."""
-        from .engine import FlowError
+        from .errors import FlowError
         self._require_base_context(card)
         if request.get("action") == "return":
             self._returned_feedback(request)
@@ -450,7 +450,7 @@ class PlanEditing:
 
     def _bootstrap_direct_plan(self, card, st):
         """Jednoticketowe wejście „Od razu” dostaje bazę planu dopiero przy żądaniu poprawek."""
-        from .engine import FlowError
+        from .errors import FlowError
         item, _project = self._project(card)
         source = next((s for s in st.steps.values() if s.get("kind") == "ticket"), None)
         if not source:
@@ -560,7 +560,7 @@ class PlanEditing:
             # Wynik niezależnego review nadal towarzyszy poprawianemu planowi; nowa propozycja jest oceniana ponownie.
 
     def _approve_revision(self, card, st):
-        from .engine import FlowError
+        from .errors import FlowError
         if not st.plan_reviewed:
             raise FlowError("review-pending", "różnica czeka na review planu")
         if not st.plan_approved:

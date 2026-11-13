@@ -461,7 +461,8 @@ def only_plan_reply(engine, card_id: str, plan: dict) -> dict:
 
 def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     """`ApproveCardEnvironment(card, yaml, onlyPlan)`; wynik JSON-owy dla D-Bus."""
-    from .engine import FlowError, fold
+    from .errors import FlowError
+    from .state import fold
     from ..board.model import card_num
     try:
         card_id = f"K-{card_num(card_id)}"
@@ -527,7 +528,7 @@ def _record_disabled(engine, prepared: Prepared, plan: dict) -> dict:
     Zapisuje profile w Tablicy i `box.approved`, niczego nie usuwa (wcześniejsze zgody, propozycje i historia zostają).
     Nie kopiuje paczek, nie zleca budowy ani startu, nie woła Incusa i nie czyści `boxWait`. Zgoda na środowisko
     zostaje odroczona: po włączeniu pudełka trzeba ją potwierdzić (wtedy dopiero kopia paczek i budowa)."""
-    from .engine import fold
+    from .state import fold
     slug, card_id = prepared.slug, prepared.card_id
     saved = []
     if prepared.new_project:
@@ -586,7 +587,7 @@ def status(engine, slug: str, card: str = "", published=None) -> dict:
     mutacji; odpowiedź niesie `version` tej migawki. Stan pudełka i slotu to bieżący odczyt hosta (Incus, dziennik
     pudełka, `admission.view` — bez zapisu). Bez `published` (silnik bez BoardMonitor) — świeży odczyt Tablicy
     i dzienników kart."""
-    from .engine import fold
+    from .state import fold
     from . import boxcontrol
     board = published.board if published is not None else engine.store.load()
     card, name = boxcontrol.target(engine, slug, card, board=board)

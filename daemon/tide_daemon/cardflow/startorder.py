@@ -47,7 +47,7 @@ def generation(engine, card, log=None):
 
 
 def projection(engine, card, order_id):
-    from .engine import FlowError
+    from .errors import FlowError
     try:
         log = events(engine, card)
         st = fold(log)
@@ -83,7 +83,7 @@ def projection(engine, card, order_id):
 
 
 def start(engine, card, request, *, resume=False, order=None):
-    from .engine import FlowError
+    from .errors import FlowError
     log = events(engine, card)
     if resume:
         return engine._start(card, request, _resume=True)

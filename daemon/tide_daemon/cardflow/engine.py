@@ -89,7 +89,7 @@ from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
-from . import baseproposal, planartifacts
+from . import baseproposal, planartifacts, stepresults
 from .mergepreview import source_dirty
 from .mergeop import MergeWorktree
 from .journal import HistoryChanged, Journal
@@ -98,13 +98,14 @@ from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, ticket_waits, _epoch, _bookkeeping, approval_live)
 from .tracker import TrackerOutbox
+from .errors import FlowDeferred, FlowError  # noqa: F401  (te same obiekty co w errors.py; dotychczasowe nazwy)
 
 GUARD_MINUTES = 15.0
 TIMEOUT_MINUTES = 240.0
 SETTINGS_FILE = "cardflow.json"
 DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
 MAX_PROVIDER_SLOTS = 12
-RESULTS = ("done", "question", "denied", "error", "outside")
+RESULTS = stepresults.RESULTS      # ta sama krotka co w stepresults.py (PT-462)
 # Kroki, których kartka podaje testy: każdy ich start i wznowienie liczy politykę przez `step_test_policy` (PT-287).
 # Konflikt (PT-284): baza = przypięty punkt startu scalanego ticketu, nie wierzchołek karty.
 TEST_POLICY_KINDS = ("ticket", "fix", "review", "close", "conflict")
@@ -191,10 +192,6 @@ def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
     chosen = st.reviewer_overrides.get(step.get("ticket") or "") or {}
     newer = chosen.get("seq", 0) > max(step.get("seq", 0), decision.get("seq", 0) or 0)
     return chosen.get("reviewer") or "" if newer and chosen.get("reviewer") not in ("", None, current) else ""
-
-class FlowDeferred(Exception):
-    """Krok czeka na wolne miejsce; nie jest to błąd karty."""
-
 
 class _ProviderOnly:
     """Wybór wykonawcy sprowadzony do dostawcy: wpis kolejki innej karty (`stepqueue`) przy sprawdzaniu rezerwacji
@@ -362,13 +359,6 @@ def review_question(ticket: str, round_no: int, review_md: str) -> str:
     return (f"{ticket}: po {round_no} rundach review zostały uwagi:\n{listed}\n"
             "Zwykle: „Ponów poprawki”, gdy uwagi dotyczą kodu. „Scal mimo uwag” tylko gdy dotyczą środowiska "
             "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
-
-class FlowError(Exception):
-    def __init__(self, code: str, message: str, data: dict | None = None):
-        super().__init__(message)
-        self.code = code
-        self.data = data or {}     # dodatkowe pola odpowiedzi (np. `reviews` przy `ambiguous-review`)
-
 
 class _CaretakerPort:
     """Port silnika dla `caretaker.ACTIONS[…].apply` (PT-143): jedyne miejsca, w których akcja opiekuna zmienia
@@ -6985,98 +6975,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)
 
+    # Odczyt wyniku kroku mieszka w stepresults.py (PT-462); metody zostają jako punkty wywołań i patchowania.
     @staticmethod
     def _raw_result(path: str):
         """Plik wyniku opiekuna: obiekt JSON, None (brak pliku) albo "" (za duży albo nie JSON)."""
-        try:
-            if os.path.getsize(path) > OUTPUT_MAX or os.path.islink(path):
-                return ""
-            with open(path, encoding="utf-8") as fh:
-                return json.load(fh)
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError, UnicodeError):
-            return ""
+        return stepresults.raw_result(path)
 
     @staticmethod
     def _result(path: str) -> dict:
-        try:
-            if os.path.getsize(path) > OUTPUT_MAX:
-                return {"result": "error", "reason": "bad-result"}
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except FileNotFoundError:
-            return {"result": "error", "reason": "no-result"}
-        except (OSError, ValueError):
-            return {"result": "error", "reason": "bad-result"}
-        if not isinstance(data, dict) or data.get("result") not in RESULTS:
-            return {"result": "error", "reason": "bad-result"}
-        if (data["result"] == "question" and
-                (not isinstance(data.get("question"), str) or not data["question"].strip())) or \
-                (data["result"] in ("denied", "outside") and
-                 (not isinstance(data.get("command"), str) or not data["command"].strip() or
-                  any(c in data["command"] for c in "\n\r\0"))):
-            return {"result": "error", "reason": "bad-result"}
-        notes = data.get("notes") if isinstance(data.get("notes"), list) else []
-        if data["result"] == "outside":
-            # Prośba o uruchomienie poza piaskownicą idzie ścieżką zgody na polecenie (dziennik, decyzja,
-            # wznowienie, restart), z flagą `outside` — wynik polecenia dostaje wznowiony krok (03.11).
-            # `exclusive` (K-39 #6, PT-376): polecenie wymaga ciszy; zły typ to `false`, nie błąd wyniku.
-            return {"result": "denied", "outside": True, "reason": str(data.get("reason") or "")[:600],
-                    "question": "", "command": data["command"].strip(),
-                    "exclusive": heavyqueue.exclusive_of(data.get("exclusive")),
-                    "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
-        return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
-                "exclusive": heavyqueue.exclusive_of(data.get("exclusive")) if data["result"] == "denied" else False,
-                "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
-                "options": clean_options(data.get("options")) if data["result"] == "question" else [],
-                "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
-                "waitFor": str(data.get("waitFor") or "").strip()[:32]
-                if data["result"] in ("question", "error") and isinstance(data.get("waitFor"), str) else "",
-                "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
+        return stepresults.step_result(path)
 
     @staticmethod
     def _claude_denied_command(path: str) -> str:
         """Końcowa odmowa Bash w CLI jest wynikiem `denied`, gdy agent nie zapisał własnego JSON."""
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    if len(line) > OUTPUT_MAX or '"permission_denials"' not in line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(event, dict) or event.get("type") != "result":
-                        continue
-                    for denial in event.get("permission_denials") or []:
-                        if not isinstance(denial, dict) or denial.get("tool_name") != "Bash":
-                            continue
-                        tool_input = denial.get("tool_input") or {}
-                        command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-                        if isinstance(command, str) and command.strip() and not any(c in command for c in "\n\r\0"):
-                            return command.strip()
-        except OSError:
-            pass
-        return ""
+        return stepresults.claude_denied_command(path)
 
     @staticmethod
     def _review_result(path: str) -> dict | None:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            return None
-        if not isinstance(data, dict) or data.get("result") != "done":
-            return None
-        verdict = data.get("verdict")
-        counts = [data.get(key) for key in ("blockers", "majors", "nits")]
-        if verdict not in ("APPROVE", "REQUEST_CHANGES") or any(
-            isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 999 for n in counts):
-            return None
-        if (verdict == "APPROVE") != (counts[0] == 0 and counts[1] == 0):
-            return None
-        return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
+        return stepresults.review_result(path)
 
     def _merge(self, card: str, st: FlowState, step: dict, retry: bool = False) -> None:
         if baseproposal.blocked(st):

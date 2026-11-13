@@ -27,7 +27,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .board.model import BoardError, card_num
-from .cardflow.engine import FlowError
+from .cardflow.errors import FlowError
 from .resources import ResourceError
 
 POLL_MS = 5_000

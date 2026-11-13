@@ -410,6 +410,17 @@ gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. 
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
 
+## Raport zależności testów od silnika
+
+`python3 tools/test_dependencies.py` (`--json`, `--root <drzewo>`) wypisuje dla `engine.py` i każdego pliku
+`daemon/tide_daemon/cardflow/` zasięg (moduły testów osiągalne w grafie importów AST, pewne / z potencjalnymi),
+„sięga silnika” z najkrótszym łańcuchem, „testy własne” (osiągalność bez węzła `engine.py`) i oznaczenia doboru
+`pełny` / `fallback` / `kontrakt`. Pod tabelą: moduły `cardflow/` (bez `engine.py`) bez drogi do silnika oraz moduły
+testów zestawu cardflow niesięgające silnika. Zasięg **nie jest** doborem `make test-changed` i jest dziś prawie stały
+(silnik sięga prawie wszystkiego), więc regułę „moduł nie importuje silnika” mierzy kolumna „sięga silnika” i jej suma.
+Narzędzie nie importuje analizowanego kodu; definicje zestawów bierze z własnego drzewa, pliki z `--root`.
+Regułę pilnuje `daemon/tests/test_cardflow_engine_boundary.py` (jawna lista modułów, porażka pokazuje łańcuch importów).
+
 ## Ponowienie padniętych modułów
 
 Etap A oszczędzania czasu testów (06.11.2026: 31% czasu testów ticketów to były powtórki całego zestawu na
