@@ -311,6 +311,22 @@ class StartBaseTest(StartBaseSetup):
         self.flow.engine._project_base(card)
         self.assertEqual(self.store.load().cards[int(card[2:])].base_commit, self.master)
 
+    def test_start_ref_is_a_hint_and_does_not_change_start_or_journal_base(self):
+        commit = self.feature()
+        card = self.card()
+        update = json.loads(self.board.update_card(card, json.dumps({"startRef": "refs/heads/feature/start"})))
+        self.assertTrue(update["ok"], update)
+        self.assertEqual(self.shown(card)["startRef"], "refs/heads/feature/start")
+        reply = self.start(card)           # bez baseRef: polityka gałęzi głównej, startRef jej nie zastępuje
+        self.assertTrue(reply["ok"], reply)
+        self.assert_base(card, "refs/heads/master", self.master)
+        self.assertEqual(git(reply["cardWorktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.flow.engine._project_base(card)
+        model = self.store.load().cards[int(card[2:])]
+        self.assertEqual((model.start_ref, model.base_ref, model.base_commit),
+                         ("refs/heads/feature/start", "refs/heads/master", self.master))
+        self.assertNotEqual(commit, self.master)
+
     def test_ref_moving_after_started_does_not_change_created_worktree(self):
         commit = self.feature()
         card = self.card()
