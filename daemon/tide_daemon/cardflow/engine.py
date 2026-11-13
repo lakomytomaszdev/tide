@@ -500,6 +500,20 @@ def timeout_seconds(path: str) -> float:
     return float(value) * 60.0
 
 
+def machine_load() -> tuple[list | None, int | None]:
+    """Obciążenie maszyny przy zapisie `outside.started`/`outside.finished` (K-100, PT-423): loadavg 1/5/15
+    i liczba rdzeni dostępnych usłudze. Błąd odczytu daje None w tym polu; nigdy nie przerywa zapisu."""
+    try:
+        loadavg = [round(float(value), 2) for value in os.getloadavg()]
+    except (OSError, AttributeError, ValueError):
+        loadavg = None
+    try:
+        cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    except OSError:
+        cores = os.cpu_count()
+    return loadavg, cores or None
+
+
 class FlowEngine(CaretakerChat, PlanEditing):
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
@@ -537,6 +551,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.unit_cpu = stepstop.unit_cpu_bucket
         # Strażnik opiekuna (PT-158): zamrożenie jednostki kroku na czas działania Tide (atrapa w testach).
         self.freeze_unit = stepstop.freeze_unit
+        # Odczyt obciążenia do zdarzeń outside (K-100, PT-423); w testach atrapa zwracająca (loadavg, rdzenie).
+        self.machine_load = machine_load
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -6828,17 +6844,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
         collected = self._outside_collect(card, name, started)
         if collected is not None:
             code, tail = collected
+            loadavg, cores = self._machine_load()
             with self.journal.lock:
                 self.journal.append(card, "outside.finished", step=name, ticket=step["ticket"],
-                                    command=started.get("command") or "", exit=code, tail=tail)
+                                    command=started.get("command") or "", exit=code, tail=tail, loadavg=loadavg,
+                                    cores=cores)
                 self._merge_check_finish(card, step, entry, code, started.get("log") or "")
 
     def _merge_check_finish(self, card: str, step: dict, entry: dict, code, log: str) -> None:
+        # Padnięte moduły i testy z `summary.json` uruchamiacza (K-100, PT-423); błąd odczytu daje puste listy.
+        failed_modules, failed_tests = mergecheck.failed_from_summary(log)
         with self.journal.lock:
             item = self.journal.state(card).merge_checks.get(step["ticket"]) or {}
             if (item.get("requested") or {}).get("check") == entry["check"] and item.get("finished") is None:
                 self.journal.append(card, mergecheck.FINISHED, ticket=step["ticket"], check=entry["check"], exit=code,
-                                    log=log)
+                                    log=log, failedModules=failed_modules, failedTests=failed_tests)
 
     def _merge_check_still_allowed(self, card: str, step: dict) -> bool:
         """Świeża kontrola tuż przed startem, pod blokadą dziennika: bieżąca próba nadal czeka, jej decyzja to zgoda,
@@ -6885,8 +6905,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return
             subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
                              stderr=subprocess.STDOUT, start_new_session=True)
+            loadavg, cores = self._machine_load()
             self.journal.append(card, "outside.started", step=name, ticket=step["ticket"], command=command,
-                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head)
+                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head,
+                                loadavg=loadavg, cores=cores)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)
@@ -7262,12 +7284,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if collected is None:
             return None
         code, tail = collected
+        loadavg, cores = self._machine_load()
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
-                            command=started.get("command") or "", exit=code, tail=tail)
+                            command=started.get("command") or "", exit=code, tail=tail, loadavg=loadavg, cores=cores)
         # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
         # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
         return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
                                       f"Koniec wyniku:\n{tail}"}
+
+    def _machine_load(self) -> tuple:
+        """(loadavg, rdzenie) do zapisu zdarzenia outside; dowolny błąd odczytu daje (None, None), nie przerywa zapisu."""
+        try:
+            loadavg, cores = self.machine_load()
+        except Exception:   # noqa: BLE001 — pole diagnostyczne nie może zatrzymać polecenia ani próby
+            return None, None
+        return loadavg, cores
 
     def _outside_collect(self, card: str, name: str, started: dict):
         """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
@@ -7778,8 +7809,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_history(card, step, command=requested_command)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+            loadavg, cores = self._machine_load()
             self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of)
+                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of,
+                                loadavg=loadavg, cores=cores)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)

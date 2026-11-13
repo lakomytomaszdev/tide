@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest import mock
 
-from . import DAEMON_DIR, flowfakes
+from . import DAEMON_DIR, flowfakes, slowengine
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 
 try:
@@ -85,7 +85,8 @@ class FlowCase(unittest.TestCase):
                     "XDG_CONFIG_HOME": os.path.join(self.base, "config"),
                     "TMPDIR": os.path.join(self.base, "tmp"), "PATH": fakebin + os.pathsep + "/usr/bin:/bin",
                     "GIT_CONFIG_GLOBAL": gitconfig, "GIT_CONFIG_NOSYSTEM": "1",
-                    "TIDE_SYSTEMD_RUN": os.path.join(fakebin, "systemd-run"), "TIDE_FLOW_POLL_MS": "200",
+                    "TIDE_SYSTEMD_RUN": os.path.join(fakebin, "systemd-run"),
+                    "TIDE_FLOW_POLL_MS": slowengine.poll_ms("200"),   # PT-417: powolny silnik wydłuża odpytywanie
                     "TIDE_FAKE_LOG": self.calls}
         self.service = PrivateBus("tide-flow-test")
         self.addCleanup(self.service.stop)

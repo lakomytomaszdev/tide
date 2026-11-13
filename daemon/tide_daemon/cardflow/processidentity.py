@@ -214,11 +214,13 @@ EVENTS = MappingProxyType({
         extra={"outside": Field("discriminator", "bool", domain="outside",
                                 note="prośba o polecenie outside tego kroku")}),
         start="process"),
+    # `loadavg`/`cores` (K-100, PT-423): obciążenie maszyny w chwili zapisu, bez roli dowodowej; wpisy bez nich legalne.
     "outside.started": Event("outside-start", _trace(
-        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf"),
+        writer=("ticket", "worktree"), neutral=("command", "cores", "exitFile", "head", "loadavg", "log", "rerunOf"),
         extra={"unit": OUTSIDE_UNIT_OWN})),
     "outside.finished": Event("outside-finish", _trace(
-        writer=("ticket",), neutral=("command", "exit", "tail"), extra={"unit": OUTSIDE_UNIT_INHERITED})),
+        writer=("ticket",), neutral=("command", "cores", "exit", "loadavg", "tail"),
+        extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),
     "intent": Event("action"),
     "result": Event("action"),
@@ -324,8 +326,9 @@ EVENTS = MappingProxyType({
                                        "after", "before", "check", "command", "fallback", "mergeSeq", "reason",
                                        "retryOf", "source", "start", "ticket", "unavailable"),
     # Zapis: przebieg pod zgodą (PT-329), razem z `outside.finished` pseudokroku próby.
+    # `failedModules`/`failedTests` (K-100, PT-423): diagnostyka z summary.json uruchamiacza; wpisy bez nich legalne.
     "merge.check-finished": _metadata("wynik próby testów po scaleniu (zapis: przebieg pod zgodą, PT-329)",
-                                      "check", "exit", "log", "ticket"),
+                                      "check", "exit", "failedModules", "failedTests", "log", "ticket"),
     "merge.check-accepted": _metadata("akceptacja próby testów po scaleniu mimo porażki (PT-320); nie uruchamia "
                                       "polecenia", "after", "by", "check", "ticket"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),
