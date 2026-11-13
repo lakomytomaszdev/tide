@@ -339,5 +339,44 @@ class CardLimitTest(unittest.TestCase):
         self.assertNotEqual(tickets["PT-3"]["status"], "card-limit")
 
 
+class MergedUnderRevisionTest(unittest.TestCase):
+    """PT-470: scalony ticket przy oczekującej rewizji planu (wiersze propozycji mają tylko `workId`) jest „gotowe”."""
+
+    @staticmethod
+    def pending_append():
+        events = merge(approved().step("K-1-PT-1-1", ticket="PT-1", result="done"), "PT-1")
+        rows = [
+            {"workId": "PT-1", "title": "A", "blockers": [], "executor": "Sonnet", "reviewer": "Opus"},
+            {"workId": "PT-2", "title": "B", "blockers": ["PT-1"], "executor": "Opus", "reviewer": "Sonnet"},
+            {"workId": "PT-3", "title": "C", "blockers": ["PT-1"], "executor": "Sonnet", "reviewer": "Opus"},
+            {"workId": "#4", "title": "D", "blockers": ["PT-2"], "executor": "Sonnet", "reviewer": "Opus"}]
+        # Dopisanie ręczne (planappend) ustawia `appendRevision.pending` w zdarzeniu `plan.proposed`.
+        events.add("plan.proposed", planner="Opus", reviewAuthor="Sonnet", rows=rows, appendRevision={
+            "pending": True, "kind": "append", "baseline": rows[:3], "feedback": "Ticket dopisany przez użytkownika",
+            "difference": {"added": ["#4"], "removed": [], "changed": []},
+            "previousProposal": {"planner": "Opus", "rows": []}, "previousReview": {}, "reviewer": "Sonnet"})
+        return events
+
+    def test_merged_ticket_is_ready_while_revision_is_pending(self):
+        events = self.pending_append()
+        self.assertTrue(events.state().plan_revision["pending"])
+        out = view(events)
+        tickets = {t["id"]: t for t in out["tickets"]}
+        self.assertEqual((tickets["PT-1"]["state"], tickets["PT-1"]["statusLabel"]), ("gotowe", "scalony"))
+        self.assertEqual((out["total"], out["done"], out["flow"]["waveLabel"]), (4, 1, "fala 2 z 3"))
+        self.assertNotEqual(tickets["PT-2"]["waitingOn"], {"kind": "blocker", "ticket": "PT-1"})
+        self.assertNotEqual(tickets["PT-3"]["waitingOn"], {"kind": "blocker", "ticket": "PT-1"})
+
+    def test_appended_ticket_is_todo_and_not_counted_as_done(self):
+        tickets = {t["id"]: t for t in view(self.pending_append())["tickets"]}
+        self.assertEqual(tickets["#4"]["state"], "todo")
+
+    def test_failed_merge_under_revision_does_not_count_as_done(self):
+        events = self.pending_append()
+        events.add("result", action="merge", key="PT-2", ok=False)
+        out = view(events)
+        self.assertEqual((out["total"], out["done"]), (4, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

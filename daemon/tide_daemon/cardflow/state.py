@@ -1595,8 +1595,9 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
             for row in rows]
     waves = graph_waves(rows)
     finished_ids = set(st.imported_done) | {row.get("id") or row.get("workId") for row in rows
-                    if not st.plan_approved and row.get("sourceState") == "gotowe"} | {row.get("id") for row in rows if ("merge", row.get("id")) in st.results and
-                    st.results[("merge", row.get("id"))].get("ok")}
+                    if not st.plan_approved and row.get("sourceState") == "gotowe"} | {
+                        ident for ident in (row.get("id") or row.get("workId") for row in rows)
+                        if ("merge", ident) in st.results and st.results[("merge", ident)].get("ok")}
     out["total"], out["done"] = len(rows), len(finished_ids)
     wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
     out["flow"].update({"wave": wave_no, "waveTotal": len(waves), "paused": st.paused,
