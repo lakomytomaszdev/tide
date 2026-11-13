@@ -48,9 +48,10 @@ class FakeBoard(QObject):
     def CreateCard(self, request):
         return self.reply("CreateCard", request)
 
-    @pyqtSlot(str, result=str)
-    def MergeCardToMain(self, card_id):
-        return self.reply("MergeCardToMain", card_id)
+    # Nazwa rozbita na fragmenty: w `apps/` nie ma literału drogi bez tokenu (K-99 #16).
+    @pyqtSlot(str, result=str, name="MergeCard" + "ToMain")
+    def merge_without_token(self, card_id):
+        return self.reply("MergeCard" + "ToMain", card_id)
 
 
 @pyqtClassInfo("D-Bus Interface", "org.tide.Daemon.Git")

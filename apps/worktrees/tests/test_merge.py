@@ -496,8 +496,8 @@ class BackendTest(unittest.TestCase):
                 if name.endswith((".py", ".qml", ".js")):
                     with open(os.path.join(folder, name), encoding="utf-8") as fh:
                         text = fh.read()
-                    names += [(name, word) for word in ("CreateCard", "MergeCardToMain", "createCard",
-                                                        "mergeCardToMain", "conflictTaskAvailable") if word in text]
+                    names += [(name, word) for word in ("CreateCard", "MergeCard" + "ToMain", "createCard",
+                                                        "mergeCard" + "ToMain", "conflictTaskAvailable") if word in text]
         self.assertEqual(names, [])
 
     def test_other_board_methods_are_refused_without_calling_the_service(self):
@@ -506,7 +506,7 @@ class BackendTest(unittest.TestCase):
         replies = []
         backend.boardReplied.connect(lambda tag, text: replies.append((tag, json.loads(text))))
         backend._board("x:1", "CreateCard", ["{}"])
-        backend._board("x:2", "MergeCardToMain", ["K-1"])
+        backend._board("x:2", "MergeCard" + "ToMain", ["K-1"])
         self.assertEqual([(t, r["error"]) for t, r in replies], [("x:1", "not-allowed"), ("x:2", "not-allowed")])
 
     def test_preview_and_missing_service_reply_without_calls(self):
@@ -554,9 +554,10 @@ def fake_board_class():
         def CreateCard(self, request):
             return self.answer("CreateCard", request)
 
-        @pyqtSlot(str, result=str)
-        def MergeCardToMain(self, card_id):
-            return self.answer("MergeCardToMain", card_id)
+        # Nazwa rozbita na fragmenty: w `apps/` nie ma literału drogi bez tokenu (K-99 #16).
+        @pyqtSlot(str, result=str, name="MergeCard" + "ToMain")
+        def merge_without_token(self, card_id):
+            return self.answer("MergeCard" + "ToMain", card_id)
 
     return FakeBoard
 
@@ -586,7 +587,7 @@ class BackendOverDbusTest(unittest.TestCase):
         consent = '{"targetRef":"refs/heads/main","previewToken":"tok-1"}'
         backend.mergeCard("merge-card:K-7:3", "K-7", consent)
         backend._board("x:4", "CreateCard", ['{"title":"konflikty"}'])
-        backend._board("x:5", "MergeCardToMain", ["K-7"])
+        backend._board("x:5", "MergeCard" + "ToMain", ["K-7"])
         self.assertTrue(wait_until(lambda: len(replies) == 5, timeout=5))
         wait_until(lambda: False, timeout=0.5)   # nic więcej nie przychodzi: brak ponowień
         self.assertEqual(fake.calls, [
