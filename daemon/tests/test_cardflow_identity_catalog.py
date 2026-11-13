@@ -389,7 +389,10 @@ BARRIERS = {
                    # K-105 #2: ścisła reguła `read_complete` (z pamięcią) i `read_fresh` (bramki) — jeden parser.
                    ("cardflow/journal.py", "_parse_strict"),
                    # PT-295: audyt historii (osobny proces, tylko odczyt); odmowa modelu to błąd read-rejected.
-                   ("cardflow/historyaudit_driver.py", "read_cards")],
+                   ("cardflow/historyaudit_driver.py", "read_cards"),
+                   # K-105 PT-412: czynnik spoczynku `held` (`_identityHeld`, `preserves_project`) — tożsamość
+                   # chroniona albo nieznana wyklucza spoczynek karty (pełny przebieg z barierami jak dotąd).
+                   ("cardflow/rest.py", "_held")],
         denial="read_process_history: ValueError; fold: _identityHeld", effect="wspólny wynik redukcji",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_model_and_strict_read"]),
     "inventory": dict(
