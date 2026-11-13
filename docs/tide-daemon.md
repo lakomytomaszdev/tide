@@ -885,6 +885,68 @@ Wnioski z reproduktora (nie są oceną produkcji):
 - **Niespełniony próg to ważny wynik, nie błąd pomiaru**: nie daje domknięcia z akceptacją i jest otwartym blokerem M0,
   dopóki pomiar produkcji nie pokaże ≤ 30 % w każdym oknie w obu ustawieniach `box.enabled`.
 
+### Zmiany K-113 i wyniki przed/po K-113 (PT-468, 13.11.2026)
+
+K-113 usuwa z ciepłego ticku dwa koszty wskazane przez PT-414 (filtr prób sieci i wczytanie Tablicy). Krótki spis,
+opisy pełne w akapitach „Przepływ karty: „Od razu” (PT-58)” i w sekcji o odczytach w ticku:
+
+- **PT-466 (K-113 #2) — pamięć filtra prób uzgadniania sieci** (`trialhold.network_state`, `Journal.derive_events(…,
+  slot="network")`): `boxstep.recover_network` nie przelicza `trialpolicy.blocked_event` co tick; akapit „Pamięć filtra
+  prób uzgadniania sieci (K-113 PT-466)”.
+- **PT-467 (K-113 #3) — pamięć wczytania Tablicy w kontekście ticku** (`BoardStore.load_for_tick`, odcisk wejść): ten
+  sam `Board` przy niezmienionych wejściach, bez transakcji i bez parsowania; akapit „Pamięć wczytania Tablicy
+  w kontekście ticku (K-113 #3, PT-467)”.
+- **PT-469 (K-113 #5) — odczyty ticku na pamięci wczytania**: odczyty bez skutku czytają z kontekstu ticku, bramki
+  i wejścia skutku zostają świeże; akapit „Odczyty Tablicy w ticku: kontekst ticku i świeże bramki (K-113 #5, PT-469)”.
+
+Pomiar „po” (PT-468) to ta sama procedura co w PT-414: `build-data`, potem `measure after false` i `measure after true`,
+każde osobnym poleceniem w oknie ciszy. Strona „po”: SHA `e399342c7381684afb2dba10927c6f2bbd1687eb` (gałąź karty z PT-466,
+PT-467 i PT-469). Dane: 46 kart, 63,2 MB, budowa 52,9 s. „Przed” pochodzi z `docs/agents/masterplan/2026-11-13/pomiar-k113-przed.json`
+(PT-465, strona „przed” `b6e65ce030f9a930d72f856bddf111b403a617cc`, pierwsza ważna próba): nie mierzono go ponownie.
+Próg: **każde okno ≤ 30 %** rdzenia (16 rdzeni, limit loadavg 8,0). Wynik reproduktora jest wskaźnikiem.
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed K-113, `box.enabled=false` | 1 | ważna | 45,12; 44,87; 53,48; 44,02; 44,68; 44,52; 53,30; 45,33; 46,13; 46,65 | 46,81 / 53,48 | **niespełniony** (10 z 10 okien) |
+| przed K-113, `box.enabled=true` | 2 (1 nieważna: loadavg po 16,55) | ważna | 48,60; 48,55; 46,67; 48,47; 49,45; 49,92; 46,17; 48,30; 49,40; 46,55 | 48,21 / 49,92 | **niespełniony** (10 z 10 okien) |
+| po K-113, `box.enabled=false` | 1 | ważna | 10,48; 10,68; 10,23; 10,47; 10,48; 10,03; 10,83; 10,05; 10,12; 12,70 | 10,61 / 12,70 | **spełniony** (0 z 10 okien ponad 30 %) |
+| po K-113, `box.enabled=true` | 2 (1 nieważna: loadavg po 21,57) | ważna | 10,73; 10,45; 10,13; 10,72; 10,70; 10,23; 10,15; 10,22; 10,43; 13,02 | 10,68 / 13,02 | **spełniony** (0 z 10 okien ponad 30 %) |
+
+Spadek CPU całego procesu: `false` 46,81 → 10,61 % (−36,2 pkt, ok. −77 %), `true` 48,21 → 10,68 % (−37,5 pkt, ok. −78 %).
+Względem „po” K-105 z tabeli PT-414 (45,55 % i 45,33 %) różnica to ok. −35 pkt w obu ustawieniach.
+
+Diagnostyka bez progu (osobne okno po oknach CPU):
+
+| Konfiguracja | `engine.tick` (udział / próbki na s) | CPU wątku przepływu | `Snapshot` p95 | `RssAnon` przed → po | `VmHWM` |
+|---|---|---|---|---|---|
+| przed K-113, `false` | 0,090 / 31,0 | 46,1 % | 190 ms | 559,7 → 615,2 MB | 694,9 MB |
+| przed K-113, `true` | 0,105 / 34,5 | 47,4 % | 273 ms | 571,9 → 566,1 MB | 602,4 MB |
+| po K-113, `false` | 0,024 / 9,3 | 10,1 % | 10,6 ms | 538,4 → 578,7 MB | 654,4 MB |
+| po K-113, `true` | 0,026 / 9,3 | 10,2 % | 11,6 ms | 553,0 → 624,0 MB | 679,4 MB |
+
+- **`blocked_event` zniknęło z ciepłego ticku.** Przed K-113 `boxstep.recover_network › trialhold.held ›
+  trialpolicy.blocked_event` zajmowało 1330 (`false`) i 1484 (`true`) z 1860 i 2071 próbek `engine.tick` (ok. 72 %);
+  po K-113 `recover_network` ma 14 i 13 próbek z 560 i 558 (ok. 2,5 %), a `trialpolicy.blocked_event` i `re.search` nie
+  pojawiają się wśród najcięższych ramek raportu próbnika (listy czasu własnego i łącznego, najczęstsze stosy).
+- **`store.load` nie zniknęło.** Liczba próbek jest ta sama co przed K-113 (373 i 362 wobec 360 i 407), ale po spadku
+  całego ticku to teraz jego główna ścieżka: ok. 67 % (`false`) i 65 % (`true`) próbek `engine.tick` wobec ok. 19–20 %.
+  To zgodne z opisem PT-469: bramki `_plan_next`, `_planning_branch` i `_plan_on_board` czytają Tablicę świeżo.
+  Dalsza optymalizacja tej ścieżki nie jest potrzebna do progu w reproduktorze; to kandydat na osobny ticket,
+  jeśli pomiar produkcji pokaże koszt.
+- **Próbnik procesów** (`processes.probe`, przy `true` ok. 5 % próbek przed K-113) nie występuje wśród najcięższych ramek „po”.
+- **Pamięć** (bez progu): w oknie diagnostyki `RssAnon` rośnie o 40 MB (`false`) i 71 MB (`true`); jedna próba nie
+  wystarcza do wniosku o trendzie, a pamięć nie jest progiem.
+- **Reproduktor nie zastępuje produkcji.** Spełniony próg w reproduktorze nie oznacza „Gotowe (M0)”.
+
+### Procedura produkcji po instalacji K-113 (właściciel)
+
+Po `make install` gałęzi karty K-113 właściciel powtarza pomiar produkcji tak samo jak po K-105 (kroki 1–5 niżej):
+`/usr/bin/python3 scripts/measure_idle_prod.py --out ~/pomiar-k113-box-<false|true>.json` **dla obu wartości
+`box.enabled`**, przełączanych przez właściciela (skrypt ich nie zmienia). **Domknięcie karty K-113 kończy się pytaniem
+do właściciela o wynik produkcji.** Wynik ponad progiem (okno ponad 30 % w którymkolwiek ustawieniu, `Snapshot` p95
+≥ 1 s albo zatwierdzenie planu ≥ 10 s) jest **otwartym blokerem M0**, także gdy reproduktor pokazał ≤ 30 %. Ocena
+reproduktora (wyżej) nie zastępuje tego wyniku.
+
 ### Procedura produkcji po instalacji (właściciel)
 
 Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, nie zmienia konfiguracji (także
