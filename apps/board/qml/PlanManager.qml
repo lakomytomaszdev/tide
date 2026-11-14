@@ -22,6 +22,9 @@ Rectangle {
     readonly property var rows: plan ? plan.rows || [] : []
     readonly property var selectedTicket: rows.find(r => (r.id || r.workId) === selectedTicketId) || null
     readonly property bool canEdit: !!plan && (plan.status === "blocked" || plan.status === "pending" || plan.status === "approved")
+    property bool approveWaiting: false      // PT-408: okno czeka na odpowiedź zatwierdzenia (plan albo różnica)
+    readonly property bool approving: approveWaiting || !!(plan && plan.approving)
+    readonly property string approvalError: plan && plan.approvalError ? String(plan.approvalError) : ""
     readonly property bool appendRevision: !!plan && !!plan.revision && plan.revision.kind === "append"
     readonly property bool ticketFieldsEnabled: appending || (canEdit && !!selectedTicket && selectedTicket.editable !== false)
     signal closeRequested()
@@ -470,10 +473,11 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             objectName: "planManagerError"
-            visible: !!manager.appendError || !!manager.error || !!manager.notice
-            text: manager.appendError || manager.error || manager.notice
+            readonly property string shownApprovalError: manager.approving ? "" : manager.approvalError
+            visible: !!manager.appendError || !!manager.error || !!shownApprovalError || !!manager.notice
+            text: manager.appendError || manager.error || shownApprovalError || manager.notice
             textFormat: Text.PlainText
-            color: manager.error || manager.appendError ? Tide.Tokens.rose : Tide.Tokens.mint
+            color: manager.error || manager.appendError || shownApprovalError ? Tide.Tokens.rose : Tide.Tokens.mint
             font.family: Tide.Theme.uiFamily
             wrapMode: Text.Wrap
         }
@@ -506,8 +510,9 @@ Rectangle {
             PillButton {
                 objectName: "planManagerApprove"
                 visible: !!manager.plan && manager.plan.status === "pending"
-                text: manager.appendRevision ? "Zatwierdź różnicę i dopisz ticket" : "Zatwierdź plan i rozpocznij implementację"
-                enabled: !manager.busy
+                text: manager.approving ? "Zatwierdzanie…"
+                      : manager.appendRevision ? "Zatwierdź różnicę i dopisz ticket" : "Zatwierdź plan i rozpocznij implementację"
+                enabled: !manager.busy && !manager.approving
                 onClicked: manager.approveRequested(manager.card.id)
             }
         }

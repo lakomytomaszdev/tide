@@ -134,7 +134,7 @@ def check(engine, *, unit_state=None, outside_state=None, console_state=None, pr
     boxes = set()
     for card in names:
         try:
-            events = journal.read_complete(card)
+            events = journal.read_fresh(card)
         except (OSError, ValueError) as exc:
             _stop(stops, "unknown-history", f"historia nieczytelna lub niepełna: {exc}", card)
             continue
@@ -204,7 +204,7 @@ def verify_preserved(journal, fingerprint: dict) -> list[dict]:
     lost = []
     for card, want in sorted(fingerprint.items()):
         try:
-            events = journal.read_complete(card)
+            events = journal.read_fresh(card)
         except (OSError, ValueError) as exc:
             lost.append({"card": card, "text": f"historia nieczytelna: {exc}"})
             continue

@@ -85,7 +85,12 @@ Rectangle {
     signal planEditRequested(string cardId, var request)
     property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
-    signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
+    // `approvesPlan`: żądanie zatwierdza plan (nie jest podglądem ani wycofaniem zgody projektu) — okno czeka wtedy na odpowiedź.
+    signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan, bool approvesPlan)   // /Board ApproveCardEnvironment
+    property bool approveWaiting: false                             // PT-408: okno czeka na odpowiedź zatwierdzenia planu
+    // Plan zatwierdza się: oczekiwanie okna albo `approving` z migawki (przeładowanie panelu go nie gubi).
+    readonly property bool planApproving: approveWaiting || !!(flowPlan && flowPlan.approving)
+    readonly property string approvalError: flowPlan && flowPlan.approvalError ? String(flowPlan.approvalError) : ""
     property string environmentError: ""
     property var environmentReply: null                             // odmowa usługi: pozycje do ponownego pokazania
     readonly property var flowEnvironment: (flowPlan && flowPlan.environment)
@@ -539,12 +544,24 @@ Rectangle {
                 enabled: !panel.busy
                 onClicked: panel.planEditRequested(panel.card.id, {action: "discard-revision"})
             }
+            Text {
+                objectName: "cardPlanApprovalError"
+                Layout.fillWidth: true
+                visible: panel.approvalError !== "" && !panel.planApproving
+                text: panel.approvalError
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: Tide.Tokens.rose
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+            }
             PillButton {
                 objectName: "cardPlanApprove"
-                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
+                text: panel.planApproving ? "Zatwierdzanie…"
+                      : panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
                       ? "Zatwierdź różnicę" : "Zatwierdź plan i rozpocznij implementację"
                 visible: !!panel.flowPlan && panel.flowPlan.status === "pending" && !panel.flowEnvironment
-                enabled: !panel.busy
+                enabled: !panel.busy && !panel.planApproving
                 onClicked: {
                     panel.busy = true
                     panel.planApproveRequested(panel.card.id)
@@ -557,12 +574,13 @@ Rectangle {
             Layout.fillWidth: true
             environment: panel.descriptionOnly ? null : panel.flowEnvironment
             planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
+            planApproving: panel.planApproving
             busy: panel.busy
             error: panel.environmentError
             reply: panel.environmentReply
-            onApproveRequested: (yaml, onlyPlan) => {
+            onApproveRequested: (yaml, onlyPlan, approvesPlan) => {
                 panel.busy = true
-                panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
+                panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan, approvesPlan)
             }
         }
 

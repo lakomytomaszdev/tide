@@ -352,7 +352,7 @@ class PackageTest(unittest.TestCase):
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(image)
         rubric = json.loads((PACKAGE / 'eval/rubric.json').read_text())
-        self.assertEqual([row['id'] for row in rubric], list(range(1, 8)))
+        self.assertEqual([row['id'] for row in rubric], list(range(1, 10)))
         conversation = (PACKAGE / 'eval/conversation.txt').read_text()
         self.assertIn('bez restartu zmiana działa', conversation)
         self.assertIn('odrzucam ten wariant', conversation)
@@ -381,7 +381,12 @@ class PackageTest(unittest.TestCase):
                            'przypadkami brzegowymi', 'Nie skanuj projektu', 'Nie wymyślaj',
                            'Nie twórz HTML-a, kart, ticketów ani planu implementacji',
                            'Nie akceptuj sprawy', 'expectedVersion', 'request-id', 'przed długą syntezą',
-                           'Brak bajtów obrazu', 'nie oznaczają rezygnacji', 'spójność istniejącego manifestu'):
+                           'Brak bajtów obrazu', 'nie oznaczają rezygnacji', 'spójność istniejącego manifestu',
+                           '`## Sedno`', '`## Pytania otwarte`', '`## Opis sprawy`',
+                           'Nie dopisuj własnych kryteriów akceptacji', '**Do użytkownika**',
+                           '**Do sprawdzenia w projekcie**', 'jawne założenie w specyfikacji',
+                           'Nie streszczaj instrukcji projektu', 'Nie wstrzymuj zapisu sprawy pytaniami',
+                           'Nie odpowiadaj na te pytania za użytkownika'):
                 self.assertIn(phrase.casefold(), common.casefold())
             self.assertIn('references/synthesis.md', (codex / 'SKILL.md').read_text())
             self.assertIn('references/synthesis.md', (claude / 'commands/issue.md').read_text())

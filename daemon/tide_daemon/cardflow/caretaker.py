@@ -456,9 +456,13 @@ def _plan_fix_trigger(st) -> list[dict]:
                  int(item.get("seq") or 0) > int((st.started or {}).get("seq") or 0)]
         last = steps[-1] if steps else {}
         checked = st.plan_checked or {}
+        # Ponowiony krok (użytkownik albo opiekun, PT-475) czeka na wznowienie w kolejnym przebiegu, nie na
+        # opiekuna: `step.retry` użytkownika zapisany w ticku po `_advance_card`, a przed `_caretake`, nie może
+        # uruchomić kroku opiekuna, który po starcie następcy byłby nieaktualny i poza limitem działań.
         if last and (st.finished.get(last["step"]) or {}).get("result") == "done" and \
                 checked.get("step") == last["step"] and checked.get("valid") is False and \
-                int(last.get("round") or 0) >= 2 and last["step"] not in st.step_decisions:
+                int(last.get("round") or 0) >= 2 and last["step"] not in st.step_decisions and \
+                last["step"] not in st.step_retries:
             found.append({"trigger": "plan-fix", "step": last["step"], "decision": ""})
     return found
 

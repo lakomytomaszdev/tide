@@ -49,8 +49,8 @@ Rectangle {
     property var consent: Decision.consentStart()
 
     // Pozycje okna: decyzje bez odpowiedzi, grupy zgód jako jedna pozycja i znak przyjęcia wysłanej grupy.
-    // Obciążenie poleceniami poza piaskownicą z migawki kart (decision.outsideLoad, liczy je strona Tablicy) —
-    // z niego pozycja grupy liczy prognozę „ruszy od razu / poczeka”. `null` (Sesje, migawka nierozpoznana): bez prognozy.
+    // Stan kolejki z pola `queue` migawki (decision.outsideLoad; liczy go usługa) — z niego pozycja grupy liczy
+    // prognozę „ruszy od razu / poczeka”. `null` (Sesje, migawka bez `queue`): bez prognozy.
     property var outsideLoad: null
     readonly property var pending: Decision.consentItems(decisions, answeredIds, consent, outsideLoad)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null

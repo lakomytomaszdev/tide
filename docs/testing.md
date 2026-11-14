@@ -146,6 +146,21 @@ kodu, także przy usunięciu dokumentu. W mieszanym diffie dobór wynika z pozos
 W `docs/` pomijane są również `.rst`, `.txt` i ilustracje (`.png`, `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp`).
 Wyjątek nie obejmuje Markdown w `tools/`, `mk/`, katalogach testów ani `fixtures/`: wspólne fixture'y
 mogą zawierać dokumenty używane jako dane. Kod i konfiguracja w `docs/` nie są pomijane.
+Pliki koordynacji pod `COORDINATION_PATHS` w `tools/test_suites.py` (`docs/agents/masterplan/`,
+`docs/agents/interwencje/`, `docs/agents/plans/`; prefiksy dosłowne, bez reszty `docs/`) nie wybierają
+testów w żadnej postaci: ani `.md`, ani `.json`, `.html`, `.tsv`, ani przy usunięciu pliku. Plik, który
+jakiś test czyta z prawdziwego repozytorium, dostaje klucz w `FILE_TEST_MODULES`; klucz ma pierwszeństwo
+przed listą i wybiera swoje moduły. Test spójności w `scripts/tests/test_test_dependencies.py` pilnuje
+tego mechanicznie: skanuje AST wszystkich plików `.py` w katalogach testów z `SUITES` i dla każdej
+ścieżki istniejącego, śledzonego pliku pod prefiksem koordynacji wymaga klucza z tym modułem wśród
+odbiorców. Rozpoznaje napisy stałe (także części f-stringa i tekst poleceń powłoki, np.
+`cp "$src/../docs/agents/plans/x.md"`) oraz ciągi stałych segmentów po dowolnej bazie: `X / "docs/…"`,
+`X / "docs" / "agents" / …`, `os.path.join(X, "docs", …)`, `posixpath.join`, `Path("docs", …)`
+i `X.joinpath("docs", …)`. Fałszywe trafienia (nazwa istniejącego planu użyta w danych albo w repozytorium
+tymczasowym) trafiają do krotki `COORDINATION_SCAN_EXCEPTIONS` kluczowanej parą (moduł testu, ścieżka),
+z komentarzem przy każdej pozycji; pozycja, która przestała być trafieniem, wywala test. Skan nie
+wykrywa odczytu katalogu przez zmienną (glob po `ROOT`) ani odczytu przez stałą modułu produktu
+(np. `basechange.FOLLOWUP`): takie odbiorniki wymagają ręcznego wpisu w `FILE_TEST_MODULES`.
 Narzędzia użytkowe z `FILE_TEST_MODULES` w `tools/test_suites.py` mają jawne kontrakty:
 `board_compat_check.py`, `question_corpus.py`, `next_id.py`, `check_plans.py`, `sessions_preview.py`.
 Wybierają wyłącznie zadeklarowane moduły testów; brak takiego modułu jest błędem konfiguracji.
@@ -162,6 +177,12 @@ pokazuje ten sam dobór bez uruchamiania testów. Brak zmian kończy się sukces
 nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
 Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
 `make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
+
+Czas zatwierdzenia planu (K-102 #5): `python3 tools/approval_benchmark.py` buduje tymczasowe repozytorium
+(300 planów, 40 gałęzi, 8 worktree), kartę z 18 ticketami i prywatny rejestr numerów, po czym wypisuje linię JSON
+z `seconds`, `planReads` (licznik pełnych odczytów planów — kryterium regresji, nie czas), `tickets` i `tideRoot`.
+`--base-ref <SHA>` mierzy kod tej rewizji w tymczasowym worktree (usuwanym po pomiarze), `--tide-root <ścieżka>`
+kod innego drzewa. Cele poza katalogiem tymczasowym kończą się kodem 2 przed zapisem.
 
 Pomiar obu selektorów: `python3 tools/test_changed_benchmark.py --base <SHA-startu-ticketu>`.
 Procedura porównuje diffy pięciu ostatnich commitów bez merge z tej bazy. Opcja
@@ -403,6 +424,17 @@ nie urywało się przedwcześnie. Wymaga tego samego środowiska co pełne testy
 gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. Nie uruchamiaj
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
+
+## Raport zależności testów od silnika
+
+`python3 tools/test_dependencies.py` (`--json`, `--root <drzewo>`) wypisuje dla `engine.py` i każdego pliku
+`daemon/tide_daemon/cardflow/` zasięg (moduły testów osiągalne w grafie importów AST, pewne / z potencjalnymi),
+„sięga silnika” z najkrótszym łańcuchem, „testy własne” (osiągalność bez węzła `engine.py`) i oznaczenia doboru
+`pełny` / `fallback` / `kontrakt`. Pod tabelą: moduły `cardflow/` (bez `engine.py`) bez drogi do silnika oraz moduły
+testów zestawu cardflow niesięgające silnika. Zasięg **nie jest** doborem `make test-changed` i jest dziś prawie stały
+(silnik sięga prawie wszystkiego), więc regułę „moduł nie importuje silnika” mierzy kolumna „sięga silnika” i jej suma.
+Narzędzie nie importuje analizowanego kodu; definicje zestawów bierze z własnego drzewa, pliki z `--root`.
+Regułę pilnuje `daemon/tests/test_cardflow_engine_boundary.py` (jawna lista modułów, porażka pokazuje łańcuch importów).
 
 ## Ponowienie padniętych modułów
 

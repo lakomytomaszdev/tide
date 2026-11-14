@@ -231,9 +231,9 @@ out["expanded"] = group()
         self.assertEqual(out["enter"], [0, False], "Enter bez wyboru nic nie wysyła")
         self.assertEqual(out["group"]["toggle"], "▸ Tickety i kroki (7)")
         self.assertEqual(out["group"]["members"], [], "lista zwinięta po otwarciu")
-        # Strona Tablicy zawsze liczy obciążenie z migawki kart, więc prognoza jest widoczna; jej brak bez `outsideLoad`
-        # (Sesje, migawka nierozpoznana) sprawdza test_outside_forecast.py.
-        self.assertTrue(out["group"]["forecast"], "strona Tablicy przekazuje obciążenie (PT-340)")
+        # Prognoza pochodzi z pola `queue` migawki (PT-374); dane podglądu go nie mają (stara usługa), więc okno
+        # pokazuje samą liczbę ticketów. Prognozę z `queue` sprawdza test_outside_forecast.py.
+        self.assertFalse(out["group"]["forecast"], "migawka bez `queue` — bez prognozy")
         self.assertEqual([m[0] for m in out["expanded"]["members"]],
                          [f"{t} · {s} · Sonnet" for t, s in zip(OUTSIDE_TICKETS, STEPS)])
         self.assertTrue(all(m[1].startswith("Testy ticketu") for m in out["expanded"]["members"]))

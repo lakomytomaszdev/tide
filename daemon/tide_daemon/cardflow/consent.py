@@ -87,11 +87,12 @@ def skip_reason(engine, card, step, command):
     return DENIED_BEFORE if denied_before(events, st, step, command) else ""
 
 
-def record_automatic(engine, card, step, command, **extra):
+def record_automatic(engine, card, step, command, *, gate=None, **extra):
     """Zapis automatycznej zgody outside (wynik kroku, recheck): reguły, odmowa człowieka i pauza sprawdzone pod
     tą samą blokadą dziennika co zapis — odmowa ani wstrzymanie nie wejdą pomiędzy kontrolę a decyzję.
     Pominięcie zapisuje powód raz na krok i powód (recheck biegnie przy każdym przebiegu). `extra` — pola decyzji
-    pseudokroku (`check` próby testów po scaleniu, PT-329)."""
+    pseudokroku (`check` próby testów po scaleniu, PT-329). `gate` (K-105 PT-415) — świeża bramka historii
+    wywoływana pod blokadą tuż przed każdym zapisem; jej wyjątek przerywa zapis."""
     name = step.get("step") or ""
     with engine.journal.lock:
         if not automatic(engine, card, step, command):
@@ -101,9 +102,13 @@ def record_automatic(engine, card, step, command, **extra):
             last = next((e for e in reversed(engine.journal.read(card))
                          if e.get("type") == SKIPPED and e.get("step") == name), None)
             if (last or {}).get("reason") != reason:
+                if gate is not None:
+                    gate()
                 engine.journal.append(card, "outside.auto-skipped", step=name, ticket=step.get("ticket") or "",
                                       command=command, reason=reason)
             return False
+        if gate is not None:
+            gate()
         engine.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                               kind=step.get("kind") or "", choice="run", answer="", command=command,
                               executor="", auto=True, **extra)
@@ -114,7 +119,7 @@ def deny_queued(engine, card, name, request):
     """Odmowa człowieka po automatycznej zgodzie outside (PT-311): przed `outside.started` unieważnia zgodę
     i zapisuje odmowę; po starcie `already-started`, a proces działa dalej. Kontrola i zapis są pod blokadą
     dziennika, pod którą `_start_outside` sprawdza decyzję i zapisuje start."""
-    from .engine import FlowError
+    from .errors import FlowError
     answer = str(request.get("answer") or "").strip()
     instead = str(request.get("instead") or "").strip()
     if len(answer) > 4000 or len(instead) > 4000:
@@ -173,7 +178,7 @@ def before_start(engine, card, step, done, decision):
 
 
 def revoke(engine, card_id, request):
-    from .engine import FlowError
+    from .errors import FlowError
     from .state import fold
     from ..board.model import BoardError, card_num
     try:

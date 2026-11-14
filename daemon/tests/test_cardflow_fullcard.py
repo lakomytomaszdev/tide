@@ -286,5 +286,97 @@ class BackgroundTest(unittest.TestCase):
         self.assertIn("blokery", view(blocked)["flow"]["headline"])
 
 
+class CardLimitTest(unittest.TestCase):
+    """PT-375: ticket bez kroku, który czeka na miejsce w karcie (`step.waiting` z `cause: card-limit`)."""
+
+    @staticmethod
+    def three_free():
+        events = plan()
+        events.add("plan.reviewed", reviewer="Sonnet", verdict="APPROVE", findings=[])
+        events.add("plan.approved", map={"#1": "PT-1", "#2": "PT-2", "#3": "PT-3"}, rows=[
+            {"id": f"PT-{n}", "workId": f"#{n}", "title": "T", "blockers": [], "executor": "Sonnet", "reviewer": "Opus"}
+            for n in (1, 2, 3)])
+        events.step("K-1-PT-1-1", ticket="PT-1", result="question", question="?")
+        events.step("K-1-PT-2-1", ticket="PT-2")
+        events.add("step.waiting", ticket="PT-3", kind="ticket", provider="", reason="czeka na miejsce w karcie (2 z 2)",
+                   cause="card-limit", until="")
+        return events
+
+    def shown(self, events, limit, override=None):
+        from tide_daemon.cardflow.fullcard import card_limit
+        out = card_limit(events.state(), view(events), limit, override)
+        return out, {t["id"]: t for t in out["tickets"]}
+
+    def test_status_says_how_many_tickets_hold_the_card_slots(self):
+        out, tickets = self.shown(self.three_free(), 2)
+        self.assertEqual((tickets["PT-3"]["status"], tickets["PT-3"]["statusLabel"]),
+                         ("card-limit", "czeka na miejsce w karcie (2 z 2)"))
+        self.assertEqual(out["flow"]["ticketLimit"], {"limit": 2, "running": 2, "override": None})
+        self.assertNotEqual(tickets["PT-2"]["status"], "card-limit", "ticket w toku nie czeka na miejsce")
+
+    def test_label_follows_the_current_limit_and_vanishes_when_a_slot_is_free(self):
+        out, tickets = self.shown(self.three_free(), 1, override=1)
+        self.assertEqual(tickets["PT-3"]["statusLabel"], "czeka na miejsce w karcie (2 z 1)")
+        self.assertEqual(out["flow"]["ticketLimit"]["override"], 1)
+        _out, tickets = self.shown(self.three_free(), 3)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit", "limit nie jest pełny — zwykła kolejka")
+
+    def test_a_merged_or_rejected_ticket_frees_the_slot(self):
+        events = merge(self.three_free(), "PT-2")
+        out, tickets = self.shown(events, 2)
+        self.assertEqual(out["flow"]["ticketLimit"]["running"], 1)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit")
+        events = self.three_free()
+        events.add("ticket.rejected", ticket="PT-1")
+        out, _tickets = self.shown(events, 2)
+        self.assertEqual(out["flow"]["ticketLimit"]["running"], 1)
+
+    def test_other_waits_keep_their_labels(self):
+        events = self.three_free()
+        events.add("step.waiting", ticket="PT-3", kind="ticket", provider="anthropic",
+                   reason="limit kroków dostawcy anthropic: 2/2", cause="slots", until="")
+        _out, tickets = self.shown(events, 2)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit")
+
+
+class MergedUnderRevisionTest(unittest.TestCase):
+    """PT-470: scalony ticket przy oczekującej rewizji planu (wiersze propozycji mają tylko `workId`) jest „gotowe”."""
+
+    @staticmethod
+    def pending_append():
+        events = merge(approved().step("K-1-PT-1-1", ticket="PT-1", result="done"), "PT-1")
+        rows = [
+            {"workId": "PT-1", "title": "A", "blockers": [], "executor": "Sonnet", "reviewer": "Opus"},
+            {"workId": "PT-2", "title": "B", "blockers": ["PT-1"], "executor": "Opus", "reviewer": "Sonnet"},
+            {"workId": "PT-3", "title": "C", "blockers": ["PT-1"], "executor": "Sonnet", "reviewer": "Opus"},
+            {"workId": "#4", "title": "D", "blockers": ["PT-2"], "executor": "Sonnet", "reviewer": "Opus"}]
+        # Dopisanie ręczne (planappend) ustawia `appendRevision.pending` w zdarzeniu `plan.proposed`.
+        events.add("plan.proposed", planner="Opus", reviewAuthor="Sonnet", rows=rows, appendRevision={
+            "pending": True, "kind": "append", "baseline": rows[:3], "feedback": "Ticket dopisany przez użytkownika",
+            "difference": {"added": ["#4"], "removed": [], "changed": []},
+            "previousProposal": {"planner": "Opus", "rows": []}, "previousReview": {}, "reviewer": "Sonnet"})
+        return events
+
+    def test_merged_ticket_is_ready_while_revision_is_pending(self):
+        events = self.pending_append()
+        self.assertTrue(events.state().plan_revision["pending"])
+        out = view(events)
+        tickets = {t["id"]: t for t in out["tickets"]}
+        self.assertEqual((tickets["PT-1"]["state"], tickets["PT-1"]["statusLabel"]), ("gotowe", "scalony"))
+        self.assertEqual((out["total"], out["done"], out["flow"]["waveLabel"]), (4, 1, "fala 2 z 3"))
+        self.assertNotEqual(tickets["PT-2"]["waitingOn"], {"kind": "blocker", "ticket": "PT-1"})
+        self.assertNotEqual(tickets["PT-3"]["waitingOn"], {"kind": "blocker", "ticket": "PT-1"})
+
+    def test_appended_ticket_is_todo_and_not_counted_as_done(self):
+        tickets = {t["id"]: t for t in view(self.pending_append())["tickets"]}
+        self.assertEqual(tickets["#4"]["state"], "todo")
+
+    def test_failed_merge_under_revision_does_not_count_as_done(self):
+        events = self.pending_append()
+        events.add("result", action="merge", key="PT-2", ok=False)
+        out = view(events)
+        self.assertEqual((out["total"], out["done"]), (4, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

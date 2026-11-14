@@ -48,7 +48,7 @@ from . import mergecheck
 from . import baseproposal
 from . import findings as review_findings
 from .labels import kind_label
-from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of
+from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of, plan_approval
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
@@ -356,9 +356,9 @@ def _outside(st, name, step, done) -> dict:
     happened = ((f"{who} prosi o uruchomienie poza piaskownicą: {command}" if len(command) <= SHORT_COMMAND
                  else f"{who} prosi o uruchomienie polecenia poza piaskownicą") if command else "")
     reason = _text(done.get("reason"))
-    from ..board.commands import outside_risky
+    from .riskview import outside_risk    # w odczycie prezentacji z pamięci widoku, poza nim świeżo (K-105)
     repo = ((getattr(st, "started", None) or {}).get("repo") or "")
-    risk = outside_risky(command, (step.get("worktree") or "", repo, step.get("stepDir") or "")) if command else ""
+    risk = outside_risk(command, (step.get("worktree") or "", repo, step.get("stepDir") or "")) if command else ""
     if done.get("canAllow", True) and risk:
         # Ryzykowne (wychodzi poza worktree, czyta `~`, zmienia system): tylko jednorazowo i z powodem na wierzchu.
         why = (f"Uwaga: {risk}. Tide uruchomi je na Twoim koncie, w worktree ticketu, tylko raz."
@@ -739,6 +739,8 @@ def _plan_decision(st: FlowState) -> dict | None:
                 "freeText": False, "reply": None, "fault": "provider", "technical": technical}
     if st.approval_requested and (st.started or {}).get("trackerProject"):
         return None
+    if plan_approval(st)[0]:
+        return None   # PT-407: zatwierdzanie trwa w tle — nie ma czego zatwierdzać drugi raz
     verdict = review.get("verdict") if review.get("verdict") in ("APPROVE", "REQUEST_CHANGES") else ""
     changes = verdict == "REQUEST_CHANGES"
     counts = review_findings.counts(listed)

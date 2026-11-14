@@ -26,7 +26,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
-from .cardflow.engine import FlowError
+from .board.model import BoardError, card_num
+from .cardflow.errors import FlowError
 from .resources import ResourceError
 
 POLL_MS = 5_000
@@ -54,7 +55,8 @@ class CardFlowMonitor(QObject):
         self._timer.timeout.connect(self.tick)
         self._done.connect(self._deliver)
         self._read_done.connect(self._deliver_read)
-        self._handshakes: set = set()     # zdarzenia „wynik doręczony”, na które czeka worker (K-98 #2)
+        self._approving: set = set()      # PT-407: karty z zatwierdzaniem planu w kolejce albo w toku (wątek główny)
+        self._handshakes: set = set()    # zdarzenia „wynik doręczony”, na które czeka worker (K-98 #2)
         self._owner_thread = threading.current_thread()   # wątek główny (Qt), który doręcza wyniki
         self._epoch = 0   # licznik epok akcji (K-98 #2): nieparzysty — akcja z kolejki w toku
         self._deliveries: list = []       # [dalszy ciąg, future, opublikować] — wyniki z kolejki czekające na migawkę
@@ -72,6 +74,7 @@ class CardFlowMonitor(QObject):
         self._timer.stop()
         self._retry.stop()
         self._stopped = True
+        self._approving.clear()   # niedoręczone wyniki zatwierdzania nie zawisną w „trwa”
         for delivered in list(self._handshakes):   # worker nie czeka na doręczenie, którego już nie będzie
             delivered.set()
         if self._hosting_pool is not None:
@@ -123,6 +126,10 @@ class CardFlowMonitor(QObject):
 
     def warnings(self) -> list:
         return self.engine.warnings()
+
+    def queue_view(self):
+        """Pole `queue` migawki (K-39 #4): gotowy słownik z ostatniego ticku silnika albo None."""
+        return self.engine.queue_view()
 
     # --- akcje -----------------------------------------------------------------------------------
 
@@ -305,8 +312,41 @@ class CardFlowMonitor(QObject):
         if not self._submit(work, answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def _begin_approval(self, card_id: str, reply):
+        """PT-407: zbiór kart z zatwierdzeniem planu w kolejce albo w toku (wątek główny, od przyjęcia do doręczenia
+        odpowiedzi). Duplikat (`ApproveCardPlan` albo `ApproveCardEnvironment` zatwierdzające plan) dostaje od razu
+        `approving: true` i nie wchodzi do kolejki — zwraca None. Inaczej zwraca `reply`, który najpierw zwalnia
+        kartę, a potem odsyła wynik (sukces, `FlowError`, wyjątek, odmowa przy zamykaniu usługi)."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError:
+            card = str(card_id)
+        if card in self._approving:
+            reply(json.dumps({"ok": True, "id": card, "approving": True, "message": "Zatwierdzanie trwa…"},
+                             ensure_ascii=False))
+            return None
+        self._approving.add(card)
+
+        def released(text: str) -> None:
+            self._approving.discard(card)
+            reply(text)
+        return released
+
+    def _plan_pending(self, card_id: str) -> bool:
+        """Odczyt prezentacji (bez blokady dziennika): czy ApproveCardEnvironment zatwierdziłoby plan."""
+        from .cardflow import envconsent
+        try:
+            with self.engine.journal.presentation():
+                return envconsent.plan_pending(self.engine.journal.state(f"K-{card_num(card_id)}"))
+        except Exception:
+            return False   # błąd odczytu zgłosi sama akcja
+
     def approve_plan(self, card_id: str, reply) -> None:
         """Zatwierdzenie planu z panelu karty, w tym samym szeregowym wątku co kroki."""
+        reply = self._begin_approval(card_id, reply)
+        if reply is None:
+            return
+
         def answer(future):
             try:
                 result = future.result()
@@ -322,6 +362,10 @@ class CardFlowMonitor(QObject):
 
     def approve_environment(self, card_id: str, yaml_text: str, only_plan: bool, reply) -> None:
         """ApproveCardEnvironment (PT-172): walidacja i zapis w tym samym szeregowym wątku co kroki; budowa w tle."""
+        if self._plan_pending(card_id):   # PT-407: zatwierdziłoby plan — ten sam zbiór co ApproveCardPlan
+            reply = self._begin_approval(card_id, reply)
+            if reply is None:
+                return
         self._action("ApproveCardEnvironment", lambda: self.engine.approve_environment(card_id, yaml_text, only_plan), reply)
 
     def box_status(self, slug: str, reply, card: str = "") -> None:

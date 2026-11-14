@@ -13,21 +13,55 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
+import io
 import json
 import os
 import re
 import stat
 import threading
-from copy import copy
+import time
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from .processidentity import CARD_STEP_KINDS, TICKET_STEP_KINDS, start_error
-from .state import FlowState, fold
+from .state import FlowState, copy_state, fold
 
 SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
+# K-105 #2: najdłuższy czas, przez który pamięć ścisłego odczytu karty (trafienie, przyrost) zastępuje pełny odczyt
+# pliku. Ta sama stała i zegar (`Journal.monotonic`) co okres kontroli pełnej kart w spoczynku (K-105 #3).
+FULL_READ_PERIOD = 600.0
+# Numery luźnych wersji (`Journal._loose_version`): każda jest różna od każdej innej wersji w procesie.
+_LOOSE_VERSIONS = itertools.count(1)
+
+
+class JournalVersion(NamedTuple):
+    """Wersja dziennika karty ze ścisłego odczytu (K-105 #2): stan otwartego pliku (`fstat`), licznik zapisów tego
+    procesu i ostatni `seq`. Wartość do porównania — równa wersja oznacza tę samą historię dla odczytów bez skutku;
+    bramki przed skutkiem i tak czytają świeżo (`Journal.read_fresh`)."""
+    source: str
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    generation: int
+    seq: int
+
+
+class _Remembered:
+    """Wpis pamięci ścisłego odczytu karty. Bez tekstu wierszy: ostatni wiersz pamiętany jako położenie i skrót."""
+    __slots__ = ("version", "events", "tail", "digest", "full_at")
+
+    def __init__(self, version, events, tail, digest, full_at):
+        self.version = version     # JournalVersion odczytanych bajtów (rozmiar = liczba przeczytanych bajtów)
+        self.events = events       # zdarzenia tylko do odczytu; wywołujący dostają nową listę tych samych obiektów
+        self.tail = tail           # początek ostatniego wiersza w bajtach albo None (przyrost niedozwolony)
+        self.digest = digest       # sha256 ostatniego wiersza (b"" przy pustym pliku)
+        self.full_at = full_at     # chwila ostatniego pełnego odczytu (`Journal.monotonic`); przyrost jej nie zmienia
 
 
 class StrictReadInPresentation(RuntimeError):
@@ -63,10 +97,19 @@ def mirror_root(board_root: str, env=None) -> str:
 
 
 class Journal:
-    def __init__(self, board_root: str, mirror: str | None = None, clock=None):
+    def __init__(self, board_root: str, mirror: str | None = None, clock=None, monotonic=None):
         self.root = os.path.abspath(board_root)
         self.mirror = mirror or mirror_root(self.root)
         self.clock = clock
+        # K-105 #2: zegar okresu pełnego odczytu (wstrzykiwalny w testach); pamięć ścisłego odczytu: karta → wpis.
+        self.monotonic = monotonic or time.monotonic
+        self._strict_memory: dict[str, _Remembered] = {}
+        # K-105 PT-415: wartość wyliczona z historii ścisłej karty (`derive`): karta → (wpis pamięci ścisłego odczytu,
+        # jego wersja, wartość). Bez własnej kopii zdarzeń — ważna, dopóki pamięć ścisła ma ten sam wpis i wersję.
+        self._derived: dict[str, tuple] = {}
+        # K-113 PT-466: osobne pamięci wartości wyliczonych (`derive(…, slot=…)`) — nazwa → (karta → ta sama krotka co
+        # w `_derived`). Pusta nazwa to `_derived` (stan procesu karty); każda pamięć znika razem z kartą.
+        self._derived_slots: dict[str, dict[str, tuple]] = {"": self._derived}
         self.lock = threading.RLock()
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
@@ -75,6 +118,9 @@ class Journal:
         # ticku (`trialhold.HistoryPhase`) po zmianie licznika czyta historię karty ponownie. Zapisów spoza procesu
         # licznik nie widzi — przed skutkiem chroni je świeży pełny odczyt (`unchanged`, `HistoryPhase.unchanged`).
         self._generations: dict[str, int] = {}
+        # PT-416: kontrola zgodności (`check`) — karta → para stanów plików (Tablica, kopia) po ostatnim potwierdzeniu
+        # zgodności albo odtworzeniu. Służy wyłącznie do pominięcia porównania treści, nigdy jako zgoda na skutek.
+        self._check_memory: dict[str, tuple] = {}
         # K-98 #2: odczyt prezentacji (publikacja migawki w wątku głównym) — bez blokady, z własną pamięcią.
         self._view = threading.local()
         self._view_cache: dict[str, tuple] = {}
@@ -97,6 +143,10 @@ class Journal:
 
     def _presenting(self) -> bool:
         return getattr(self._view, "on", False)
+
+    def presenting(self) -> bool:
+        """Czy bieżący wątek czyta w trybie prezentacji (`presentation()`)."""
+        return self._presenting()
 
     def _guard(self):
         return contextlib.nullcontext() if self._presenting() else self.lock
@@ -184,13 +234,15 @@ class Journal:
             if hit is None or hit[0] != key:
                 hit = (key, fold(events))
                 states[card] = hit
-            state = copy(hit[1])
             # Silnik lokalnie zmienia pola i kontenery projekcji. Wartości zagnieżdżone
             # (także wytworzone przez fold) tylko czyta; deepcopy jest droższy od fold.
-            for name, value in vars(state).items():
-                if isinstance(value, (dict, list, set)):
-                    setattr(state, name, value.copy())
-            return state
+            return copy_state(hit[1])
+
+    def view_version(self, card: str) -> tuple:
+        """Wersja dziennika karty do porównań (ten sam klucz, który unieważnia pamięć prezentacji lub workera,
+        zależnie od trybu bieżącego wątku). Zmienia się przy każdej zmianie pliku dziennika, także spoza procesu."""
+        with self._guard():
+            return self._read_version(card)[0]
 
     def _read_version(self, card: str) -> tuple:
         cache = self._view_cache if self._presenting() else self._cache
@@ -213,35 +265,179 @@ class Journal:
         return key, events
 
     def read_complete(self, card: str) -> list[dict]:
-        """Odczyt dla bramki: błąd lub brak historii nie jest pustą historią.
+        """Ścisły odczyt historii karty: błąd lub brak historii nie jest pustą historią.
 
-        Bez tolerancyjnego parsera/cache i bez naprawiania plików. Istniejąca
-        kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
-        OSError/ValueError oznaczają dla wywołującego stan unknown.
-        """
+        Bez tolerancyjnego parsera i bez naprawiania plików. Istniejąca kopia hostowa jest autorytatywna także wtedy,
+        gdy nie da się jej odczytać. OSError/ValueError oznaczają dla wywołującego stan unknown.
+
+        K-105 #2: wynik jest pamiętany dla wersji dziennika (`read_complete_version`). Zdarzenia są tylko do odczytu
+        (wspólne z pamięcią) — wywołujący dostaje nową listę tych samych obiektów. Do odczytów bez skutku; porównania
+        przed zapisem i zapisy bramek czytają świeżo (`read_fresh`)."""
+        return self.read_complete_version(card)[1]
+
+    def version(self, card: str) -> JournalVersion:
+        """Wersja dziennika karty ze ścisłego odczytu (K-105 #2); błąd odczytu propaguje unknown."""
+        return self.read_complete_version(card)[0]
+
+    def read_fresh(self, card: str) -> list[dict]:
+        """Świeży pełny ścisły odczyt dla bramek przed skutkiem (K-105 #2): ta sama reguła co `read_complete`, ale
+        z pominięciem pamięci — ani jej nie czyta, ani nie zapisuje. Porównania przed zapisem (`unchanged`) i zapisy
+        (`append`, `append_complete`) czytają historię tylko tak."""
         with self._strict():
-            source = self.mirror_path(card)
-            try:
-                os.lstat(source)
-            except FileNotFoundError:
-                source = self.path(card)
-            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, encoding="utf-8") as fh:
-                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                    raise ValueError("dziennik nie jest zwykłym plikiem")
-                events = []
-                for line in fh:
-                    if not line.endswith("\n"):
-                        raise ValueError("niepełny zapis zdarzenia")
-                    event = json.loads(line)
-                    if (not isinstance(event, dict) or type(event.get("v")) is not int
-                            or event["v"] != SCHEMA or type(event.get("seq")) is not int
-                            or event["seq"] != len(events) + 1 or event.get("card") != card
-                            or not isinstance(event.get("type"), str) or not event["type"]):
-                        raise ValueError("niepełna lub nieznana historia zdarzeń")
-                    _validate_process_identity(event)
-                    events.append(event)
-                return events
+            return self._read_strict(card)[0]
+
+    def read_complete_version(self, card: str) -> tuple[JournalVersion, list[dict]]:
+        """Ścisły odczyt z pamięcią według wersji dziennika (K-105 #2).
+
+        - trafienie: to samo źródło i i-węzeł, ten sam rozmiar, `st_mtime_ns`, `st_ctime_ns` (z `fstat` otwartego
+          deskryptora) i `generation` — bez czytania pliku, nowa lista tych samych zdarzeń,
+        - przyrost: ten sam i-węzeł, większy rozmiar i niezmieniony ostatni zapamiętany wiersz (skrót bajtów w tym
+          samym miejscu) — doczytuje tylko nowe bajty i waliduje je tą samą regułą co pełny odczyt,
+        - każda inna zmiana, zapis tego procesu (`generation`) albo upływ `FULL_READ_PERIOD` od ostatniego pełnego
+          odczytu wpisu — pełny odczyt (`_read_strict`).
+
+        Ograniczenie przyrostu: edycja wcześniejszych wierszy w miejscu połączona z dopisaniem nie jest wykrywana do
+        najbliższego pełnego odczytu; bramki przed skutkiem czytają świeżo, więc zapis oparty na takiej historii jest
+        odmówiony (`HistoryChanged`). Błąd odczytu (pełnego albo przyrostu) usuwa wpis — nie zostaje jako historia."""
+        with self._strict():
+            entry = self._strict_memory.pop(card, None)
+            if entry is not None and (entry.version.generation != self.generation(card)
+                                      or self.monotonic() - entry.full_at >= FULL_READ_PERIOD):
+                entry = None
+            if entry is not None:
+                done = self._remembered(card, entry)
+                if done is not None:
+                    return done
+            events, entry = self._read_strict(card)
+            if entry is not None:
+                self._strict_memory[card] = entry
+                return entry.version, list(entry.events)
+            return self._loose_version(card, events), events
+
+    def derive(self, card: str, compute, slot: str = ""):
+        """Ścisły odczyt (`read_complete`) i wartość `compute(zdarzenia)` pamiętana dla wersji dziennika (K-105 PT-415).
+
+        Klucz to wpis pamięci ścisłego odczytu i jego `JournalVersion` (z `st_ctime_ns` i `generation`): trafienie
+        wymaga, by odczyt zwrócił zdarzenia tego samego wpisu (te same obiekty), więc nowa wersja, przyrost, okresowy
+        pełny odczyt, własny zapis albo luźna wersja (plik zmieniany w trakcie czytania) dają nowe wyliczenie. Błąd
+        odczytu albo `compute` usuwa wpis karty i propaguje — nie zostaje jako wartość ani jako „brak zmian”.
+        Zwraca (zdarzenia, wartość); wartość jest wspólna — wołający jej nie zmienia (kopiuje u siebie).
+
+        `slot` (K-113 PT-466): nazwa osobnej pamięci dla innej wartości z tej samej historii (np. filtr prób
+        uzgadniania sieci); ta sama reguła wersji i unieważnienia co pamięć domyślna."""
+        with self._strict():
+            memory = self._derived_slots.setdefault(slot, {})
+            hit = memory.pop(card, None)
+            events = self.read_complete(card)
+            if hit is not None:
+                memory[card] = hit
+            return events, self.derive_events(card, events, compute, slot)
+
+    def derive_events(self, card: str, events: list, compute, slot: str = ""):
+        """`compute(events)` pamiętane dla wersji dziennika jak w `derive`, ale dla zdarzeń już odczytanych (np. z fazy
+        odczytu ticku), bez ponownego odczytu pliku (K-113 PT-466).
+
+        Pamięć działa tylko wtedy, gdy `events` to dokładnie zdarzenia bieżącego wpisu pamięci ścisłego odczytu (te same
+        obiekty, ta sama długość) — wtedy ich wersją jest `JournalVersion` tego wpisu (dev/ino/rozmiar/mtime/ctime/
+        `generation`/seq). Inne zdarzenia (starszy odczyt, luźna wersja, brak wpisu) dają wyliczenie bez zapisu. Wartość
+        jest funkcją samych `events`; to nie jest potwierdzenie, że plik nadal ma tę treść (mutacje czytają świeżo).
+        Błąd `compute` usuwa wpis karty i propaguje."""
+        with self._strict():
+            memory = self._derived_slots.setdefault(slot, {})
+            hit = memory.pop(card, None)
+            entry = self._strict_memory.get(card)
+            same = (entry is not None and len(events) == len(entry.events)
+                    and (not events or events[-1] is entry.events[-1]))
+            if hit is not None and same and hit[0] is entry and hit[1] == entry.version:
+                memory[card] = hit
+                return hit[2]
+            value = compute(events)
+            if same:
+                memory[card] = (entry, entry.version, value)
+            return value
+
+    def forget_except(self, cards) -> None:
+        """Usuwa wpisy pamięci ścisłego odczytu, kontroli zgodności (PT-416) i wartości wyliczonych z pamięci ścisłej
+        (`derive`, PT-415, także nazwane pamięci K-113 PT-466) kart spoza `cards` (K-105 #2: początek ticku, karta
+        usunięta)."""
+        keep = set(cards)
+        with self.lock:
+            for memory in (self._strict_memory, self._check_memory, *self._derived_slots.values()):
+                for card in [c for c in memory if c not in keep]:
+                    del memory[card]
+
+    def _strict_open(self, card: str):
+        source = self.mirror_path(card)
+        try:
+            os.lstat(source)
+        except FileNotFoundError:
+            source = self.path(card)
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError("dziennik nie jest zwykłym plikiem")
+        except BaseException:
+            os.close(fd)
+            raise
+        return source, fd, st
+
+    def _read_strict(self, card: str):
+        """Pełny ścisły odczyt historii karty — granica liczenia pełnych odczytów (K-105 #2). Zwraca zdarzenia i wpis
+        pamięci albo None, gdy plik zmienił się w trakcie czytania (wynik jest poprawny, ale bez stałej wersji)."""
+        generation = self.generation(card)
+        source, fd, before = self._strict_open(card)
+        try:
+            data = _pread_all(fd, 0)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        events = _parse_strict(data, card, 0)
+        if not _same_state(before, after) or len(data) != after.st_size:
+            return events, None
+        tail, digest = _last_line(data, 0)
+        return events, _Remembered(_version(source, after, generation, events), events, tail, digest,
+                                   self.monotonic())
+
+    def _remembered(self, card: str, entry: _Remembered):
+        """Trafienie albo przyrost dla wpisu pamięci; None, gdy potrzebny jest pełny odczyt. Błąd przyrostu
+        propaguje (wpis jest już usunięty z pamięci przez wywołującego)."""
+        old = entry.version
+        source, fd, st = self._strict_open(card)
+        try:
+            if source != old.source or st.st_dev != old.dev or st.st_ino != old.ino:
+                return None
+            if (st.st_size == old.size and st.st_mtime_ns == old.mtime_ns
+                    and st.st_ctime_ns == old.ctime_ns):
+                self._strict_memory[card] = entry
+                return old, list(entry.events)
+            if entry.tail is None or st.st_size <= old.size:
+                return None
+            if hashlib.sha256(os.pread(fd, old.size - entry.tail, entry.tail)).digest() != entry.digest:
+                return None
+            data = _pread_all(fd, old.size)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if not data or b"\r" in data:
+            return None          # wyścig z ucięciem albo inne końce wierszy: rozstrzyga pełny odczyt
+        added = _parse_strict(data, card, len(entry.events))
+        if not _same_state(st, after) or old.size + len(data) != after.st_size:
+            events = entry.events + added        # poprawny wynik bez stałej wersji: bez pamięci
+            return self._loose_version(card, events), events
+        tail, digest = _last_line(data, old.size)
+        entry.events.extend(added)       # wywołujący mają własne listy; pamięć dokłada tylko nowe zdarzenia
+        entry.version = _version(source, after, old.generation, entry.events)
+        entry.tail, entry.digest = tail, digest
+        self._strict_memory[card] = entry
+        return entry.version, list(entry.events)
+
+    def _loose_version(self, card, events) -> JournalVersion:
+        """Wersja wyniku czytanego w trakcie zmiany pliku: nie pasuje do żadnego stanu pliku (rozmiar -1) ani do
+        żadnej innej wersji — każda luźna wersja ma własny numer (`ctime_ns` ujemny, niepowtarzalny w procesie),
+        bo dwa takie odczyty mogą mieć ten sam `seq` i `generation` przy różnej treści."""
+        seq = events[-1]["seq"] if events else 0
+        return JournalVersion("", 0, 0, -1, 0, -next(_LOOSE_VERSIONS), self.generation(card), seq)
 
     # --- zapis -----------------------------------------------------------------------------------
 
@@ -251,6 +447,10 @@ class Journal:
 
     def _invalidate(self, card: str) -> None:
         self._generations[card] = self._generations.get(card, 0) + 1
+        self._strict_memory.pop(card, None)
+        self._check_memory.pop(card, None)
+        for memory in self._derived_slots.values():
+            memory.pop(card, None)
         self._cache.pop(card, None)
         self._states.pop(card, None)
 
@@ -259,22 +459,22 @@ class Journal:
             # Tolerancyjny odczyt służy prezentacji, nigdy odbudowie kopii przy
             # zapisie. Inaczej dowolne późniejsze zdarzenie usuwa dowód unknown.
             exists = os.path.lexists(self.mirror_path(card)) or os.path.lexists(self.path(card))
-            events = self.read_complete(card) if exists else []
+            events = self.read_fresh(card) if exists else []
             return self._append(card, kind, events, data)
 
     def append_complete(self, card: str, kind: str, /, **data) -> dict:
-        """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
+        """Zapis bramki tylko na pełnej historii (świeży ścisły odczyt), bez tolerancyjnego odtworzenia."""
         with self.lock:
-            return self._append(card, kind, self.read_complete(card), data)
+            return self._append(card, kind, self.read_fresh(card), data)
 
     @contextlib.contextmanager
     def unchanged(self, card: str, basis: list):
         """Zapis decyzji podjętej na wcześniejszym odczycie `basis` (K-98 #3): blok trzyma blokadę dziennika, a na
         wejściu świeży pełny ścisły odczyt musi być równy `basis`. Dopisanie, ucięcie albo podmiana dziennika lub
         kopii po odczycie daje `HistoryChanged` przed blokiem — bez zapisu. Zapisy w bloku (`append_complete`)
-        czytają historię ponownie pod tą samą blokadą."""
+        czytają historię ponownie pod tą samą blokadą. Porównanie zawsze z pominięciem pamięci (`read_fresh`)."""
         with self.lock:
-            if self.read_complete(card) != list(basis):
+            if self.read_fresh(card) != list(basis):
                 raise HistoryChanged(f"{card}: historia zmieniła się po odczycie — zapis odmówiony")
             yield
 
@@ -322,19 +522,68 @@ class Journal:
                 self._dirty.add(os.path.relpath(target, self.root))
 
     def check(self, card: str) -> str:
-        """Plik w tablicy różny od kopii (revert, ręczna zmiana, usunięcie) — odtworzenie z kopii; ostrzeżenie albo ""."""
+        """Plik w tablicy różny od kopii (revert, ręczna zmiana, usunięcie) — odtworzenie z kopii; ostrzeżenie albo "".
+
+        PT-416: para stanów obu plików (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`, `st_ctime_ns` — reguła klucza
+        wersji z K-105 #2) jest pamiętana po potwierdzonej zgodności albo po udanym odtworzeniu. Ta sama para w kolejnym
+        wywołaniu pomija porównanie treści (sam `stat`) i zwraca "" bez żadnego skutku. Brak kopii usługi: odbudowa
+        kopii z Tablicy jak dotąd (bez porównania i bez pary). W pozostałych przypadkach (inna para, błąd `stat`, brak
+        pliku w Tablicy): pełne porównanie treści (`_check_read` obu plików) w tym wywołaniu — odtworzenie wyłącznie
+        po nim, nigdy na podstawie samej różnicy stanu ani pamięci. Wpis jest zdejmowany na wejściu i wraca tylko po
+        udanym porównaniu bez błędu (stan obu plików bez zmian w trakcie) albo po odtworzeniu potwierdzonym
+        obramowanym świeżym odczytem Tablicy (`_confirm_restored`); zapis tego procesu (`_invalidate`)
+        i `forget_except` go usuwają.
+
+        Ograniczenie (jak klucz wersji K-105 #2): zmiana w miejscu bez zmiany rozmiaru wykonana tuż po porównaniu
+        w obrębie jednego kwantu zegara znaczników czasu jądra nie zmienia żadnego z pięciu pól."""
         with self.lock:
-            if not os.path.isfile(self.mirror_path(card)):
-                if os.path.isfile(self.path(card)):
+            board, mirror = self.path(card), self.mirror_path(card)
+            remembered = self._check_memory.pop(card, None)
+            before = _pair(board, mirror)
+            if remembered is not None and before == remembered:
+                self._check_memory[card] = remembered
+                return ""
+            if not os.path.isfile(mirror):
+                if os.path.isfile(board):
                     self._invalidate(card)
                     os.makedirs(self.mirror, mode=0o700, exist_ok=True)
-                    _write(self.mirror_path(card), _read(self.path(card)))
+                    _write(mirror, _read(board))
                 return ""
-            if _read(self.path(card)) == _read(self.mirror_path(card)):
+            board_text, board_ok = self._check_read(board)
+            mirror_text, mirror_ok = self._check_read(mirror)
+            readable = before is not None and board_ok and mirror_ok
+            if board_text == mirror_text:
+                if readable and _pair(board, mirror) == before:
+                    self._check_memory[card] = before
                 return ""
             self._restore(card)
+            if readable:
+                self._confirm_restored(card, before, mirror_text)
             return (f"{card}: dziennik karty w repozytorium tablicy był cofnięty albo zmieniony z zewnątrz — "
                     "odtworzony z kopii usługi")
+
+    def _confirm_restored(self, card: str, before, mirror_text: str) -> None:
+        """Para po odtworzeniu (PT-416, review M1): zapamiętana tylko po obramowanym potwierdzeniu w tym samym
+        wywołaniu — `stat` obu plików, świeży odczyt treści Tablicy równy przeczytanej kopii, ponowny `stat` równy
+        pierwszemu, kopia w stanie sprzed porównania. Zmiana Tablicy z zewnątrz po `os.replace` w `_restore` (przed
+        `stat`) nie trafia do pamięci jako zgodna: następne wywołanie porównuje pełną treść. Samo potwierdzenie nie
+        wywołuje żadnego zapisu."""
+        board, mirror = self.path(card), self.mirror_path(card)
+        first = _pair(board, mirror)
+        if first is None or first[1] != before[1]:
+            return
+        text, ok = self._check_read(board)
+        if ok and text == mirror_text and _pair(board, mirror) == first:
+            self._check_memory[card] = first
+
+    def _check_read(self, path: str) -> tuple[str, bool]:
+        """Odczyt treści pliku dziennika w kontroli zgodności (PT-416: granica liczenia odczytów). Błąd odczytu daje
+        pustą treść jak dotąd (`_read`) i `False` — taki wynik nigdy nie trafia do pamięci kontroli."""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(), True
+        except OSError:
+            return "", False
 
     def has_dirty(self) -> bool:
         """Czy są zmiany dziennika do commita (odczyt bez blokady, wątek główny — K-98 #2)."""
@@ -394,6 +643,66 @@ def _mkdir(path):
     except FileExistsError:
         pass
     _sync_dir(parent)
+
+
+def _pread_all(fd: int, offset: int) -> bytes:
+    chunks = []
+    while True:
+        chunk = os.pread(fd, 1 << 20, offset)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _parse_strict(data: bytes, card: str, before: int) -> list[dict]:
+    """Ścisła reguła odczytu historii (pełny odczyt i przyrost): pełne wiersze UTF-8 (końce wierszy jak w trybie
+    tekstowym), schemat, kolejny `seq` od `before + 1`, ta sama karta, znana tożsamość startu procesu."""
+    events = []
+    for line in io.StringIO(data.decode("utf-8"), newline=None):
+        if not line.endswith("\n"):
+            raise ValueError("niepełny zapis zdarzenia")
+        event = json.loads(line)
+        if (not isinstance(event, dict) or type(event.get("v")) is not int
+                or event["v"] != SCHEMA or type(event.get("seq")) is not int
+                or event["seq"] != before + len(events) + 1 or event.get("card") != card
+                or not isinstance(event.get("type"), str) or not event["type"]):
+            raise ValueError("niepełna lub nieznana historia zdarzeń")
+        _validate_process_identity(event)
+        events.append(event)
+    return events
+
+
+def _same_state(a, b) -> bool:
+    return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns) == \
+        (b.st_dev, b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns)
+
+
+def _file_state(path: str) -> tuple:
+    st = os.stat(path)
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _pair(board: str, mirror: str):
+    """Para stanów plików kontroli zgodności (PT-416): (Tablica, kopia) albo None przy błędzie `stat`/braku pliku."""
+    try:
+        return _file_state(board), _file_state(mirror)
+    except OSError:
+        return None
+
+
+def _version(source, st, generation, events) -> JournalVersion:
+    return JournalVersion(source, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, generation,
+                          events[-1]["seq"] if events else 0)
+
+
+def _last_line(data: bytes, offset: int):
+    """Położenie (od `offset`) i skrót ostatniego wiersza przeczytanych bajtów; (None, None), gdy przyrost nie jest
+    bezpieczny (znak \\r: końce wierszy trybu tekstowego mogą łączyć się przez granicę przyrostu)."""
+    if b"\r" in data:
+        return None, None
+    start = data.rfind(b"\n", 0, len(data) - 1) + 1 if data else 0
+    return offset + start, hashlib.sha256(data[start:]).digest()
 
 
 def _parse(text: str) -> list[dict]:

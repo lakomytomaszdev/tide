@@ -9,7 +9,7 @@ from . import boxstep
 def target(engine, slug, card="", board=None):
     """(karta, nazwa pudełka) po sprawdzeniu zakresu. `board`: Tablica z opublikowanej migawki (odczyt `BoxStatus`,
     K-98 #2 — `projects` i `cards` z polem `project`); bez niej świeży odczyt (zatrzymanie i inne skutki)."""
-    from .engine import FlowError
+    from .errors import FlowError
     from ..board.model import card_num
     try:
         bp._check_slug(slug, "projekt")
@@ -42,7 +42,7 @@ def target(engine, slug, card="", board=None):
 
 def _require_owner(slug, card, name, inst):
     """Sama nazwa ani sam znacznik instancji nie są dowodem własności."""
-    from .engine import FlowError
+    from .errors import FlowError
     config = (inst or {}).get("config") or {}
     stamp = bs.parse_stamp(config.get(bs.RECIPE_KEY))
     recipe = stamp.get("hash") if isinstance(stamp, dict) else stamp
@@ -71,7 +71,7 @@ def _require_owner(slug, card, name, inst):
 
 
 def stop(engine, slug, card=""):
-    from .engine import FlowError
+    from .errors import FlowError
     card, name = target(engine, slug, card)
     builder = boxstep.builder_of(engine, boxstep.settings_of(engine))
     # Ten sam lock co rezerwacja kroku, budowa i cykl życia. Kontrola obejmuje

@@ -29,7 +29,7 @@ def available(st):
 
 
 def append(engine, card, st, request):
-    from .engine import FlowError
+    from .errors import FlowError
     key = request.get("requestKey")
     if not isinstance(key, str) or not key.strip() or len(key) > 200:
         raise FlowError("bad-request", "podaj klucz żądania (do 200 znaków)")
