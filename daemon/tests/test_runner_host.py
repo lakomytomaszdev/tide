@@ -2,7 +2,9 @@
 
 Złoty plik `fixtures/runner/host_argv.json` powstał z kodu sprzed wprowadzenia `Runner` (`agentcmd.background`
 + `Background.start`), z dodanym na master kontraktem skilli (`skills.json` i instrukcja w stdin).
-Pozostałe argv, środowisko i pliki zachowują zapis sprzed refaktoru.
+Pozostałe argv, środowisko i pliki zachowują zapis sprzed refaktoru, z dwiema świadomymi zmianami z manifestu ścieżek
+kroku (PT-480): `denyWrite` haków i konfiguracji wspólnego `.git` w ustawieniach Claude Code oraz `gc.auto=0`
+i `maintenance.auto=false` w `GIT_CONFIG_*` kroku.
 Test składa kroki (Claude, Codex, wznowienie, punkt lokalny z tokenem), przechwytuje
 wywołanie `subprocess.Popen` i porównuje z zapisem. Prawdziwy program ani systemd-run nie startują.
 Gdy pliku brakuje albo jest pusty, test go zapisuje i kończy się błędem (odtworzenie świadome: opróżnij plik).

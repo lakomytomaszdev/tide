@@ -1820,6 +1820,31 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
     `/tmp` i `$TMPDIR` programu — tylko gdy krok ich nie wyklucza (`exclude_slash_tmp`, `exclude_tmpdir_env_var`:
     krok opiekuna, katalogi tylko do odczytu, profil odczytu); kolizja liczy się z faktycznych ustawień kroku,
   - zawsze repozytorium Tablicy (dokumenty AI i Konsola piszą w nim; dokłada je `approval_for_step`).
+- **Manifest ścieżek kroku (PT-480, K-109).** `WriteAreas` jest częścią `PathManifest`, który buduje jedna funkcja
+  `agentcmd.path_manifest` (w `background()` i `step_path_manifest`/`step_write_areas`). Z manifestu, i tylko z niego,
+  powstają argumenty piaskownicy kroku: zapis (`read_write`), jawny zakaz zapisu (`read_only` → `denyWrite` Claude;
+  u Codexa żaden katalog zapisu ich nie obejmuje) i ukrycie (`hidden` → `denyRead` Claude obok `~`). Zawartość:
+  - zapis: worktree kroku, jego `out`, techniczny tmp (`tmp`: `CLAUDE_CODE_TMPDIR`, katalogi programu, `/tmp`
+    i `$TMPDIR` Codexa), własny `.git/worktrees/<wt>`; `.git/objects|refs|logs` (Codex) albo wspólny `.git`
+    dawany przez Claude CLI sam (bez `.git/worktrees` innych kroków) — jak przed PT-480,
+  - tylko do odczytu: `out` wcześniejszych kroków ticketu i wykonawcy dla recenzenta (`context_dirs`), katalogi
+    do odczytu, skille, `.git/hooks` i `.git/config` (nowe `denyWrite` w ustawieniach Claude, także w pudełku,
+    które dziedziczy `denyWrite` hosta),
+  - ukryte: `.git/worktrees/<inne>` (Claude). Codex czyta cały dysk — `limits` manifestu zapisuje to wprost;
+    ukrycie u Codexa daje dopiero jednostka hosta albo pudełko (etap 2 K-109),
+  - techniczny `HOME` (`home`) bez zapisu; narzędzia projektów piszą pamięci podręczne w `out`.
+  Manifest jest nieustalony (`ManifestError`, podklasa `StepError`: krok nie startuje), gdy granica zapisu (bez
+  katalogów tmp) obejmuje `in` kroku, katalog zbiorczy worktree albo kroków (to otworzyłoby `out` innych kroków),
+  `.git/worktrees`, Tablicę, dziennik kart (`$XDG_STATE_HOME/tide`) albo `~/.claude`, `~/.codex`, `~/.config`,
+  `~/.local/share/tide`, oraz gdy którykolwiek poziom — katalog zbiorczy worktree, worktree, katalog kroków, katalog
+  kroku, `out`, `in`, `.git`, `.git/worktrees`, `.git/worktrees/<wt>`, katalogi zapisu Codexa w `.git` — jest
+  dowiązaniem (sprawdzenie `lstat`, bez podążania) albo nie jest katalogiem. Każdy poziom jest przypięty do i-węzła;
+  `Background.prepare()` i `Background.start()` sprawdzają je ponownie tuż przed zapisem plików kroku i przed
+  `Popen`: podmiana (dowiązanie albo inny katalog pod tą samą nazwą) to odmowa startu. Okno między tym sprawdzeniem
+  a montowaniem w piaskownicy programu (bwrap Claude CLI/Codexa) zostaje; zamyka je dopiero wykonawca z etapu 2.
+  W kroku `gc.auto=0` i `maintenance.auto=false` (`GIT_CONFIG_*`), a `git gc` i `git worktree prune` są zakazane
+  w każdym projekcie (`board.commands.STEP_DENIED`, także z opcjami gita przed podpoleceniem i poza piaskownicą):
+  wpisy innych kroków są w kroku ukryte, więc wyglądałyby na porzucone.
 - **Pochodzenie wywołania.** `UpsertProject` z polem `tests` ustala PID nadawcy z magistrali
   (`GetConnectionUnixProcessID`, `QDBusConnectionInterface.servicePid`) i czyta `/proc/<pid>/cgroup`
   (`daemon/tide_daemon/call_origin.py`). Proces w jednostce kroku (segment `tide-step-*`, także podgrupa jednostki

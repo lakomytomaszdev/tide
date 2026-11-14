@@ -284,12 +284,17 @@ class Background:
     # w `out` — piaskownica Claude CLI daje zapis katalogowi roboczemu, a jej puste pliki-atrapy (`.bashrc`…)
     # lądują w nim, nie w worktree pod strażą.
     workdir: str = ""
+    # Manifest ścieżek kroku (PT-480): `prepare` i `start` sprawdzają go ponownie tuż przed zapisem plików kroku
+    # i przed startem programu — podmiana katalogu na dowiązanie po złożeniu kroku oznacza odmowę startu.
+    manifest: "PathManifest | None" = None
 
     @property
     def prompt_file(self) -> str:
         return os.path.join(self.step_dir, "in", "prompt.txt")
 
     def prepare(self) -> None:
+        if self.manifest is not None:
+            self.manifest.verify()
         for folder in self.dirs:
             os.makedirs(folder, exist_ok=True)
         for path, text in self.files.items():
@@ -326,6 +331,8 @@ class Background:
         for name, path in self.secret_env.items():
             env[name] = launch.read_token(path)
         env["XDG_RUNTIME_DIR"] = self.runtime_dir or f"/run/user/{os.getuid()}"
+        if self.manifest is not None:
+            self.manifest.verify()          # tuż przed startem: podmiana po `prepare` i `before_start` (PT-480)
         for path in (self.exit_file, self.exit_file + ".tmp"):
             try:
                 os.unlink(path)
@@ -393,8 +400,9 @@ class WriteAreas:
 
 
 def write_areas(step: Step, *, env: dict, git_dir: str, skills: list) -> WriteAreas:
-    """Obszary zapisu kroku z jego faktycznych ustawień. Z tej funkcji `_claude` i `_codex` składają argumenty
-    piaskownicy, a `step_write_areas` (sprawdzenie zatwierdzenia kontraktu testów, PT-286) — listę do porównania."""
+    """Obszary zapisu kroku z jego faktycznych ustawień — część `path_manifest` (PT-480), z której `_claude`
+    i `_codex` składają argumenty piaskownicy, a `step_write_areas` (sprawdzenie zatwierdzenia kontraktu testów,
+    PT-286) — listę do porównania. Samo wyliczenie, bez sprawdzania dowiązań: granicę daje `path_manifest`."""
     out = os.path.join(step.step_dir, "out")
     if step.tool == "codex":
         git = os.path.join(step.repo, ".git")
@@ -418,14 +426,191 @@ def write_areas(step: Step, *, env: dict, git_dir: str, skills: list) -> WriteAr
 
 
 def step_write_areas(step: Step) -> WriteAreas:
-    """Obszary zapisu kroku ustalone tak samo jak w `background()` (te same wejścia, ta sama `write_areas`), bez
-    zakładania plików i bez pytania programu. Błąd ustawień kroku — StepError."""
+    """Obszary zapisu kroku ustalone tak samo jak w `background()` (te same wejścia, ten sam `path_manifest`), bez
+    zakładania plików i bez pytania programu. Błąd ustawień kroku albo nieustalony manifest — StepError."""
+    return step_path_manifest(step).areas
+
+
+def step_path_manifest(step: Step) -> "PathManifest":
+    """Manifest ścieżek kroku z tych samych wejść co `background()`, bez zakładania plików."""
     base = dict(os.environ if step.base_env is None else step.base_env)
     home = base.get("HOME") or os.path.expanduser("~")
     _check(step, home)
     env = _env(step, base, os.path.join(step.step_dir, "in"))
-    return write_areas(step, env=env, git_dir=resolve_git_dir(step.repo, step.worktree),
-                       skills=skills_mod.discover(step.tool, home))
+    return path_manifest(step, env=env, base_env=base, git_dir=resolve_git_dir(step.repo, step.worktree),
+                         skills=skills_mod.discover(step.tool, home))
+
+
+# --- manifest ścieżek kroku (PT-480) ------------------------------------------------------------------------------
+
+class ManifestError(StepError):
+    """Manifest ścieżek kroku nieustalony: dowiązanie albo podmiana katalogu na którymś poziomie, granica zapisu
+    obejmująca zakazaną ścieżkę. Krok nie startuje; granicy nie poszerzamy po cichu."""
+
+
+# Wspólny `.git`: haki i konfiguracja tylko do odczytu (haki to kod uruchamiany przez gita usługi i innych kroków).
+SHARED_GIT_READ_ONLY = ("hooks", "config")
+
+
+@dataclass(frozen=True)
+class Level:
+    """Poziom ścieżki manifestu sprawdzany bez podążania za dowiązaniem. `dev`/`ino` — i-węzeł z chwili budowy
+    manifestu (None: katalogu jeszcze nie było, założy go `Background.prepare`)."""
+    what: str
+    path: str
+    dev: int | None = None
+    ino: int | None = None
+
+
+@dataclass(frozen=True)
+class PathManifest:
+    """Jedno źródło granicy kroku (PT-480): z niego powstają argumenty piaskownicy Claude Code (`allowWrite`,
+    `--add-dir`, `denyWrite`, `denyRead`) i Codexa (`--cd`, `writable_roots`, wykluczenia `/tmp`), lista zapisu
+    zatwierdzenia kontraktu testów (`areas`) i ponowne sprawdzenie tuż przed startem (`verify`).
+
+    `read_write` — wszystko z zapisem, także to, co program daje sam (`implicit`: Claude CLI — katalog tymczasowy,
+    wspólny `.git` i własny `.git/worktrees/<wt>`); `read_only` — jawny zakaz zapisu (katalogi tylko do odczytu, skille,
+    `out` wcześniejszych kroków ticketu i wykonawcy dla recenzenta, haki i konfiguracja gita); `implicit_read_only` —
+    zakaz, który program stosuje sam (Claude CLI: `.git/worktrees` poza własnym wpisem); `hidden` — niewidoczne
+    w kroku (`.git/worktrees` innych kroków); `home`, `tmp` — techniczny katalog domowy (bez zapisu) i katalogi
+    tymczasowe kroku; `forbidden` — ścieżki, których granica zapisu nie może objąć; `levels` — poziomy ścieżek
+    przypięte do i-węzłów; `limits` — czego program kroku nie umie wymusić."""
+    tool: str
+    areas: WriteAreas
+    git_dir: str
+    read_write: tuple = ()
+    read_only: tuple = ()
+    implicit_read_only: tuple = ()
+    hidden: tuple = ()
+    home: str = ""
+    tmp: tuple = ()
+    forbidden: tuple = ()
+    levels: tuple = ()
+    limits: tuple = ()
+
+    def writable(self, path: str, *, tmp: bool = True) -> bool:
+        """Czy ścieżka ma zapis według manifestu: wygrywa najbliższy wpis zawierający ścieżkę (zakaz przy remisie).
+        `tmp=False` pomija wydzielone katalogi tymczasowe (`/tmp` Codexa obejmuje wszystko, co leży w `/tmp`)."""
+        best, allow = -1, False
+        rw = self.read_write if tmp else tuple(p for p in self.read_write if p not in self.tmp)
+        for entries, grant in ((rw, True), (self.read_only, False),
+                               (self.implicit_read_only, False), (self.hidden, False)):
+            for entry in entries:
+                if entry and _within(path, entry):
+                    depth = len(os.path.normpath(entry))
+                    if depth > best or (depth == best and not grant):
+                        best, allow = depth, grant
+        return allow
+
+    def verify(self) -> None:
+        """Ponowne sprawdzenie tuż przed użyciem ścieżek: żaden poziom nie jest dowiązaniem, a przypięte katalogi
+        mają ten sam i-węzeł. Katalog założony po budowie manifestu musi być zwykłym katalogiem. ManifestError."""
+        for level in self.levels:
+            info = _lstat_dir(level)
+            if level.ino is not None and (info is None or (info.st_dev, info.st_ino) != (level.dev, level.ino)):
+                raise ManifestError(f"manifest ścieżek kroku nieustalony: {level.what} podmieniony po sprawdzeniu "
+                                    f"({level.path}) — krok nie startuje")
+
+
+def _lstat_dir(level: Level):
+    """lstat poziomu: None — brak; dowiązanie albo nie-katalog — ManifestError."""
+    import stat
+    try:
+        info = os.lstat(level.path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ManifestError(f"manifest ścieżek kroku nieustalony: {level.what} ({level.path}): "
+                            f"{type(exc).__name__}") from None
+    if stat.S_ISLNK(info.st_mode):
+        raise ManifestError(f"manifest ścieżek kroku nieustalony: {level.what} jest dowiązaniem ({level.path})")
+    if not stat.S_ISDIR(info.st_mode):
+        raise ManifestError(f"manifest ścieżek kroku nieustalony: {level.what} nie jest katalogiem ({level.path})")
+    return info
+
+
+def _pin(what: str, path: str, *, required: bool) -> Level:
+    level = Level(what, os.path.normpath(path))
+    info = _lstat_dir(level)
+    if info is None:
+        if required:
+            raise ManifestError(f"manifest ścieżek kroku nieustalony: brak katalogu {what} ({path})")
+        return level
+    return replace(level, dev=info.st_dev, ino=info.st_ino)
+
+
+def _forbidden(step: Step, base_env: dict, home: str) -> tuple:
+    """Ścieżki poza granicą zapisu każdego kroku: `in` kroku, katalogi zbiorcze worktree i kroków (zapis do nich
+    otworzyłby `out` innych kroków), `.git/worktrees` (wpisy innych kroków), Tablica, dziennik kart (kopia usługi)
+    i konfiguracja agentów."""
+    board = base_env.get("TIDE_BOARD_DIR") or os.path.join(home, "DevWorkspace", "tide-board")
+    state = base_env.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    found = [("in kroku", os.path.join(step.step_dir, "in")),
+             ("katalog worktree kroków", os.path.dirname(os.path.normpath(step.worktree))),
+             ("katalog kroków", os.path.dirname(os.path.normpath(step.step_dir))),
+             (".git/worktrees", os.path.join(step.repo, ".git", "worktrees")),
+             ("Tablica", board), ("dziennik kart", os.path.join(state, "tide"))]
+    found += [(f"~/{rel}", os.path.join(home, rel)) for rel in (".claude", ".codex", ".config", ".local/share/tide")]
+    return tuple((what, os.path.normpath(path)) for what, path in found)
+
+
+def path_manifest(step: Step, *, env: dict, base_env: dict, git_dir: str, skills: list) -> PathManifest:
+    """Jedyna funkcja budująca manifest ścieżek kroku (PT-480). Zapis: worktree kroku i jego `out`, techniczny tmp,
+    metadane gita (własny `.git/worktrees/<wt>`; `objects`/`refs`/`logs` u Codexa, wspólny `.git` u Claude CLI — jak
+    dotąd); odczyt: `out` wcześniejszych kroków ticketu i wykonawcy (`context_dirs`), haki i konfiguracja gita;
+    ukryte: `.git/worktrees` innych kroków (Claude CLI). Każdy poziom (worktree i jego katalog, katalog kroku, `out`,
+    `in`, `.git`, `.git/worktrees`, `.git/worktrees/<wt>` i katalogi zapisu Codexa) jest sprawdzany bez podążania za
+    dowiązaniem i przypinany do i-węzła; dowiązanie albo granica obejmująca ścieżkę z `_forbidden` — ManifestError."""
+    areas = write_areas(step, env=env, git_dir=git_dir, skills=skills)
+    home = base_env.get("HOME") or os.path.expanduser("~")
+    git = os.path.join(step.repo, ".git")
+    worktrees = os.path.join(git, "worktrees")
+    own = os.path.basename(os.path.normpath(git_dir))
+    try:
+        others = sorted(n for n in os.listdir(worktrees) if n != own)
+    except OSError as exc:
+        raise ManifestError(f"manifest ścieżek kroku nieustalony: nie da się odczytać {worktrees} "
+                            f"({type(exc).__name__})") from None
+    git_ro = tuple(os.path.join(git, name) for name in SHARED_GIT_READ_ONLY if os.path.lexists(os.path.join(git, name)))
+    others = tuple(os.path.join(worktrees, name) for name in others)
+    levels = [_pin("katalog worktree kroków", os.path.dirname(os.path.normpath(step.worktree)), required=True),
+              _pin("worktree", step.worktree, required=True)]
+    if os.path.dirname(os.path.normpath(step.step_dir)) != levels[0].path:
+        levels.append(_pin("katalog kroków", os.path.dirname(os.path.normpath(step.step_dir)), required=True))
+    levels += [_pin("katalog kroku", step.step_dir, required=False),
+               _pin("out", os.path.join(step.step_dir, "out"), required=False),
+               _pin("in", os.path.join(step.step_dir, "in"), required=False),
+               _pin(".git", git, required=True), _pin(".git/worktrees", worktrees, required=True),
+               _pin(".git/worktrees/<wt>", git_dir, required=True)]
+    if step.tool == "codex":
+        rw = areas.writable()
+        implicit_ro, hidden = (), ()
+        levels += [_pin(f".git/{name}", os.path.join(git, name), required=False)
+                   for name in CODEX_GIT_DIRS if not step.write_out_only]
+        # Codex czyta cały dysk (workspace-write nie ma odmowy odczytu): wpisów innych kroków nie ukryje.
+        limits = ("codex: .git/worktrees innych kroków widoczne do odczytu — piaskownica Codexa nie ukrywa ścieżek",)
+        read_only = (*areas.deny_write, *step.read_dirs, *step.context_dirs, *git_ro)
+    else:
+        # Claude CLI sam daje zapis do wspólnego `.git` (`implicit`) z wyjątkiem `.git/worktrees`, w którym zostawia
+        # zapis tylko własnemu wpisowi worktree.
+        rw = (*areas.writable(), git_dir)
+        implicit_ro, hidden, limits = (worktrees,), others, ()
+        read_only = (*areas.deny_write, *git_ro)
+    tmp = tuple(dict.fromkeys((*areas.tmp_dirs, *(claude_implicit_tmp() if step.tool == "claude" else ()))))
+    manifest = PathManifest(step.tool, areas, git_dir, read_write=tuple(dict.fromkeys(rw)),
+                            read_only=tuple(dict.fromkeys(read_only)), implicit_read_only=implicit_ro,
+                            hidden=hidden, home=home, tmp=tmp, forbidden=_forbidden(step, base_env, home),
+                            levels=tuple(levels), limits=limits)
+    # Katalogi tymczasowe są wydzielone (`tmp`) i nie liczą się do sprawdzenia: `/tmp` Codexa obejmuje każdą ścieżkę
+    # w `/tmp`, a ścieżki usługi (Tablica, dziennik, ~) poza testami tam nie leżą.
+    for what, path in manifest.forbidden:
+        if manifest.writable(path, tmp=False):
+            raise ManifestError(f"manifest ścieżek kroku nieustalony: granica zapisu obejmuje {what} ({path})")
+    inp = os.path.join(step.step_dir, "in")
+    for path in manifest.read_write:
+        if _within(path, inp):
+            raise ManifestError(f"manifest ścieżek kroku nieustalony: zapis w in kroku ({path})")
+    return manifest
 
 
 def _check(step: Step, home: str) -> None:
@@ -511,8 +696,12 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
     env.update({
         "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
         "SSH_ASKPASS_REQUIRE": "never", "GIT_SSH_COMMAND": GIT_SSH,
-        "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_COUNT": "4", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
         "GIT_CONFIG_KEY_1": "core.askPass", "GIT_CONFIG_VALUE_1": "",
+        # PT-480: bez samoczynnego `git gc --auto` (po commicie) i konserwacji — gc przycina `.git/worktrees` i obiekty
+        # osiągalne tylko z wpisów innych kroków, których krok nie widzi (`git gc` i `git worktree prune` są zakazane).
+        "GIT_CONFIG_KEY_2": "gc.auto", "GIT_CONFIG_VALUE_2": "0",
+        "GIT_CONFIG_KEY_3": "maintenance.auto", "GIT_CONFIG_VALUE_3": "false",
         "GIT_CONFIG_GLOBAL": os.path.join(inp, "gitconfig"),
         "GH_CONFIG_DIR": os.path.join(inp, "gh"), "DBUS_SESSION_BUS_ADDRESS": DEAD_BUS})
     if step.tool == "codex":
@@ -559,13 +748,14 @@ def _font_dirs(home: str) -> list[str]:
 
 
 def _claude(step: Step, inp: str, out: str, env: dict, home: str,
-            skills: list[skills_mod.Skill], areas: WriteAreas) -> tuple[list, dict, dict]:
+            skills: list[skills_mod.Skill], manifest: PathManifest) -> tuple[list, dict, dict]:
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem.
-    Zapis (allowWrite, `--add-dir`, denyWrite) wyłącznie z `areas` (`write_areas`, PT-286)."""
+    Zapis (allowWrite, `--add-dir`, denyWrite) i ukrycie (denyRead poza `~`) wyłącznie z manifestu (PT-286, PT-480)."""
+    areas = manifest.areas
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
+        "filesystem": {"denyRead": ["~", *manifest.hidden], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
                                                         *_font_dirs(home),
                                                         *skills_mod.read_dirs(skills),
@@ -612,9 +802,9 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         permissions["allow"] = [*permissions.get("allow", []), *(f"Read(/{d}/**)" for d in inside_input)]
     # --add-dir udostępnia także katalog sesji i rozszerza domyślny zapis Bash; zakaz Edit nie obejmuje poleceń Bash.
     # Jawny denyWrite (katalogi tylko do odczytu, skille) ma pierwszeństwo także wobec zapisu domyślnego i ścieżek
-    # przez dowiązania.
-    if areas.deny_write:
-        settings["sandbox"]["filesystem"]["denyWrite"] = list(areas.deny_write)
+    # przez dowiązania. Z manifestu dochodzą haki i konfiguracja wspólnego `.git` (PT-480).
+    if manifest.read_only:
+        settings["sandbox"]["filesystem"]["denyWrite"] = list(manifest.read_only)
     readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
@@ -648,8 +838,11 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
     return argv, files, secret
 
 
-def _codex(step: Step, env: dict, areas: WriteAreas) -> tuple[list, dict]:
-    """argv i pliki tokenów; zapis (`--cd`, `writable_roots`, wykluczenia `/tmp`) wyłącznie z `areas` (PT-286)."""
+def _codex(step: Step, env: dict, manifest: PathManifest) -> tuple[list, dict]:
+    """argv i pliki tokenów; zapis (`--cd`, `writable_roots`, wykluczenia `/tmp`) wyłącznie z manifestu (PT-286,
+    PT-480). Codex nie ma odmowy odczytu ani zapisu wewnątrz `writable_roots`: haki i konfiguracja gita są tylko
+    do odczytu, bo żaden z jego katalogów zapisu ich nie obejmuje."""
+    areas = manifest.areas
     secret = {"secret_env": {}, "token_files": []}
     if step.local is not None:
         opts = local_mod.options("codex", step.local)
@@ -727,13 +920,14 @@ def background(step: Step) -> Background:
     skills = skills_mod.discover(step.tool, home)
     if step.write_out_only:
         _read_only_git_env(env, read_only_git_config(git_dir))
-    areas = write_areas(step, env=env, git_dir=git_dir, skills=skills)
+    manifest = path_manifest(step, env=env, base_env=base, git_dir=git_dir, skills=skills)
+    areas = manifest.areas
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
-        argv, files, extra = _claude(step, inp, out, env, home, skills, areas)
+        argv, files, extra = _claude(step, inp, out, env, home, skills, manifest)
         session = step.session_id
     else:
-        argv, extra = _codex(step, env, areas)
+        argv, extra = _codex(step, env, manifest)
         files, session = {}, step.session_id if step.resume else ""
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
@@ -746,7 +940,8 @@ def background(step: Step) -> Background:
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
-                      files=files, dirs=dirs, workdir="" if areas.cwd == step.worktree else areas.cwd)
+                      files=files, dirs=dirs, workdir="" if areas.cwd == step.worktree else areas.cwd,
+                      manifest=manifest)
 
 
 def caretaker_interactive(step: Step) -> Background:

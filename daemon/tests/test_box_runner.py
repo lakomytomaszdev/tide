@@ -766,7 +766,10 @@ class ClaudeSettingsTest(BoxRunnerCase):
         context = os.path.join(self.wt_root, "previous.step", "out")
         step = self.step(read_dirs=readonly, context_dirs=(context,))
         bg = self.runner()._background(step)
-        self.assertEqual(self.settings_of(bg)["sandbox"]["filesystem"]["denyWrite"], [*readonly, context])
+        # PT-480: z manifestu ścieżek kroku dochodzą haki i konfiguracja wspólnego `.git` (w pudełku i tak nakładki ro).
+        git = os.path.join(self.repo, ".git")
+        self.assertEqual(self.settings_of(bg)["sandbox"]["filesystem"]["denyWrite"],
+                         [*readonly, context, os.path.join(git, "hooks"), os.path.join(git, "config")])
         for path in (*readonly, context):
             self.assertIn(path, bg.argv)
 
