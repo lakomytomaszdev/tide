@@ -3862,6 +3862,9 @@ uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły ro
   i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
   z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
   pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
+  Krok `plan-fix` z zapisanym `step.retry` (użytkownika albo opiekuna) nie jest wyzwalaczem, dopóki nie ruszy jego
+  następca (PT-475): ponowienie użytkownika zapisane w ticku po `_advance_card`, a przed `_caretake`, nie uruchamia
+  kroku opiekuna, który po starcie następcy byłby nieaktualny (`stale`, poza limitem działań).
 
 Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3). Opiekun
 nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej

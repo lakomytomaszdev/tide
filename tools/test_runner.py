@@ -17,12 +17,14 @@ from dataclasses import dataclass
 if __package__:
     from .test_isolation import state_environment
     from .test_suites import (CHANGE_MAP, FILE_TEST_MODULES, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
-                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
+                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
+                             COORDINATION_PATHS)
     from .test_dependencies import ImportGraph, is_test_support
 else:
     from test_isolation import state_environment
     from test_suites import (CHANGE_MAP, FILE_TEST_MODULES, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
-                            SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
+                            SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
+                            COORDINATION_PATHS)
     from test_dependencies import ImportGraph, is_test_support
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +148,7 @@ def changed_suites(paths):
 class Selection:
     reasons: dict
     full: bool = False
+    skipped_coordination: int = 0
 
     @property
     def modules(self):
@@ -157,19 +160,26 @@ def changed_modules(paths, entries, root=ROOT):
     all_modules = modules_for(entries, root)
     test_dirs = sorted({directory for directory, _ in entries})
 
+    # Ścieżki koordynacji nie wybierają testów, poza kluczami FILE_TEST_MODULES.
+    # Reguła działa przed pozostałymi, więc dotyczy każdego rozszerzenia i usuniętych plików.
+    skipped = sum(1 for path in set(paths)
+                  if path.startswith(COORDINATION_PATHS) and path not in FILE_TEST_MODULES)
+
     def full(path, reason):
-        return Selection({module: [f"{path} → pełny przebieg: {reason}"] for module in all_modules}, True)
+        return Selection({module: [f"{path} → pełny przebieg: {reason}"] for module in all_modules},
+                         True, skipped)
 
     # Dokumentacja w komponencie też nie zmienia kodu. Wyjątek nie obejmuje
     # infrastruktury uruchamiacza ani danych testów, nawet gdy mają rozszerzenie .md.
     def documentation(path):
         document = path.endswith(".md") or (path.startswith("docs/") and Path(path).suffix in
                    {".rst", ".txt", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"})
-        return (document and "fixtures" not in Path(path).parts and
+        return (document and path not in FILE_TEST_MODULES and "fixtures" not in Path(path).parts and
                 not path.startswith(("tools/", "mk/")) and
                 not is_test_support(path, test_dirs, SHARED_TEST_MODULES))
 
-    paths = sorted({path for path in paths if not documentation(path)})
+    paths = sorted({path for path in paths if not documentation(path) and
+                    not (path.startswith(COORDINATION_PATHS) and path not in FILE_TEST_MODULES)})
     for path in paths:
         if path not in FILE_TEST_MODULES and changed_suites([path]) is None:
             return full(path, "ścieżka poza mapą")
@@ -229,12 +239,13 @@ def changed_modules(paths, entries, root=ROOT):
                 if module not in all_modules:
                     raise ValueError(f"Brak modułu kontraktowego w pełnym zestawie: {module}")
                 add(module, f"{path} → kontrakt procesu usługi")
-    return Selection(reasons)
+    return Selection(reasons, skipped_coordination=skipped)
 
 
 def explain_selection(selection):
     print("Dobór zmian: " + ("pełny przebieg" if selection.full else "mapa importów i zestawów"))
     print("AST: wszyscy pośredni odbiorcy; nierozstrzygalny import dynamiczny poszerza dobór")
+    print(f"Pominięte ścieżki koordynacji: {selection.skipped_coordination}")
     print(f"Wybrane moduły: {len(selection.modules)}")
     for module in selection.modules:
         print(f"- {module}")

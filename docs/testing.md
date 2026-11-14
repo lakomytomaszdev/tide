@@ -146,6 +146,21 @@ kodu, także przy usunięciu dokumentu. W mieszanym diffie dobór wynika z pozos
 W `docs/` pomijane są również `.rst`, `.txt` i ilustracje (`.png`, `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp`).
 Wyjątek nie obejmuje Markdown w `tools/`, `mk/`, katalogach testów ani `fixtures/`: wspólne fixture'y
 mogą zawierać dokumenty używane jako dane. Kod i konfiguracja w `docs/` nie są pomijane.
+Pliki koordynacji pod `COORDINATION_PATHS` w `tools/test_suites.py` (`docs/agents/masterplan/`,
+`docs/agents/interwencje/`, `docs/agents/plans/`; prefiksy dosłowne, bez reszty `docs/`) nie wybierają
+testów w żadnej postaci: ani `.md`, ani `.json`, `.html`, `.tsv`, ani przy usunięciu pliku. Plik, który
+jakiś test czyta z prawdziwego repozytorium, dostaje klucz w `FILE_TEST_MODULES`; klucz ma pierwszeństwo
+przed listą i wybiera swoje moduły. Test spójności w `scripts/tests/test_test_dependencies.py` pilnuje
+tego mechanicznie: skanuje AST wszystkich plików `.py` w katalogach testów z `SUITES` i dla każdej
+ścieżki istniejącego, śledzonego pliku pod prefiksem koordynacji wymaga klucza z tym modułem wśród
+odbiorców. Rozpoznaje napisy stałe (także części f-stringa i tekst poleceń powłoki, np.
+`cp "$src/../docs/agents/plans/x.md"`) oraz ciągi stałych segmentów po dowolnej bazie: `X / "docs/…"`,
+`X / "docs" / "agents" / …`, `os.path.join(X, "docs", …)`, `posixpath.join`, `Path("docs", …)`
+i `X.joinpath("docs", …)`. Fałszywe trafienia (nazwa istniejącego planu użyta w danych albo w repozytorium
+tymczasowym) trafiają do krotki `COORDINATION_SCAN_EXCEPTIONS` kluczowanej parą (moduł testu, ścieżka),
+z komentarzem przy każdej pozycji; pozycja, która przestała być trafieniem, wywala test. Skan nie
+wykrywa odczytu katalogu przez zmienną (glob po `ROOT`) ani odczytu przez stałą modułu produktu
+(np. `basechange.FOLLOWUP`): takie odbiorniki wymagają ręcznego wpisu w `FILE_TEST_MODULES`.
 Narzędzia użytkowe z `FILE_TEST_MODULES` w `tools/test_suites.py` mają jawne kontrakty:
 `board_compat_check.py`, `question_corpus.py`, `next_id.py`, `check_plans.py`, `sessions_preview.py`.
 Wybierają wyłącznie zadeklarowane moduły testów; brak takiego modułu jest błędem konfiguracji.
