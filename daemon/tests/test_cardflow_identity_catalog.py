@@ -409,15 +409,16 @@ BARRIERS = {
         denial="FlowError process-history / k38-trial-held", effect="końcowa kontrola operacji przed skutkiem",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_process_check_returns_current_state_for_the_same_identity"]),
     "outside": dict(
-        consumers=[("cardflow/engine.py", "FlowEngine._outside_history"),
-                   ("cardflow/engine.py", "FlowEngine._outside_recheck"),
+        # K-109 PT-478: logika `_outside*` w cardflow/commands.py; wrappery silnika są delegacjami (DELEGATIONS).
+        consumers=[("cardflow/commands.py", "outside_history"),
+                   ("cardflow/commands.py", "outside_recheck"),
                    ("cardflow/engine.py", "FlowEngine._consent_recheck"),
                    # Bieżące uruchomienie outside ze wspólnego wyniku (M4/M7 review 2).
-                   ("cardflow/engine.py", "FlowEngine._outside_ready"),
+                   ("cardflow/commands.py", "outside_ready"),
                    # K-105 PT-415: ponowna redukcja na świeżym odczycie przed skutkiem (wynik, zapis zakończenia).
-                   ("cardflow/engine.py", "FlowEngine._outside_ready.fresh_run"),
-                   ("cardflow/engine.py", "FlowEngine._outside_busy"),
-                   ("cardflow/engine.py", "FlowEngine._outside_exit"),
+                   ("cardflow/commands.py", "outside_ready.fresh_run"),
+                   ("cardflow/commands.py", "outside_busy"),
+                   ("cardflow/commands.py", "outside_exit"),
                    ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
                    # PT-373: klasa trwającego polecenia po restarcie z tego samego wspólnego wyniku (outside_runs).
                    ("cardflow/engine.py", "FlowEngine._started_heavy"),
@@ -652,7 +653,6 @@ DELEGATIONS = {
     # PT-330: nowe review w Konsoli po nieukończonej próbie startuje przez _launch_full_planning.
     ("cardflow/engine.py", "FlowEngine._enter_review_console"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
-    ("cardflow/engine.py", "FlowEngine._outside_behind"): "outside",
     ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_launch"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_result"): "step-launch",
@@ -665,12 +665,16 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
     # K-105 PT-415: świeża bramka historii outside przed każdym zapisem sprawdzenia reguł (recheck co tick z pamięci).
-    ("cardflow/engine.py", "FlowEngine._outside_recheck.gate"): "outside",
+    ("cardflow/commands.py", "outside_recheck.gate"): "outside",
+    # K-109 PT-478: kolejka i zbieranie wyniku w commands.py; cienkie wrappery `_outside*` silnika delegują do nich.
+    ("cardflow/commands.py", "outside_behind"): "outside",
+    ("cardflow/commands.py", "outside_collect"): "outside",
+    **{("cardflow/engine.py", f"FlowEngine._outside_{name}"): "outside" for name in (
+        "behind", "busy", "collect", "exit", "history", "ready", "recheck")},
     # PT-329: przebieg pod zgodą próby testów po scaleniu (kolejka outside, wynik) i decyzja z panelu.
     ("cardflow/engine.py", "FlowEngine._merge_checks"): "outside",
     ("cardflow/engine.py", "FlowEngine._merge_check_waiting"): "outside",
     ("cardflow/engine.py", "FlowEngine._merge_check_start"): "outside",
-    ("cardflow/engine.py", "FlowEngine._outside_collect"): "outside",
     # PT-373: kolejka ciężkich poleceń — zajętość z żywego zbioru i klasa trwających po restarcie.
     ("cardflow/engine.py", "FlowEngine._heavy_admitted"): "outside",
     ("cardflow/engine.py", "FlowEngine._heavy_running"): "outside",
@@ -949,8 +953,10 @@ class ConsumerCatalog(unittest.TestCase):
         self.assertEqual(found - assigned - set(RAW_READS), set(), "surowy odczyt tożsamości bez bariery")
         self.assertEqual(set(RAW_READS) - found, set(), "nieaktualny wpis surowego odczytu")
         self.assertEqual(set(RAW_READS) & assigned, set())
-        for key in ("_outside_busy", "_seed_outside_waiting", "_outside_exit", "_outside_ready"):
-            self.assertIn(("cardflow/engine.py", f"FlowEngine.{key}"), assigned)
+        # K-109 PT-478: logika `_outside_busy`, `_outside_exit` i `_outside_ready` przeniesiona do commands.py.
+        for key in (("cardflow/commands.py", "outside_busy"), ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
+                    ("cardflow/commands.py", "outside_exit"), ("cardflow/commands.py", "outside_ready")):
+            self.assertIn(key, assigned)
 
     def test_new_raw_reader_fails_completeness(self):
         source = ("def busy(events, name):\n"
