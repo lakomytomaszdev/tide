@@ -7,7 +7,7 @@
   `.git/worktrees` innych kroków ukryte,
 - dowiązanie na każdym poziomie ścieżek → manifest nieustalony z powodem,
 - podmiana katalogu po złożeniu kroku, a przed startem → odmowa startu, bez zapisu przez dowiązanie,
-- `git worktree prune` i `git gc` odrzucane w każdym kroku.
+- `git worktree prune`, `git gc`, `git maintenance`, `git prune` i `git repack` odrzucane w każdym kroku.
 Prawdziwy program agenta ani systemd-run nie startują.
 """
 import json
@@ -305,7 +305,10 @@ class ToctouTest(ManifestBase):
 
 class ForbiddenGitMaintenanceTest(ManifestBase):
     COMMANDS = ("git gc", "git gc --prune=now", "git gc --aggressive", "git worktree prune", "git worktree prune -v",
-                "git -C /x worktree prune", "git -c gc.auto=1 gc", "LC_ALL=C git gc", "git --no-pager gc")
+                "git -C /x worktree prune", "git -c gc.auto=1 gc", "LC_ALL=C git gc", "git --no-pager gc",
+                # review PT-480 r1: ten sam skutek co `git gc` (zadanie gc bez `--auto`, przycinanie obiektów)
+                "git maintenance run", "git maintenance run --task=gc", "git -C /x maintenance run",
+                "git prune --expire=now", "git prune", "git repack -a -d", "git -c x=y repack -a -d")
 
     def test_classified_as_forbidden_in_every_project(self):
         for command in self.COMMANDS:
@@ -314,12 +317,15 @@ class ForbiddenGitMaintenanceTest(ManifestBase):
                 self.assertIn(commands.forbidding_rule(command, []), commands.STEP_DENIED)
                 self.assertFalse(commands.outside_allowed(command, []))
                 self.assertIsNone(commands.sandbox_grant(command, []))
-        for command in ("git worktree list", "git worktree add ../x", "git status", "git log --oneline"):
+        for command in ("git worktree list", "git worktree add ../x", "git status", "git log --oneline",
+                        "git prune-packed", "git count-objects -v"):
             self.assertFalse(commands.is_forbidden(command, []), command)
 
     def test_claude_step_bans_them_whatever_the_project_list(self):
         allowed, bans = commands.claude_tools(["git worktree *", "git *"], [])
-        for rule in ("Bash(git gc)", "Bash(git gc *)", "Bash(git worktree prune)", "Bash(git worktree prune *)"):
+        for rule in ("Bash(git gc)", "Bash(git gc *)", "Bash(git worktree prune)", "Bash(git worktree prune *)",
+                     "Bash(git maintenance)", "Bash(git maintenance *)", "Bash(git prune)", "Bash(git prune *)",
+                     "Bash(git repack)", "Bash(git repack *)"):
             self.assertIn(rule, bans)
 
     def test_step_git_never_runs_automatic_gc(self):

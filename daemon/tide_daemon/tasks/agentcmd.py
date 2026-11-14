@@ -699,7 +699,8 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
         "GIT_CONFIG_COUNT": "4", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
         "GIT_CONFIG_KEY_1": "core.askPass", "GIT_CONFIG_VALUE_1": "",
         # PT-480: bez samoczynnego `git gc --auto` (po commicie) i konserwacji — gc przycina `.git/worktrees` i obiekty
-        # osiągalne tylko z wpisów innych kroków, których krok nie widzi (`git gc` i `git worktree prune` są zakazane).
+        # osiągalne tylko z wpisów innych kroków, których krok nie widzi (`git gc`, `git worktree prune`
+        # i podpolecenia o tym samym skutku są zakazane: `board.commands.STEP_DENIED`).
         "GIT_CONFIG_KEY_2": "gc.auto", "GIT_CONFIG_VALUE_2": "0",
         "GIT_CONFIG_KEY_3": "maintenance.auto", "GIT_CONFIG_VALUE_3": "false",
         "GIT_CONFIG_GLOBAL": os.path.join(inp, "gitconfig"),

@@ -1842,9 +1842,13 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
   `Background.prepare()` i `Background.start()` sprawdzają je ponownie tuż przed zapisem plików kroku i przed
   `Popen`: podmiana (dowiązanie albo inny katalog pod tą samą nazwą) to odmowa startu. Okno między tym sprawdzeniem
   a montowaniem w piaskownicy programu (bwrap Claude CLI/Codexa) zostaje; zamyka je dopiero wykonawca z etapu 2.
-  W kroku `gc.auto=0` i `maintenance.auto=false` (`GIT_CONFIG_*`), a `git gc` i `git worktree prune` są zakazane
-  w każdym projekcie (`board.commands.STEP_DENIED`, także z opcjami gita przed podpoleceniem i poza piaskownicą):
-  wpisy innych kroków są w kroku ukryte, więc wyglądałyby na porzucone.
+  Krok w pudełku (`BoxRunner`) nie woła `prepare()`/`start()` (ma własne sprawdzenia dowiązań w `StepDir`), więc
+  tam manifest jest sprawdzany tylko przy budowie; ponowne sprawdzenie w pudełku daje etap 2.
+  W kroku `gc.auto=0` i `maintenance.auto=false` (`GIT_CONFIG_*`), a `git gc`, `git worktree prune`,
+  `git maintenance` (zadanie `gc` biegnie bez `--auto`, więc `gc.auto=0` go nie zatrzymuje), `git prune`
+  i `git repack` są zakazane w każdym projekcie (`board.commands.STEP_DENIED`, całe podpolecenie, także z opcjami
+  gita przed nim i poza piaskownicą): wpisy innych kroków są w kroku ukryte, więc one i ich obiekty wyglądałyby
+  na porzucone.
 - **Pochodzenie wywołania.** `UpsertProject` z polem `tests` ustala PID nadawcy z magistrali
   (`GetConnectionUnixProcessID`, `QDBusConnectionInterface.servicePid`) i czyta `/proc/<pid>/cgroup`
   (`daemon/tide_daemon/call_origin.py`). Proces w jednostce kroku (segment `tide-step-*`, także podgrupa jednostki

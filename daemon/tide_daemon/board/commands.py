@@ -14,8 +14,10 @@ DEFAULT_ALLOWED = ("git status *", "git diff *", "git log *", "git show *", "git
 TIDE_DENIED = ("make install",)
 # Zakazane w każdym kroku każdego projektu, niezależnie od jego listy (PT-480): `git worktree prune` usuwa wpisy
 # `.git/worktrees` innych kroków (w kroku są ukryte, więc wyglądają na porzucone), a `git gc` przycina obiekty
-# osiągalne tylko z nich. `git worktree *` z listy domyślnej nie obejmuje tych podpoleceń.
-STEP_DENIED = ("git worktree prune", "git gc")
+# osiągalne tylko z nich. Ten sam skutek mają `git maintenance` (zadanie `gc` to zwykłe `git gc`, bez `--auto`,
+# więc `gc.auto=0` go nie zatrzymuje), `git prune` (luźne obiekty) i `git repack` (`-a -d`: obiekty z paczek) —
+# zakaz obejmuje całe podpolecenie. `git worktree *` z listy domyślnej nie obejmuje tych podpoleceń.
+STEP_DENIED = ("git worktree prune", "git gc", "git maintenance", "git prune", "git repack")
 # Polecenia tylko do czytania, dozwolone w każdym projekcie niezależnie od jego listy: krok i tak działa
 # w piaskownicy (bez sieci, bez katalogu domowego), a bez nich agenci stawali na `cd … && ls … | head`.
 # Zakazy projektu mają pierwszeństwo (Claude CLI stosuje reguły deny przed allow).
