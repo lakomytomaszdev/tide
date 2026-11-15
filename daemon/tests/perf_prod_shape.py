@@ -56,6 +56,41 @@ def read_events(path):
     return events, bad
 
 
+def tree_counts(path, skip=()):
+    """Liczby plików, katalogów i bajtów pod `path` (bez dowiązań i bez nazw z `skip` na pierwszym poziomie)."""
+    files = dirs = size = 0
+    for top, names, entries in os.walk(path):
+        if top == path:
+            names[:] = [n for n in names if n not in skip]
+            entries = [e for e in entries if e not in skip]
+        dirs += len(names)
+        for entry in entries:
+            try:
+                st = os.lstat(os.path.join(top, entry))
+            except OSError:
+                continue
+            files += 1
+            size += st.st_size
+    return {"files": files, "dirs": dirs, "bytes": size}
+
+
+def fs_shape(board, names):
+    """Kształt systemu plików Tablicy (same liczby): pliki i katalogi każdej karty w `flow/` bez dziennika, rozmiar pliku
+    karty `cards/K-n.md` oraz pliki i katalogi `tags/`, `projects/`, `docs/`. Niczego nie czyta z treści."""
+    out = {"flow": {}, "cardFiles": {}, "folders": {}}
+    for name in names:
+        out["flow"][name] = tree_counts(os.path.join(board, "flow", name), skip=("journal.jsonl",))
+        try:
+            out["cardFiles"][name] = os.path.getsize(os.path.join(board, "cards", name + ".md"))
+        except OSError:
+            pass
+    for folder in ("cards", "tags", "projects", "docs", "flows"):
+        path = os.path.join(board, folder)
+        if os.path.isdir(path):
+            out["folders"][folder] = tree_counts(path)
+    return out
+
+
 def collect(board):
     """Kształt całej Tablicy: lista kart (po numerze) i sumy. Karta, której nie da się złożyć, trafia jako `unreadable`."""
     flow = os.path.join(board, "flow")
@@ -73,7 +108,13 @@ def collect(board):
             cards.append(shape)
         except Exception as exc:                              # jeden dziennik nie zatrzymuje reszty
             unreadable.append({"card": name, "bytes": os.path.getsize(path), "error": type(exc).__name__})
-    return {"kind": "tide-prod-shape", "cards": cards, "unreadable": unreadable, "totals": totals(cards, unreadable)}
+    result = {"kind": "tide-prod-shape", "cards": cards, "unreadable": unreadable, "totals": totals(cards, unreadable)}
+    result["fs"] = fs_shape(board, [c["card"] for c in cards])
+    result["totals"]["flowFiles"] = sum(v["files"] for v in result["fs"]["flow"].values())
+    result["totals"]["flowDirs"] = sum(v["dirs"] for v in result["fs"]["flow"].values())
+    result["totals"]["cardMdBytes"] = sum(result["fs"]["cardFiles"].values())
+    result["totals"]["folders"] = result["fs"]["folders"]
+    return result
 
 
 def totals(cards, unreadable=()):

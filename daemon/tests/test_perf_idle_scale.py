@@ -559,6 +559,25 @@ class ProdShapeTest(unittest.TestCase):
         self.assertEqual(shape["totals"]["cards"], 5)
         self.assertEqual(shape["totals"]["undecidedOutside"], 4)             # 3 w K-1 i 1 w K-5
 
+    def test_collect_counts_files_and_directories_without_reading_them(self):
+        from . import perf_prod_shape as prod
+        self.write(1, "done")
+        self.write(2, "done")
+        steps = os.path.join(self.board, "flow", "K-1", "steps", "s1", "out")
+        os.makedirs(steps)
+        for name in ("a", "b", "c"):
+            with open(os.path.join(steps, name), "w", encoding="utf-8") as fh:
+                fh.write("SECRET-CONTENT")
+        os.makedirs(os.path.join(self.board, "cards"))
+        with open(os.path.join(self.board, "cards", "K-1.md"), "w", encoding="utf-8") as fh:
+            fh.write("x" * 1234)
+        shape = prod.collect(self.board)
+        self.assertEqual(shape["fs"]["flow"]["K-1"], {"files": 3, "dirs": 3, "bytes": 3 * len("SECRET-CONTENT")})
+        self.assertEqual(shape["fs"]["flow"]["K-2"], {"files": 0, "dirs": 0, "bytes": 0})   # dziennik się nie liczy
+        self.assertEqual(shape["fs"]["cardFiles"], {"K-1": 1234})
+        self.assertEqual((shape["totals"]["flowFiles"], shape["totals"]["flowDirs"]), (3, 3))
+        self.assertNotIn("SECRET-CONTENT", json.dumps(shape))
+
     def test_shape_file_round_trips_through_the_generator_plan(self):
         from . import perf_prod_shape as prod
         self.write(1, "paused", requests=2)
