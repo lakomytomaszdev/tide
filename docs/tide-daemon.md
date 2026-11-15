@@ -1122,6 +1122,73 @@ w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i rap
    CPU któregokolwiek okna w którymkolwiek ustawieniu `box.enabled`, `Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s —
    to **otwarty bloker M0**. Ten sam pomiar powtarza się po następnej instalacji (regresja).
 
+### Zmiany K-125 i wyniki przed/po K-125 (PT-489, 15.11.2026)
+
+K-125 usuwa z postoju koszt, który na produkcji dawał ok. 62,7 % CPU procesu przy wiszących prośbach „uruchom poza
+piaskownicą” we wstrzymanych kartach. Spis zmian (opisy pełne w sekcji „Przepływ karty: „Od razu” (PT-58)”):
+
+- **#1 (PT-486) — reproduktor ze stanami produkcji.** 7 próśb outside bez decyzji w 4 wstrzymanych kartach (3, 2, 1, 1),
+  1 aktywna prośba outside, karta z trzymanym procesem K-38, karta z zatwierdzonym planem w spoczynku, atrapa `systemctl`
+  w `PATH` reproduktora (zwraca `active`, liczy wywołania) i profil z kategoriami `outside`, `plan`, `inventory`.
+- **#2 (PT-487) — pauza przed oceną próśb.** Tick sprawdza pauzę karty na stanie ticku przed oceną prośby outside
+  i planowania: bez odczytu Tablicy, bez zapisu. Prośba pozostaje rozstrzygalna w panelu, a ocena rusza w pierwszym
+  ticku po wznowieniu.
+- **#3 (PT-488) — pamięć stanu jednostek 30 s i commit planu z dziennika.** Inwentaryzacja K-38 pamięta stan jednostki
+  przez 30 s, wyłącznie `active`/`inactive` (`unknown` nigdy nie jest pamięcią). Commit planu w spoczynku bierze wynik
+  z dziennika i nie czyta Tablicy, gdy wynik jest zapisany.
+- **#5 (pamięć wyniku negatywnego dla aktywnej prośby) jest warunkowe.** Startuje tylko, gdy reproduktor przy
+  `threshold: fail` pokaże udział `outside` ≥ 10 % próbek ticku w którymś trybie `box.enabled`. Wynik poniżej zostawia
+  #5 i #6 odrzucone, a niezaliczony próg bez istotnego udziału `outside` kończy się pytaniem o kolejny krok bez zmian kodu.
+
+Raporty składają `perf_k125_report.py` („przed”) i `perf_k125_after.py` („po”, z werdyktami `threshold`, `outsideShare`
+i `recommendation`); każde okno rozstrzyga osobno (średnia nie ma znaczenia). Pliki: `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`
+(SHA bazy `ec94a8188ccdf0423a7f670a83f16b6032518510`) i `pomiar-k125-po.json` (SHA `59f97ca0211ce0cd927df838b036432996d91e64`:
+kod usługi z #1–#3 bez zmian w PT-489, dodany tylko raport „po”). Te same dane (46 kart, 62,1 MB, te same role), ta sama
+atrapa `systemctl`, `--scale prod --windows 10`, osobne polecenie `outside` z `"exclusive": true` na tryb. Wynik reproduktora
+jest wskaźnikiem: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej).
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed K-125, `box.enabled=false` | 1 | ważna | 16,4; 16,23; 15,98; 16,28; 16,27; 24,63; 18,9; 17,15; 16,3; 18,6 | 17,67 / 24,63 | spełniony (0 z 10 okien ponad 30 %) |
+| przed K-125, `box.enabled=true` | 1 | ważna | 16,98; 16,7; 16,87; 16,92; 16,78; 17,08; 16,58; 16,8; 16,88; 18,83 | 17,04 / 18,83 | spełniony (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=false` | 2 (1 nieważna: loadavg po 27,28) | ważna | 6,7; 6,3; 6,57; 6,47; 6,38; 6,28; 6,3; 6,05; 6,32; 9,28 | 6,67 / 9,28 | **spełniony** (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=true` | 1 | ważna | 7,08; 6,7; 6,65; 6,68; 6,32; 5,72; 5,97; 6,3; 5,73; 8,47 | 6,56 / 8,47 | **spełniony** (0 z 10 okien ponad 30 %) |
+
+Werdykt: **`threshold: pass`** (każde okno w obu trybach ≤ 30 %), `outsideShare` 0,4071 (`false`) i 0,415 (`true`),
+rekomendacja „#5 i #6 odrzucić”. Reguła „#5 potrzebny” dotyczy tylko `fail`, więc wysoki udział `outside` w tiku sam jej nie
+uruchamia: tick wzięty w całości zmalał z 886 do 312 próbek (`false`) i z 895 do 294 (`true`).
+Uwaga o miarze „przed”: reproduktor „przed” dał ok. 17 %, nie ponad 30 % z produkcji (62,7 %), więc poprawę widać, ale
+reproduktor nie odtwarza w pełni kosztu produkcji (m.in. liczba i rozmiar dzienników, obciążenie pudełek).
+
+Diagnostyka bez progu:
+
+| Metryka | `false` przed → po | `true` przed → po |
+|---|---|---|
+| udział ticku w próbkach pracy | 0,9662 → 0,9043 | 0,9501 → 0,8776 |
+| próbki `engine.tick` | 886 → 312 | 895 → 294 |
+| `outside` (`_consent_recheck`), próbki / udział ticku | 390 / 0,4402 → 127 / 0,4071 | 376 / 0,4201 → 122 / 0,415 |
+| `plan` (`_plan_next`), próbki / udział ticku | 326 / 0,3679 → 0 / 0 | 334 / 0,3732 → 0 / 0 |
+| `inventory` (`trialhold.inventory`), próbki / udział ticku | 38 / 0,0429 → 0 / 0 | 37 / 0,0413 → 0 / 0 |
+| `_resume_step` / `store._inside` (próbki, „po”) | 0 / 50 | 0 / 62 |
+| wywołania atrapy `systemctl` w oknie CPU (na tick) | 16065 (133,9) → 2430 (20,25) | 16200 (135,0) → 2565 (21,4) |
+| `Snapshot` p95 | 10,4 → 10,4 ms | 18,8 → 10,0 ms |
+| `VmRSS` początek → koniec okien | 566,2 → 594,4 → „po” 550,1 → 572,9 MB | 586,5 → 618,0 → „po” 580,4 → 614,4 MB |
+
+Ramek `_resume_step` i `store._inside` nie ma wśród 15 najcięższych ramek „przed”, więc „przed” nie ma ich próbek (mniej
+niż najmniejsza z tych 15); „po” zapisuje je z raportu próbnika (`resumeStoreFrames`).
+
+### Procedura produkcji po instalacji K-125 (właściciel)
+
+Po `make install` gałęzi karty K-125 (instaluje właściciel, nie agent) pomiar produkcji powtarza się tak jak w kroku
+„Procedura produkcji po instalacji (właściciel)” wyżej: `/usr/bin/python3 scripts/measure_idle_prod.py
+--out ~/pomiar-k125-box-<false|true>.json` **dla obu wartości `box.enabled`** (10 okien CPU po 60 s, ciągły postój
+bez kroków w toku, rozgrzewka, próbnik i seria `Snapshot`). Pomiar ma się odbyć **z wiszącymi 7 prośbami outside we
+wstrzymanych kartach** (jak K-104, K-107, K-44, K-100 w stanie z produkcji), bo to ten stan K-125 zmienia; prośb nie wolno
+odmawiać ani rozstrzygać na potrzeby pomiaru. Wynik ponad progiem (okno ponad 30 % w którymkolwiek ustawieniu,
+`Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s) jest **otwartym blokerem M0**, także gdy reproduktor pokazał
+≤ 30 %. Przy takim wyniku udział `outside` ≥ 10 % próbek ticku jest przesłanką do #5; koszt gdzie indziej
+(`_resume_step`, `realpath` w `store._inside`) wymaga osobnej decyzji z podziałem próbek.
+
 ## Bezczynność
 
 Tapeta „Tide: kot” (`org.tide.cat`) zamyka kotu oczy, gdy nikt nie używa komputera. Wie o tym od usługi:
