@@ -114,6 +114,8 @@ def build(documents, before_report):
     blocks = {key: base.box_block(documents[key]) if documents.get(key) else None for key in ("false", "true")}
     for key, block in blocks.items():
         if block:
+            # `red`/`profileOk` to progi profilu „przed” (reproduktor czerwony, profil produkcji); werdykt „po” to `threshold`.
+            block.pop("criteria", None)
             block["firstValid"]["profile"]["resumeStoreFrames"] = frame_samples(attempt_report(documents[key]))
     before_blocks = {key: ((before_report or {}).get("byBoxEnabled") or {}).get(key) for key in ("false", "true")}
     outside = {key: ((b or {}).get("firstValid", {}).get("profile", {}).get("components", {})

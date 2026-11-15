@@ -1143,7 +1143,7 @@ piaskownicą” we wstrzymanych kartach. Spis zmian (opisy pełne w sekcji „Pr
 Raporty składają `perf_k125_report.py` („przed”) i `perf_k125_after.py` („po”, z werdyktami `threshold`, `outsideShare`
 i `recommendation`); każde okno rozstrzyga osobno (średnia nie ma znaczenia). Pliki: `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`
 (SHA bazy `ec94a8188ccdf0423a7f670a83f16b6032518510`) i `pomiar-k125-po.json` (SHA `59f97ca0211ce0cd927df838b036432996d91e64`:
-kod usługi z #1–#3 bez zmian w PT-489, dodany tylko raport „po”). Te same dane (46 kart, 62,1 MB, te same role), ta sama
+kod usługi z #1–#3 bez zmian w PT-489, dodany tylko raport „po”). Te same dane (46 kart; dzienniki 58,25 MB „przed” i 58,3 MB „po” wg `scale.disk.totalMb`, te same role), ta sama
 atrapa `systemctl`, `--scale prod --windows 10`, osobne polecenie `outside` z `"exclusive": true` na tryb. Wynik reproduktora
 jest wskaźnikiem: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej).
 
