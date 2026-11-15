@@ -1177,6 +1177,15 @@ Diagnostyka bez progu:
 Ramek `_resume_step` i `store._inside` nie ma wśród 15 najcięższych ramek „przed”, więc „przed” nie ma ich próbek (mniej
 niż najmniejsza z tych 15); „po” zapisuje je z raportu próbnika (`resumeStoreFrames`).
 
+**Decyzja o #5 i #6 (PT-490, właściciel, 15.11.2026): odrzucone.** Warunek startu #5 na `pomiar-k125-po.json`:
+`threshold: pass` w obu trybach (17,67 → 6,67 % i 17,04 → 6,56 %), a #5 dałby w reproduktorze ok. 2–3 pp CPU (tick to
+ok. 1,3 % próbek procesu, z tego ok. 41 % `outside`). PT-490 i PT-491 kończą się bez zmian kodu. Zastrzeżenie (decyzja
+właściciela z PT-486): reproduktor nie jest kryterium odbioru. Odbiór karty rozstrzyga pomiar produkcji
+(`scripts/measure_idle_prod.py`, oba tryby `box.enabled`) po scaleniu i instalacji, względem produkcyjnego „przed”
+62,7 %. Na produkcji `_consent_recheck` był ok. 3× droższy niż w reproduktorze, więc jeśli pomiar produkcji przekroczy
+próg, wstępna ocena próśb outside z pamięcią wyniku negatywnego (zakres #5, kartka `docs/agents/tickets/k-125-flow/pt-490.md`)
+wraca jako **nowa karta**.
+
 ### Procedura produkcji po instalacji K-125 (właściciel)
 
 Po `make install` gałęzi karty K-125 (instaluje właściciel, nie agent) pomiar produkcji powtarza się tak jak w kroku
