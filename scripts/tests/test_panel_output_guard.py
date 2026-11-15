@@ -139,6 +139,27 @@ class InstallersWithDisabledOutputTest(unittest.TestCase):
                 self.assertTrue(any(name.endswith(f"-{tag}.js") for name in self.plasmashell_scripts()))
                 self.assertIn(state_file, self.state_files())
 
+    def test_install_prints_a_note_with_the_orphans_from_the_script_result(self):
+        """PT-496: qdbus6 zwraca wynik z `orphans`; instalator wypisuje identyfikatory i kończy się kodem 0."""
+        (self.fake_dir / "orphans.json").write_text(json.dumps([103, 118]))
+        for script in ("panels.py", "sidebar.py", "dock.py"):
+            with self.subTest(script=script):
+                done = self.installer(script, "install")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("Panele bez widoku pominięte: 103, 118", done.stdout)
+        (self.fake_dir / "orphans.json").write_text(json.dumps([103]))
+        done = self.installer("dock.py", "install")
+        self.assertIn("Panele bez widoku pominięte: 103", done.stdout)
+
+    def test_install_prints_no_note_for_an_empty_list_or_a_result_without_the_key(self):
+        for override in ([], None):
+            (self.fake_dir / "orphans.json").write_text(json.dumps(override))
+            for script in ("panels.py", "sidebar.py", "dock.py"):
+                with self.subTest(script=script, orphans=override):
+                    done = self.installer(script, "install")
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertNotIn("bez widoku", done.stdout)
+
     def test_unreadable_kscreen_gives_a_note_and_the_usual_work(self):
         (self.fake_dir / "kscreen.fail").write_text("")
         done = self.installer("panels.py", "install")

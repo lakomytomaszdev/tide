@@ -15,6 +15,19 @@ function tidePanelHasView(panel) {
     return panel.screen >= 0 && panel.screen < screenCount;
 }
 
+// Identyfikatory paneli bez widoku (lista `orphans` w wyniku skryptów instalacji). Skrypty takich paneli
+// nie czytają ani nie zapisują ich właściwości widoku i nie zakładają w zamian nowego panelu tej samej roli.
+function tideOrphanIds() {
+    var ids = [];
+    var all = panels();
+    for (var i = 0; i < all.length; ++i) {
+        if (!tidePanelHasView(all[i])) {
+            ids.push(all[i].id);
+        }
+    }
+    return ids;
+}
+
 // Główny ekran i ekran boczny. Bez drugiego monitora side = -1.
 function tideScreens() {
     var main = tideScreen(P.mainOutput, 0);
@@ -98,7 +111,7 @@ function tideTopPanel(screen, hint) {
     var all = panels();
     for (var i = 0; i < all.length; ++i) {
         var panel = all[i];
-        if (panel.screen === screen && panel.location === "top" && !tideIsSideBar(panel)) {
+        if (tidePanelHasView(panel) && panel.screen === screen && panel.location === "top" && !tideIsSideBar(panel)) {
             if (!found || panel.id === hint) {
                 found = panel;
             }

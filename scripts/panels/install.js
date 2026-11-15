@@ -6,7 +6,7 @@
 
 var tideScreensNow = tideScreens();
 var tideOut = {screens: tideScreensNow, main: null, mainOrder: [], mainCreated: false,
-               side: null, sideOrder: [], sideCreated: false};
+               side: null, sideOrder: [], sideCreated: false, orphans: tideOrphanIds()};
 
 // --- główny pasek -----------------------------------------------------------
 var tideBar = tideTopPanel(tideScreensNow.main, P.mainHint);
@@ -66,25 +66,37 @@ tideOut.mainOrder.push(tideTray.id);
 
 // --- pasek lewego monitora ----------------------------------------------------
 if (tideScreensNow.side >= 0) {
+    // Pasek bez widoku jest tylko w `orphans`: nie ruszamy go i nie zakładamy drugiego z tą samą rolą.
     var tideSide = null;
+    var tideOrphanSide = false;
     if (P.sidePanel) {
         var tideKnown = panelById(P.sidePanel);
         if (tideKnown && tideIsSideBar(tideKnown)) {
-            tideSide = tideKnown;
+            if (tidePanelHasView(tideKnown)) {
+                tideSide = tideKnown;
+            } else {
+                tideOrphanSide = true;
+            }
         }
     }
     var tideAllPanels = panels();
     for (var tideJ = 0; !tideSide && tideJ < tideAllPanels.length; ++tideJ) {
         if (tideIsSideBar(tideAllPanels[tideJ])) {
-            tideSide = tideAllPanels[tideJ];
+            if (tidePanelHasView(tideAllPanels[tideJ])) {
+                tideSide = tideAllPanels[tideJ];
+            } else {
+                tideOrphanSide = true;
+            }
         }
     }
-    if (!tideSide) {
+    if (!tideSide && !tideOrphanSide) {
         // Nowy panel Plasma stawia na aktywnym monitorze — przenosimy go na boczny.
         tideSide = new Panel("org.kde.panel");
         tideMarkSideBar(tideSide);
         tideOut.sideCreated = true;
     }
+}
+if (tideSide) {
     if (tideSide.screen !== tideScreensNow.side) {
         tideSide.screen = tideScreensNow.side;
     }

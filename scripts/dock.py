@@ -14,7 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
-from scripts.panels import evaluate, load, outputs_disabled, persist_thickness, save, screens, script, settle  # noqa: E402
+from scripts.panels import (evaluate, load, orphans_note, outputs_disabled, persist_thickness, save, screens,  # noqa: E402
+                            script, settle)
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kafelki, które wyszły z docka, ale mogą w nim jeszcze stać po starej instalacji: instalacja zdejmuje je
@@ -62,6 +63,7 @@ def params() -> dict:
 
 def install() -> None:
     result = evaluate(script("dock", params()))
+    orphans_note(result)
     settle()
     evaluate(script("order", {**screens(), "panels": [{"id": result["dock"], "order": result["order"]}]}))
     persist_thickness(result["dock"], params()["dockHeight"])

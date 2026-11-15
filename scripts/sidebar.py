@@ -24,7 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from kwin.shortcuts import conflicts  # noqa: E402
 from scripts.appearance import DATA, PALETTE, STATE, xdg  # noqa: E402
-from scripts.panels import evaluate, load, outputs_disabled, persist_thickness, save, screens, script, settle  # noqa: E402
+from scripts.panels import (evaluate, load, orphans_note, outputs_disabled, persist_thickness, save, screens,  # noqa: E402
+                            script, settle)
 
 INSTALLED = STATE / "tide" / "sidebar-installed.json"
 SHORTCUTS = xdg("XDG_CONFIG_HOME", ".config") / "kglobalshortcutsrc"
@@ -93,8 +94,12 @@ def install() -> None:
     taken = taken_by(previous)
     values = params(previous, "" if taken else SHORTCUT)
     result = evaluate(script("sidebar", values))
+    orphans_note(result)
     if result.get("sidebar") is None:
-        print("Uwaga: nie ma drugiego monitora — pasek boczny Tide nie powstał.")
+        if result.get("screens", {}).get("side", -1) >= 0:
+            print("Uwaga: pasek boczny Tide nie ma widoku — pominięty, nowy nie powstał.")
+        else:
+            print("Uwaga: nie ma drugiego monitora — pasek boczny Tide nie powstał.")
         return
     settle()
     evaluate(script("order", {**screens(), "panels": [{"id": result["sidebar"], "order": result["order"],

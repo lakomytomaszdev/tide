@@ -24,6 +24,19 @@ if args[:3] == ["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.eval
     (calls / f"{len(list(calls.glob('*.js'))):03d}-{tag}.js").write_text(script)
     out, state = fake.run(json.loads((base / "plasma.json").read_text()), script)
     (base / "plasma.json").write_text(json.dumps(state))
+    # $TIDE_FAKE_DIR/orphans.json podmienia `orphans` w wyniku skryptu: lista (także pusta) albo null,
+    # czyli wynik starego skryptu bez tego klucza (testy notki instalatorów, PT-496).
+    override = base / "orphans.json"
+    marker = "TIDE_JSON:"
+    if override.exists() and marker in out:
+        start = out.rfind(marker)
+        value = json.loads(out[start + len(marker):].strip())
+        orphans = json.loads(override.read_text())
+        if orphans is None:
+            value.pop("orphans", None)
+        else:
+            value["orphans"] = orphans
+        out = out[:start] + marker + json.dumps(value)
     print(out)
 elif args[:2] == ["org.kde.ActivityManager", "/ActivityManager/Activities"]:
     # Bieżąca aktywność z $TIDE_FAKE_DIR/activity (bez pliku — aktywność pracy).

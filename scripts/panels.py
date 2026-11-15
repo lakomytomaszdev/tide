@@ -82,6 +82,14 @@ def evaluate(js: str) -> dict:
     return value
 
 
+def orphans_note(result: dict) -> None:
+    """Notka instalatora o panelach bez widoku, które skrypt pominął. Wynik starego skryptu bez klucza
+    `orphans` albo z pustą listą nie jest błędem i nie daje notki."""
+    ids = result.get("orphans") or []
+    if ids:
+        print(f"Panele bez widoku pominięte: {', '.join(str(i) for i in ids)}")
+
+
 def screens() -> dict:
     return {"mainOutput": MAIN_OUTPUT, "sideOutput": SIDE_OUTPUT}
 
@@ -177,6 +185,7 @@ def install() -> None:
     enabled = appmenu_module(True) or installed.get("kdedAppmenuEnabled", False)
 
     result = evaluate(script("install", install_params(palette, installed)))
+    orphans_note(result)
     settle()
     order = evaluate(script("order", order_params(result)))
     for panel in order_params(result)["panels"]:
@@ -193,7 +202,10 @@ def install() -> None:
     for panel in order["panels"]:
         print(f"Panel {panel['id']}: {', '.join(t.rsplit('.', 1)[-1] for t in panel['order'])}")
     if result.get("side") is None:
-        print("Uwaga: nie ma drugiego monitora — pasek lewego monitora nie powstał.")
+        if result["screens"].get("side", -1) >= 0:
+            print("Uwaga: pasek lewego monitora nie ma widoku — pominięty, nowy nie powstał.")
+        else:
+            print("Uwaga: nie ma drugiego monitora — pasek lewego monitora nie powstał.")
     print("Górne paski Tide zainstalowane. Aplikacje uruchomione wcześniej pokażą globalne menu po restarcie.")
 
 
