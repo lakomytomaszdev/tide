@@ -6,7 +6,9 @@
 
 // Panel bez widoku (tidePanelHasView) trafia do `orphans`: jego właściwości widoku nie są czytane ani
 // przywracane, ale panele Tide do usunięcia znikają także wtedy.
-var tideOut = {removed: [], main: null, mainOrder: [], orphans: tideOrphanIds()};
+// Główny pasek bez widoku nie jest przywracany w całości: `skipped` niesie jego id, a instalator zachowuje
+// zrzut i ponowi odinstalowanie po włączeniu monitora.
+var tideOut = {removed: [], main: null, mainOrder: [], skipped: null, orphans: tideOrphanIds()};
 
 var tideAll = panels();
 for (var tideI = 0; tideI < tideAll.length; ++tideI) {
@@ -63,7 +65,9 @@ if (tideBar && P.mainCreated) {
     // Panel powstał przy instalacji (wcześniej go nie było) — usuwamy go w całości.
     tideOut.removed.push(tideBar.id);
     tideBar.remove();
-} else if (tideBar && tidePrevious && tidePanelHasView(tideBar)) {
+} else if (tideBar && tidePrevious && !tidePanelHasView(tideBar)) {
+    tideOut.skipped = tideBar.id;
+} else if (tideBar && tidePrevious) {
     var tideWanted = {};
     for (var tideK = 0; tideK < tidePrevious.widgets.length; ++tideK) {
         tideWanted[tidePrevious.widgets[tideK].id] = tidePrevious.widgets[tideK].type;
@@ -86,8 +90,13 @@ if (tideBar && P.mainCreated) {
         }
         tideOut.mainOrder.push(tideWidget.id);
     }
-    tideBar.height = tidePrevious.height;
-    tideBar.floating = tidePrevious.floating;
+    // Wpis zrzutu `orphan` (zrobiony bez widoku) nie ma kluczy widoku — nie zapisujemy `undefined`.
+    if (tidePrevious.height !== undefined) {
+        tideBar.height = tidePrevious.height;
+    }
+    if (tidePrevious.floating !== undefined) {
+        tideBar.floating = tidePrevious.floating;
+    }
     tideOut.main = tideBar.id;
 }
 

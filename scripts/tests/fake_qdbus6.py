@@ -27,15 +27,19 @@ if args[:3] == ["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.eval
     # $TIDE_FAKE_DIR/orphans.json podmienia `orphans` w wyniku skryptu: lista (także pusta) albo null,
     # czyli wynik starego skryptu bez tego klucza (testy notki instalatorów, PT-496).
     override = base / "orphans.json"
+    extra = base / "result-extra.json"  # scala dowolne klucze do wyniku (np. `skipped`, PT-498)
     marker = "TIDE_JSON:"
-    if override.exists() and marker in out:
+    if (override.exists() or extra.exists()) and marker in out:
         start = out.rfind(marker)
         value = json.loads(out[start + len(marker):].strip())
-        orphans = json.loads(override.read_text())
-        if orphans is None:
-            value.pop("orphans", None)
-        else:
-            value["orphans"] = orphans
+        if override.exists():
+            orphans = json.loads(override.read_text())
+            if orphans is None:
+                value.pop("orphans", None)
+            else:
+                value["orphans"] = orphans
+        if extra.exists():
+            value.update(json.loads(extra.read_text()))
         out = out[:start] + marker + json.dumps(value)
     print(out)
 elif args[:2] == ["org.kde.ActivityManager", "/ActivityManager/Activities"]:

@@ -88,6 +88,10 @@ def uninstall() -> None:
         return
     result = evaluate(script("dock-uninstall", {**screens(), **installed, "widgets": DOCK_WIDGETS + DOCK_RETIRED}))
     orphans_note(result)
+    if result.get("skipped"):
+        print("Dock nie ma widoku — jego wymiary nie zostały przywrócone, stan zachowany. "
+              "Włącz monitor i ponów uninstall.")
+        return
     INSTALLED.unlink(missing_ok=True)
     print("Dock Tide odinstalowany, przywrócono poprzedni układ dolnego panelu.")
 

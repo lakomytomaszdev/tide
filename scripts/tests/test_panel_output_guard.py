@@ -171,6 +171,26 @@ class InstallersWithDisabledOutputTest(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(done.stdout.count("Panele bez widoku pominięte: 103"), 1, done.stdout)
 
+    def test_uninstall_keeps_the_snapshot_when_the_bar_or_dock_has_no_view(self):
+        """PT-498 (review M1): wynik `skipped` — instalator nie kasuje zrzutu i nie pisze „przywrócono”."""
+        for script, state_file, extra in (("panels.py", "panels-installed.json", {"skipped": 73}),
+                                          ("dock.py", "dock-installed.json", {"skipped": True})):
+            with self.subTest(script=script):
+                self.assertEqual(self.installer(script, "install").returncode, 0)
+                (self.fake_dir / "result-extra.json").write_text(json.dumps(extra))
+                done = self.installer(script, "uninstall")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("nie ma widoku", done.stdout)
+                self.assertIn("ponów uninstall", done.stdout)
+                self.assertNotIn("przywrócono poprzedni", done.stdout)
+                self.assertIn(state_file, self.state_files())
+                if script == "panels.py":
+                    self.assertIn("panels-previous.json", self.state_files())
+                (self.fake_dir / "result-extra.json").unlink()
+                done = self.installer(script, "uninstall")
+                self.assertIn("przywrócono poprzedni", done.stdout)
+                self.assertNotIn(state_file, self.state_files())
+
     def test_uninstall_prints_no_note_for_an_empty_list_or_a_result_without_the_key(self):
         for override in ([], None):
             for script in ("panels.py", "sidebar.py", "dock.py"):

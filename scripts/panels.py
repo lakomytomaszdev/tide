@@ -225,6 +225,10 @@ def uninstall() -> None:
               "changedKeys": CHANGED_KEYS, "defaults": DEFAULTS}
     result = evaluate(script("uninstall", params))
     orphans_note(result)
+    if result.get("skipped"):
+        print(f"Główny pasek {result['skipped']} nie ma widoku — jego układ nie został przywrócony, "
+              "zrzut zachowany. Włącz monitor i ponów uninstall.")
+        return
     if result.get("main"):
         settle()
         evaluate(script("order", {**screens(), "panels": [{"id": result["main"], "order": result["mainOrder"]}]}))

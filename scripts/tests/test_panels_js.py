@@ -706,16 +706,45 @@ class OrderAndUninstallOrphanTest(unittest.TestCase):
     def test_uninstall_accepts_a_snapshot_with_an_orphan_without_view_keys(self):
         out, state = fake.run(fake.desktop_like_15_11(), panels.script("dump", panels.screens()))
         previous = result(out)
-        orphan = next(p for p in previous["panels"] if p["id"] == 103)
+        orphan = next(p for p in previous["panels"] if p["id"] == 118)
         self.assertTrue(orphan["orphan"])
         for key in ("height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
                     "minimumLength", "maximumLength"):
             self.assertNotIn(key, orphan)
-        params = {**panels.screens(), "previous": previous, "mainPanel": 103, "mainCreated": False,
+        params = {**panels.screens(), "previous": previous, "mainPanel": 118, "mainCreated": False,
                   "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
         res, state = self.run_script("uninstall", state, params)
         self.assertEqual(res["orphans"], [103, 118])
         self.assertIsNone(res["main"])
+        self.assertEqual(res["skipped"], 118, "pasek bez widoku nie jest przywracany — instalator zachowa zrzut")
+        self.assertEqual(find(state, 103)["log"], [])
+
+    def test_uninstall_does_not_write_undefined_view_keys_from_an_orphan_snapshot_entry(self):
+        """PT-498 (review M2): zrzut zrobiony bez widoku, odinstalowanie z widokiem paska 73."""
+        out, state = fake.run(fake.desktop_like_15_11(), panels.script("dump", panels.screens()))
+        previous = result(out)
+        entry = next(p for p in previous["panels"] if p["id"] == 73)
+        for key in ("height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
+                    "minimumLength", "maximumLength"):
+            entry.pop(key, None)
+        entry["orphan"] = True
+        find(state, 73)["height"] = 50
+        before = find(state, 73).get("floating")
+        params = {**panels.screens(), "previous": previous, "mainPanel": 73, "mainCreated": False,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        res, state = self.run_script("uninstall", state, params)
+        self.assertEqual(res["main"], 73)
+        self.assertEqual(find(state, 73)["height"], 50, "height nie jest nadpisane wartością undefined")
+        self.assertEqual(find(state, 73).get("floating"), before)
+        self.assertNotIn("height", [entry[0] if isinstance(entry, list) else entry
+                                    for entry in find(state, 73)["log"]])
+
+    def test_dock_uninstall_reports_skipped_for_a_dock_without_view(self):
+        state = fake.desktop_like_15_11()
+        params = {**panels.screens(), "dock": 103, "created": False, "previous": {
+            "lengthMode": 1, "alignment": 1, "height": 40, "floating": 0}, "widgets": []}
+        res, state = self.run_script("dock-uninstall", state, params)
+        self.assertTrue(res["skipped"])
         self.assertEqual(find(state, 103)["log"], [])
 
     def test_uninstall_removes_a_created_main_panel_even_without_view(self):
