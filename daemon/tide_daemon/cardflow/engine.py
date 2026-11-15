@@ -68,6 +68,7 @@ from .riskview import RiskMemo
 from . import handoff
 from . import boxstep
 from . import trialhold
+from . import unitstate
 from . import processidentity
 from . import rest
 from ..box import trialgate
@@ -578,6 +579,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._warnings: dict[str, str] = {}
         # Kontekst odczytu Tablicy bieżącego ticku (wątek, BoardRead) dla kolejności kroków (`_order_board`, PT-377).
         self._tick_read: tuple | None = None
+        # Pamięć stanu jednostek trzymanych procesów dla inwentaryzacji K-38 w obserwacji (K-125 #3, `unitstate`).
+        self.unit_states = unitstate.UnitStates()
         self._hidden: tuple = (frozenset(), ())
         self._queue: dict | None = None   # `queue` migawki Tablicy (K-39 #4): liczone raz na tick, tylko do odczytu
         self._busy: tuple = ()
@@ -1178,15 +1181,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")} | {
             "baseVersion": 1, "cardBranch": branch, "request": request}
 
-    def _planning_branch(self, card, st, project):
-        """Kontynuacje korzystają z aktualnej karty; tylko stare dzienniki wymagają polityki głównej."""
-        item, _ = self._project(card)
+    def _planning_branch(self, card, st, project, *, read=None):
+        """Kontynuacje korzystają z aktualnej karty; tylko stare dzienniki wymagają polityki głównej.
+        `read` (K-125 #3): kontekst odczytu Tablicy ticku; bez niego świeży odczyt jak dotąd."""
+        item, _ = self._project_read(card, read)
         branch = (ticket_of(st)["cardBranch"] or st.started.get("cardBranch")
                   or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}")
         for row in st.base_change.get("generation", []):
             if row["action"] == "card-branch" and row["branch"] == branch:
                 # Aktywacja już przygotowała ten zasób; nie zakładamy nowej operacji pod nowym refem.
                 return st.results[(row["action"], row["key"])]
+        # K-125 #3: udany wynik `card-branch` tej gałęzi — `_act` i tak by go zwrócił; bez `git rev-parse` i bazy.
+        done = self._recorded_ok(card, "card-branch", branch)
+        if done is not None:
+            return done
         base = base_of(st)
         start = (f"refs/heads/{branch}" if self.git.sha(project.repo, f"refs/heads/{branch}") else
                  base["baseCommit"] if base["status"] == "known" else self.git.main_branch(project.repo))
@@ -2822,6 +2830,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except (BoardError, OSError, ValueError):
             return None
 
+    def _tick_board_read(self):
+        """Kontekst odczytu Tablicy bieżącego ticku (`BoardRead`, K-98 #3) — tylko na wątku tego ticku; poza tickiem
+        (domknięcie, D-Bus, inny wątek) None, czyli świeży odczyt jak dotąd (K-125 #3)."""
+        context = getattr(self, "_tick_read", None)
+        if context is not None and context[0] == threading.get_ident():
+            return context[1]
+        return None
+
+    def _recorded_ok(self, card: str, action: str, key: str) -> dict | None:
+        """Zapisany udany wynik pary „zamiar → wynik” — dokładnie to, co `_act` zwróciłby bez skutku (K-125 #3).
+        Stan z pamięci według wersji dziennika. Bez wyniku, przy wyniku nieudanym albo przy decyzji o bazie — None
+        (wołający idzie dzisiejszą drogą: ponowienie albo `FlowDeferred` z `_act`)."""
+        st = self.journal.state(card)
+        if baseproposal.blocked(st):
+            return None
+        done = st.results.get((action, key))
+        return done if done is not None and done.get("ok") else None
+
     def _order_board_once(self):
         """Leniwy `_order_board` na jedną decyzję: Tablica wczytana najwyżej raz, przy pierwszym użyciu."""
         loaded: list = []
@@ -4079,9 +4105,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif result == "denied":
+            elif result == "denied" and not st.paused:
+                # K-125 PT-487: pauza ze stanu ticku w pamięci, przed oceną prośby — wstrzymana karta nie czyta
+                # Tablicy z powodu prośby i nie pisze w dzienniku; ocena rusza w pierwszym ticku po wznowieniu.
+                # Panel rozstrzyga prośbę nadal (`resolve_step` sprawdza reguły świeżo).
                 self._consent_recheck(card, step, done)
-            else:
+            elif result == "question":
                 self._env_question(card, step, done)
             return
         if result == "stopped" and done.get("reason") == "interactive-closed":
@@ -4198,8 +4227,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
-        item, project = self._project(card)
-        made = self._planning_branch(card, st, project)
+        # K-125 #3: w ticku Tablica z kontekstu odczytu ticku (ten sam wątek), poza tickiem świeży odczyt jak dotąd.
+        read = self._tick_board_read()
+        item, project = self._project_read(card, read)
+        made = self._planning_branch(card, st, project, read=read)
         card_branch, card_worktree = made["branch"], made["worktree"]
         card_work = any(s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend") and
                         (s["step"] not in st.finished or
@@ -4215,6 +4246,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         if self._merge_checks(card):
             return  # bramka testów po scaleniu (PT-318): nowe tickety czekają na wynik bieżącej próby
+        starting = None     # (karta, projekt) do startu ticketu: świeży odczyt Tablicy przed skutkiem (K-125 #3)
         for row in rows:
             ticket = row["id"]
             if trialgate.blocked(ticket):
@@ -4226,6 +4258,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # Odrzucony bloker nie blokuje na zawsze: użytkownik wydzielił go z karty (K-16/LEGAL-75, 03.11).
             if not set(row["blockers"]) <= merged | set(st.rejected):
                 continue
+            # Start ticketu (limit, wykonawcy, gałąź, `_launch`) czyta Tablicę świeżo — raz na przebieg jak przed
+            # K-125 #3; poza tickiem to ten sam świeży odczyt co wyżej.
+            if starting is None:
+                starting = self._project(card) if read is not None else (item, project)
+            item, project = starting
             # Limit ticketów w toku na kartę (PT-375): dotyczy tylko startu nowego ticketu; ticket w toku nie blokuje
             # własnych kroków (te nie przechodzą przez `_plan_next`), a zmniejszenie limitu niczego nie zatrzymuje.
             running, limit = len(ticketlimit.in_progress(st, rows)), self._tickets_limit(item)
@@ -4297,9 +4334,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _plan_commit(self, card: str, st: FlowState, repo: str, branch: str, worktree: str) -> None:
         approved = st.plan_approved or {}
+        key = f"{approved.get('seq')}:{st.plan_change_seq}"
+        # K-125 #3: udany `plan-commit` tego klucza jest już w dzienniku — `_act` zwróciłby go bez skutku, więc bez
+        # wczytania Tablicy (`_plan_on_board`) i bez `_plan_files`. Nieudany wynik idzie dalej (ponowienie co tick).
+        if self._recorded_ok(card, "plan-commit", key) is not None:
+            return
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
-        key = f"{approved.get('seq')}:{st.plan_change_seq}"
         if self._plan_on_board(card):
             # 09.11, K-89: projekt z `ai-docs: tide` trzyma plany i kartki na Tablicy (flow/K-*/plan), a jego
             # repozytorium może je celowo wykluczać (repo klienta) — kopii planu nie zapisujemy na gałęzi karty.

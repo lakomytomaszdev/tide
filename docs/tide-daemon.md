@@ -902,6 +902,39 @@ Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tes
   progu; rozstrzyga tryb 10 okien”. Zostaje tylko ważność (loadavg).
 - **Porównywalność.** Reproduktor nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` ani
   `scanner` (~15 % próbek produkcji), więc jest wskaźnikiem. Rozstrzyga pomiar produkcji.
+- **Stany produkcji (K-125, PT-486).** Dane skali (`perf_idle_scale.assign_roles`/`build_card`/`populate`) mają poza
+  kartami zakończonymi i aktywnymi także: 4 karty **wstrzymane** z 7 prośbami outside bez decyzji (3, 2, 1, 1 — krok
+  `denied` + `outside`, polecenie to skrypt powłoki w worktree, więc zgoda zawsze od człowieka), kartę **z trzymanym
+  procesem K-38** (chronione tickety, kroki zakończone, jednostki dla atrapy `systemctl` aktywne; od 12 kart
+  `PROD_HELD_STEPS` = 135 kroków jak na produkcji — kroki `fix` wracają do 7 chronionych ticketów, więc tick pyta atrapę
+  o każdą jednostkę) oraz kartę
+  **z zatwierdzonym planem w spoczynku** (wyniki `card-branch` i `plan-commit`, tickety czekają na bloker z innej
+  karty). Wszystkie są niezakończone, więc co tick przechodzą pełny przebieg karty i uruchamiają `_consent_recheck`,
+  `_plan_next` i `trialhold.inventory`. `populate` sprawdza każdą rolę (`check_roles`: `permission`, `paused`, `held`,
+  zatwierdzony plan, brak kroków w toku) i odrzuca dane, które stanu nie dają. Numery ticketów generatora zaczynają się
+  od `PT-1011`, żeby przypadkowy ticket chronionej próby nie robił z karty karty z trzymanym procesem.
+- **Atrapa `systemctl`.** `perf_idle_cpu.isolated_env` kładzie w `bin` reproduktora (obok atrapy `incus`, pierwszy w
+  `PATH` usługi) krótki skrypt `/bin/sh`: `is-active` jednostki trzymanego procesu → `active` (kod 0), inna jednostka →
+  `inactive` (kod 3), pozostałe podpolecenia → kod 0 bez wyjścia; każde wywołanie dopisuje linię do `systemctl.log`.
+  Bez niej `stepstop.unit_state` w izolowanym środowisku zwracałby `unknown`. Wynik pomiaru ma `fakeSystemctl` (wywołania
+  w oknie CPU, ticki, wywołania na tick). Atrapa nie działa w testach silnika ani na produkcji.
+- **Profil z drogami produkcji.** Podział próbek (`parse_profile`) ma pole `components`: `outside`
+  (`engine.py:_consent_recheck`), `plan` (`engine.py:_plan_next`), `inventory` (`trialhold.py:inventory`) — próbki
+  i udział **względem próbek `engine.py:tick`**; to ramki składowe ticku, więc nie zmieniają `rest`. Miara CPU (okno bez
+  próbnika) pozostaje bez zmian. Kryteria rzędu produkcji „przed” (`perf_idle_scale.profile_check`): `tick` ≥ 40 %
+  próbek pracy, `outside` 30–50 %, `plan` i `inventory` ≥ 5 % próbek ticku, atrapa `systemctl` co najmniej raz na tick.
+  Raport „przed” składa `perf_k125_report.py` z wyników kolejki do
+  `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`. Próbki **pracy** (`work`) nie liczą bezczynnych ramek
+  własnych puli wątków i pętli zdarzeń (`thread.py:_worker`, `app.py:main`); udział `tick` w kryteriach jest liczony
+  względem nich (`share` względem wszystkich próbek poza czekaniem zostaje w wyniku).
+- **Kształt produkcji (`--shape`).** `perf_prod_shape.py` czyta **tylko do odczytu** dzienniki kart Tablicy
+  (`~/DevWorkspace/tide-board/flow/K-*/journal.jsonl`) i zapisuje do `build/prod-shape.json` wyłącznie liczby i znaczniki
+  każdej karty (rozmiar, liczba zdarzeń i kroków, zakończona/wstrzymana/trzymany proces i liczba trzymanych kroków/
+  zatwierdzony plan/prośby outside bez decyzji, policzone `state.fold` usługi) — bez treści, tytułów i poleceń; plik nie
+  trafia do repozytorium. `perf_k105_queue.py build-data --shape build/prod-shape.json` (i `perf_idle_cpu.py --shape`)
+  generuje dane syntetyczne o tej samej liczbie kart, rozmiarach dzienników i rolach (`shape_plan`: liczba próśb
+  wstrzymanych kart i trzymanych kroków z produkcji, do 7 chronionych ticketów K-38). Atrapa `systemctl` uznaje za
+  aktywne jednostki wszystkich ticketów prób K-38.
 
 ### Reproduktor: skrypt kolejki koordynatora
 
@@ -1088,6 +1121,82 @@ w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i rap
 5. **Domknięcie karty kończy się pytaniem do właściciela o wynik pomiaru produkcji.** Wynik powyżej progu —
    CPU któregokolwiek okna w którymkolwiek ustawieniu `box.enabled`, `Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s —
    to **otwarty bloker M0**. Ten sam pomiar powtarza się po następnej instalacji (regresja).
+
+### Zmiany K-125 i wyniki przed/po K-125 (PT-489, 15.11.2026)
+
+K-125 usuwa z postoju koszt, który na produkcji dawał ok. 62,7 % CPU procesu przy wiszących prośbach „uruchom poza
+piaskownicą” we wstrzymanych kartach. Spis zmian (opisy pełne w sekcji „Przepływ karty: „Od razu” (PT-58)”):
+
+- **#1 (PT-486) — reproduktor ze stanami produkcji.** 7 próśb outside bez decyzji w 4 wstrzymanych kartach (3, 2, 1, 1),
+  1 aktywna prośba outside, karta z trzymanym procesem K-38, karta z zatwierdzonym planem w spoczynku, atrapa `systemctl`
+  w `PATH` reproduktora (zwraca `active`, liczy wywołania) i profil z kategoriami `outside`, `plan`, `inventory`.
+- **#2 (PT-487) — pauza przed oceną próśb.** Tick sprawdza pauzę karty na stanie ticku przed oceną prośby outside
+  i planowania: bez odczytu Tablicy, bez zapisu. Prośba pozostaje rozstrzygalna w panelu, a ocena rusza w pierwszym
+  ticku po wznowieniu.
+- **#3 (PT-488) — pamięć stanu jednostek 30 s i commit planu z dziennika.** Inwentaryzacja K-38 pamięta stan jednostki
+  przez 30 s, wyłącznie `active`/`inactive` (`unknown` nigdy nie jest pamięcią). Commit planu w spoczynku bierze wynik
+  z dziennika i nie czyta Tablicy, gdy wynik jest zapisany.
+- **#5 (pamięć wyniku negatywnego dla aktywnej prośby) jest warunkowe.** Startuje tylko, gdy reproduktor przy
+  `threshold: fail` pokaże udział `outside` ≥ 10 % próbek ticku w którymś trybie `box.enabled`. Wynik poniżej zostawia
+  #5 i #6 odrzucone, a niezaliczony próg bez istotnego udziału `outside` kończy się pytaniem o kolejny krok bez zmian kodu.
+
+Raporty składają `perf_k125_report.py` („przed”) i `perf_k125_after.py` („po”, z werdyktami `threshold`, `outsideShare`
+i `recommendation`); każde okno rozstrzyga osobno (średnia nie ma znaczenia). Pliki: `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`
+(SHA bazy `ec94a8188ccdf0423a7f670a83f16b6032518510`) i `pomiar-k125-po.json` (SHA `59f97ca0211ce0cd927df838b036432996d91e64`:
+kod usługi z #1–#3 bez zmian w PT-489, dodany tylko raport „po”). Te same dane (46 kart; dzienniki 58,25 MB „przed” i 58,3 MB „po” wg `scale.disk.totalMb`, te same role), ta sama
+atrapa `systemctl`, `--scale prod --windows 10`, osobne polecenie `outside` z `"exclusive": true` na tryb. Wynik reproduktora
+jest wskaźnikiem: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej).
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed K-125, `box.enabled=false` | 1 | ważna | 16,4; 16,23; 15,98; 16,28; 16,27; 24,63; 18,9; 17,15; 16,3; 18,6 | 17,67 / 24,63 | spełniony (0 z 10 okien ponad 30 %) |
+| przed K-125, `box.enabled=true` | 1 | ważna | 16,98; 16,7; 16,87; 16,92; 16,78; 17,08; 16,58; 16,8; 16,88; 18,83 | 17,04 / 18,83 | spełniony (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=false` | 2 (1 nieważna: loadavg po 27,28) | ważna | 6,7; 6,3; 6,57; 6,47; 6,38; 6,28; 6,3; 6,05; 6,32; 9,28 | 6,67 / 9,28 | **spełniony** (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=true` | 1 | ważna | 7,08; 6,7; 6,65; 6,68; 6,32; 5,72; 5,97; 6,3; 5,73; 8,47 | 6,56 / 8,47 | **spełniony** (0 z 10 okien ponad 30 %) |
+
+Werdykt: **`threshold: pass`** (każde okno w obu trybach ≤ 30 %), `outsideShare` 0,4071 (`false`) i 0,415 (`true`),
+rekomendacja „#5 i #6 odrzucić”. Reguła „#5 potrzebny” dotyczy tylko `fail`, więc wysoki udział `outside` w tiku sam jej nie
+uruchamia: tick wzięty w całości zmalał z 886 do 312 próbek (`false`) i z 895 do 294 (`true`).
+Uwaga o miarze „przed”: reproduktor „przed” dał ok. 17 %, nie ponad 30 % z produkcji (62,7 %), więc poprawę widać, ale
+reproduktor nie odtwarza w pełni kosztu produkcji (m.in. liczba i rozmiar dzienników, obciążenie pudełek).
+
+Diagnostyka bez progu:
+
+| Metryka | `false` przed → po | `true` przed → po |
+|---|---|---|
+| udział ticku w próbkach pracy | 0,9662 → 0,9043 | 0,9501 → 0,8776 |
+| próbki `engine.tick` | 886 → 312 | 895 → 294 |
+| `outside` (`_consent_recheck`), próbki / udział ticku | 390 / 0,4402 → 127 / 0,4071 | 376 / 0,4201 → 122 / 0,415 |
+| `plan` (`_plan_next`), próbki / udział ticku | 326 / 0,3679 → 0 / 0 | 334 / 0,3732 → 0 / 0 |
+| `inventory` (`trialhold.inventory`), próbki / udział ticku | 38 / 0,0429 → 0 / 0 | 37 / 0,0413 → 0 / 0 |
+| `_resume_step` / `store._inside` (próbki, „po”) | 0 / 50 | 0 / 62 |
+| wywołania atrapy `systemctl` w oknie CPU (na tick) | 16065 (133,9) → 2430 (20,25) | 16200 (135,0) → 2565 (21,4) |
+| `Snapshot` p95 | 10,4 → 10,4 ms | 18,8 → 10,0 ms |
+| `VmRSS` początek → koniec okien | 566,2 → 594,4 → „po” 550,1 → 572,9 MB | 586,5 → 618,0 → „po” 580,4 → 614,4 MB |
+
+Ramek `_resume_step` i `store._inside` nie ma wśród 15 najcięższych ramek „przed”, więc „przed” nie ma ich próbek (mniej
+niż najmniejsza z tych 15); „po” zapisuje je z raportu próbnika (`resumeStoreFrames`).
+
+**Decyzja o #5 i #6 (PT-490, właściciel, 15.11.2026): odrzucone.** Warunek startu #5 na `pomiar-k125-po.json`:
+`threshold: pass` w obu trybach (17,67 → 6,67 % i 17,04 → 6,56 %), a #5 dałby w reproduktorze ok. 2–3 pp CPU (tick to
+ok. 1,3 % próbek procesu, z tego ok. 41 % `outside`). PT-490 i PT-491 kończą się bez zmian kodu. Zastrzeżenie (decyzja
+właściciela z PT-486): reproduktor nie jest kryterium odbioru. Odbiór karty rozstrzyga pomiar produkcji
+(`scripts/measure_idle_prod.py`, oba tryby `box.enabled`) po scaleniu i instalacji, względem produkcyjnego „przed”
+62,7 %. Na produkcji `_consent_recheck` był ok. 3× droższy niż w reproduktorze, więc jeśli pomiar produkcji przekroczy
+próg, wstępna ocena próśb outside z pamięcią wyniku negatywnego (zakres #5, kartka `docs/agents/tickets/k-125-flow/pt-490.md`)
+wraca jako **nowa karta**.
+
+### Procedura produkcji po instalacji K-125 (właściciel)
+
+Po `make install` gałęzi karty K-125 (instaluje właściciel, nie agent) pomiar produkcji powtarza się tak jak w kroku
+„Procedura produkcji po instalacji (właściciel)” wyżej: `/usr/bin/python3 scripts/measure_idle_prod.py
+--out ~/pomiar-k125-box-<false|true>.json` **dla obu wartości `box.enabled`** (10 okien CPU po 60 s, ciągły postój
+bez kroków w toku, rozgrzewka, próbnik i seria `Snapshot`). Pomiar ma się odbyć **z wiszącymi 7 prośbami outside we
+wstrzymanych kartach** (jak K-104, K-107, K-44, K-100 w stanie z produkcji), bo to ten stan K-125 zmienia; prośb nie wolno
+odmawiać ani rozstrzygać na potrzeby pomiaru. Wynik ponad progiem (okno ponad 30 % w którymkolwiek ustawieniu,
+`Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s) jest **otwartym blokerem M0**, także gdy reproduktor pokazał
+≤ 30 %. Przy takim wyniku udział `outside` ≥ 10 % próbek ticku jest przesłanką do #5; koszt gdzie indziej
+(`_resume_step`, `realpath` w `store._inside`) wymaga osobnej decyzji z podziałem próbek.
 
 ## Bezczynność
 
@@ -2861,6 +2970,24 @@ inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
 Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
 
+**Pamięć stanu jednostek K-38 i commit planu w spoczynku (K-125 PT-488).** Inwentaryzacja K-38 w obserwacji (bez
+`fresh`) bierze stan jednostki trzymanego procesu (`stepstop.unit_state` — proces `systemctl`, albo `step_state`
+runnera pudełka przez `FlowEngine._unit_state`) z pamięci silnika `unitstate.UnitStates` (`FlowEngine.unit_states`),
+najwyżej `unitstate.TTL` = 30 s od odczytu, według zegara monotonicznego (wstrzykiwanego w testach). Pamiętane są tylko
+zwrócone `active` i `inactive`; `unknown` (błąd `systemctl`/`incus exec`, brak magistrali, timeout) i wyjątek z odczytu
+nigdy nie są pamięcią i usuwają wcześniejszy wpis, więc następny tick czyta ponownie. `fresh=True` (inwentaryzacja
+powtarzana przed zapisem `k38.inventory`/`k38.handoff`, diagnostyka K-38) czyta każdą jednostkę świeżo i odświeża
+pamięć — zapis zawsze wynika ze świeżego odczytu. Reguła `inactive` → `unknown` (brak chronionego dowodu hosta) działa
+bez zmian na stanie surowym. Ochrona zasobów pudełka (`box/lifecycle.active_steps`) i `_poll` pamięci nie używają;
+`public_inventory` stanu jednostek nie czyta. Moduł `unitstate` nie importuje silnika (ADR-6).
+W `_plan_next` Tablica pochodzi z kontekstu odczytu ticku (`_tick_board_read`: tylko na wątku ticku; poza tickiem —
+domknięcie, D-Bus — świeży odczyt jak dotąd). `_planning_branch` zwraca zapisany udany wynik `card-branch` tej gałęzi
+przed `git rev-parse`, a `_plan_commit` kończy się bez wczytania Tablicy (`_plan_on_board`) i bez `_plan_files`, gdy
+dziennik ma udany `plan-commit` dla bieżącego klucza (`seq` planu : `plan_change_seq`) — w obu przypadkach to wynik,
+który `_act` i tak by zwrócił (`_recorded_ok`; przy decyzji o bazie albo wyniku nieudanym droga jest jak dawniej, więc
+nieudany commit jest ponawiany co tick). Start ticketu (limit, wykonawcy, gałąź ticketu, `_launch`) czyta Tablicę
+świeżo, raz na przebieg, jak przed zmianą.
+
 **Pamięć filtra prób uzgadniania sieci (K-113 PT-466).** `boxstep.recover_network` bierze z
 `trialhold.network_state` wynik filtra prób K-38 karty: zdarzenia bez wstrzymanych prób (`trialhold.held`) i bez
 chronionych tożsamości oraz stan z nich złożony (nowy `fold` tylko, gdy coś pominięto). Wynik jest pamiętany w osobnej
@@ -3322,7 +3449,11 @@ poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to p
 automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
 sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
 według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`
-`denied-before` albo `paused`. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
+`denied-before` albo `paused`. Od K-125 PT-487 tick nie ocenia ponownie prośby kroku ticketu ani planowania
+we wstrzymanej karcie: pauza jest sprawdzana na stanie ticku przed oceną, bez odczytu Tablicy i bez zapisu
+(także bez `outside.auto-skipped` z `paused`), a ocena rusza w pierwszym ticku po wznowieniu. `paused` zapisuje
+już tylko wynik kroku, który przychodzi we wstrzymanej karcie, oraz próba testów po scaleniu. Prośba pozostaje
+rozstrzygalna w panelu. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
 kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` z `reason: denied-before`).
 `ResolveCardStep` z `deny` na kroku z automatyczną zgodą przed `outside.started` zapisuje
 `outside.decision-invalidated` (`reason: denied`) i odmowę, a proces nie startuje; po starcie zwraca

@@ -114,6 +114,17 @@ class WindowMeasureTest(Base):
         self.assertEqual(evaluation["verdict"], "pass")
         self.assertTrue(result["loadavgBefore"] and result["loadavgAfter"])
 
+    def test_window_marks_are_read_at_the_edges_of_the_cpu_windows_without_changing_the_cpu(self):
+        """K-125 PT-486: licznik (wywołania atrapy `systemctl`) czytany tuż przed pierwszym i po ostatnim oknie CPU."""
+        sim = Sim(self.root, rate=lambda t: 10.0)
+        plain, _ = self.measure(sim)
+        counter = iter(range(100, 1000, 7))
+        marked, _ = self.measure(Sim(self.root, rate=lambda t: 10.0), window_marks=lambda: next(counter))
+        self.assertEqual(marked["windowMarks"], {"start": 100, "end": 107})
+        self.assertNotIn("windowMarks", plain)
+        self.assertEqual(marked["cpuWindows"]["windows"], plain["cpuWindows"]["windows"])
+        self.assertEqual(marked["cpuWindow"], plain["cpuWindow"])
+
     def test_children_with_huge_cutime_do_not_change_the_result(self):
         plain, _ = self.measure(Sim(self.root, rate=lambda t: 12.0))
         shutil.rmtree(self.root)

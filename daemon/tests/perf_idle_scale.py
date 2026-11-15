@@ -6,7 +6,10 @@ poleceniem `evaluate`. Wyłącznie dane syntetyczne w katalogu tymczasowym repro
 
 - `populate(service, ...)` — na Tablicy złożonej przez `perf_board_refresh.Service` (PT-342) zastępuje dzienniki kart
   dziennikami o skali produkcji: większość kart zakończona (`done`/`archived`), kilka aktywnych bez kroku w toku
-  (czekająca decyzja „uruchom poza piaskownicą”, pytanie kroku, plan do zatwierdzenia). Dzienniki powstają
+  (czekająca decyzja „uruchom poza piaskownicą”, pytanie kroku, plan do zatwierdzenia) oraz — K-125 PT-486 — stany,
+  które na produkcji dawały 62,7 % CPU: 4 karty wstrzymane z 7 prośbami outside bez decyzji, karta z trzymanym
+  procesem K-38 i karta z zatwierdzonym planem w spoczynku (opis w `assign_roles`, kontrola w `check_roles`).
+  Dzienniki powstają
   równoważnym generatorem (nie przez `Journal.append`, które czyta cały plik przy każdym zdarzeniu), a każdy
   jest sprawdzany ścisłym odczytem (`Journal.read_complete`) i kontrolą tożsamości procesów usługi — inaczej usługa
   wstrzymałaby odzyskiwanie i pomiar byłby zaniżony. Rozmiar jest łączny dla kopii usługi i pliku w Tablicy.
@@ -39,6 +42,20 @@ OUTSIDE_COMMANDS = ("make test-changed BASE=0123456789abcdef0123456789abcdef0123
                     "/usr/bin/python3 tools/test_runner.py --modules daemon/tests/test_cardflow.py",
                     "bash scripts/run-integration.sh ~/dane")
 MIN_CARDS = 4
+# K-125 PT-486: stany produkcji, które dawały 62,7 % CPU, a których dawny reproduktor (~10,6 %) nie miał.
+# Wstrzymane karty z prośbami outside bez decyzji: 7 próśb w 4 kartach (jak K-104, K-107, K-44, K-100).
+PAUSED_REQUESTS = (3, 2, 1, 1)
+FULL_PAUSED_CARDS = 12                 # od tylu kart są wszystkie cztery wstrzymane; mniej kart — jedna wstrzymana
+PROD_HELD_STEPS = 135                  # kroki chronionych prób w jedynej karcie z trzymanym procesem na produkcji (kształt)
+HELD_TICKET = "PT-186"               # ticket chronionej próby K-38 (`trialpolicy.EXCLUDED`) — tożsamość procesu `held`
+HANGING_COMMAND = OUTSIDE_COMMANDS[2]  # skrypt powłoki w worktree: `outside_risky` — zgoda zawsze od człowieka
+# Atrapa `systemctl` (`perf_idle_cpu.isolated_env`) uznaje za aktywną jednostkę o tym fragmencie nazwy kroku.
+HELD_UNIT_FRAGMENT = "-" + HELD_TICKET.lower() + "-"
+# Wszystkie tickety chronionych prób K-38 (`trialpolicy.LEGACY | EXCLUDED`): karta z trzymanym procesem może mieć ich
+# kilka (tryb `--shape`: liczba trzymanych kroków z produkcji); pierwszy to `HELD_TICKET`.
+HELD_TICKETS = (HELD_TICKET, "PT-173", "PT-176", "PT-177", "PT-184", "PT-185", "PT-191")
+HELD_UNIT_FRAGMENTS = tuple("-" + t.lower() + "-" for t in HELD_TICKETS)
+PLAN_COMMIT_ROLES = ("held", "approved")   # karty z wynikami `card-branch` i `plan-commit` w dzienniku
 
 
 def nearest_rank(samples, q=0.95):
@@ -128,6 +145,46 @@ def tick_stats(split, window_s):
     share = (split.get("share") or {}).get("tick")
     return {"share": share, "samples": samples,
             "perSecond": round(samples / window_s, 3) if samples is not None and window_s else None}
+
+
+# --- kryteria „przed” K-125 (progi ustalone przed pomiarem; po pomiarze się ich nie zmienia) -------------
+
+RED_MEAN_PERCENT = 30.0                # „przed” jest czerwony: średnie CPU procesu > 30 % w co najmniej jednym trybie box
+TICK_MIN_SHARE = 0.40                  # `engine.tick` ≥ 40 % próbek pracy
+OUTSIDE_TICK_SHARE = (0.30, 0.50)      # `_consent_recheck` 30–50 % próbek ticku
+PLAN_MIN_TICK_SHARE = 0.05             # `_plan_next` ≥ 5 % próbek ticku
+INVENTORY_MIN_TICK_SHARE = 0.05        # `trialhold.inventory` ≥ 5 % próbek ticku
+SYSTEMCTL_MIN_CALLS_PER_TICK = 1.0     # atrapa `systemctl` co najmniej raz na tick karty z trzymanym procesem
+
+
+def profile_check(result):
+    """Kryteria rzędu produkcji profilu „przed” jednego trybu box: lista {name, ok, value, limit}; `ok` None — brak
+    pomiaru (traktowane jak niespełnione przez `profile_ok`). Czyta profil okna próbnika i licznik atrapy `systemctl`."""
+    split = (result.get("profileWindow") or {}).get("split") or {}
+    components = split.get("components") or {}
+    fake = result.get("fakeSystemctl") or {}
+
+    def item(name, value, ok, limit):
+        return {"name": name, "value": value, "ok": None if value is None else bool(ok(value)), "limit": limit}
+    low, high = OUTSIDE_TICK_SHARE
+    return [
+        # Próbki pracy bez bezczynnych ramek puli i pętli zdarzeń (`perf_idle_cpu.IDLE_FRAMES`); stare wyniki bez `work`
+        # liczą się względem wszystkich próbek poza czekaniem.
+        item("tick", (split.get("work") or {}).get("tickShare", (split.get("share") or {}).get("tick")),
+             lambda v: v >= TICK_MIN_SHARE, f"≥ {TICK_MIN_SHARE}"),
+        item("outside", (components.get("outside") or {}).get("shareOfTick"), lambda v: low <= v <= high,
+             f"{low}–{high}"),
+        item("plan", (components.get("plan") or {}).get("shareOfTick"), lambda v: v >= PLAN_MIN_TICK_SHARE,
+             f"≥ {PLAN_MIN_TICK_SHARE}"),
+        item("inventory", (components.get("inventory") or {}).get("shareOfTick"),
+             lambda v: v >= INVENTORY_MIN_TICK_SHARE, f"≥ {INVENTORY_MIN_TICK_SHARE}"),
+        item("systemctlPerTick", fake.get("callsPerTick"), lambda v: v >= SYSTEMCTL_MIN_CALLS_PER_TICK,
+             f"≥ {SYSTEMCTL_MIN_CALLS_PER_TICK}"),
+    ]
+
+
+def profile_ok(criteria):
+    return all(c["ok"] is True for c in criteria)
 
 
 # --- ocena przed/po ---------------------------------------------------------------------------------
@@ -236,14 +293,30 @@ def evaluation_text(evaluation):
 # --- dzienniki o skali produkcji --------------------------------------------------------------------
 
 def assign_roles(count):
-    """Role kart po indeksie: `outside`, `question`, `plan` (aktywne, bez kroku w toku), `done`, `archived`."""
+    """Role kart po indeksie: `outside`, `question`, `plan` (aktywne, bez kroku w toku), `done`, `archived` oraz stany
+    produkcji K-125: `paused` (wstrzymana, prośby outside bez decyzji — `PAUSED_REQUESTS`), `held` (trzymany proces
+    K-38) i `approved` (zatwierdzony plan w spoczynku, ticket czeka na bloker). Wszystkie są niezakończone, więc co tick
+    przechodzą pełny przebieg karty (`rest.at_rest`, czynnik `card-unfinished`).
+
+    Od `FULL_PAUSED_CARDS` kart są cztery wstrzymane; w mniejszej skali jedna, a przy najmniejszych — tyle rodzajów,
+    ile mieści się obok co najmniej jednej karty zakończonej (kolejność: wstrzymana, trzymany proces, plan)."""
     if count < MIN_CARDS:
         raise ValueError(f"tryb skali wymaga co najmniej {MIN_CARDS} kart")
     active = max(3, round(count * 0.2))
     outside = min(3, max(1, active // 3))
     question = min(3, max(1, active // 3))
     plan = active - outside - question
-    kinds = ["outside"] * outside + ["question"] * question + ["plan"] * plan
+    paused = len(PAUSED_REQUESTS) if count >= FULL_PAUSED_CARDS else 1
+    extra = (["paused"] * paused + ["held", "approved"])[:max(0, count - 1 - active)]
+    groups = [["outside"] * outside, ["question"] * question, ["plan"] * plan,
+              ["paused"] * extra.count("paused"), ["held"] * extra.count("held"),
+              ["approved"] * extra.count("approved")]
+    kinds = []
+    while any(groups):                                   # kolejno po jednej karcie z każdej grupy
+        for group in groups:
+            if group:
+                kinds.append(group.pop())
+    active = len(kinds)
     spots = {int(i * count / active): kind for i, kind in enumerate(kinds)}
     roles, finished = [], 0
     for index in range(count):
@@ -253,6 +326,50 @@ def assign_roles(count):
             finished += 1
             roles.append("archived" if finished % 6 == 0 else "done")
     return roles
+
+
+def load_shape(path):
+    """Kształt Tablicy produkcji z `perf_prod_shape.py` (same liczby); sprawdza minimum, którego używa generator."""
+    with open(path, encoding="utf-8") as fh:
+        shape = json.load(fh)
+    cards = shape.get("cards") or []
+    if shape.get("kind") != "tide-prod-shape" or len(cards) < MIN_CARDS:
+        raise ValueError(f"plik kształtu {path} nie jest wynikiem perf_prod_shape.py albo ma za mało kart")
+    return shape
+
+
+def shape_plan(shape):
+    """Role i rozmiary kart z kształtu produkcji: (role, prośby wstrzymanych, trzymane kroki, rozmiary dzienników w B).
+
+    Karta zakończona → `done`/`archived`; wstrzymana z prośbami outside bez decyzji → `paused` (liczba próśb z produkcji);
+    z trzymanym procesem → `held` (liczba trzymanych kroków); niezakończona z prośbą outside → `outside`; z pytaniem →
+    `question`; z zatwierdzonym planem → `approved`; pozostałe → `plan` (dziennik z Tablicy reproduktora, bez rozmiaru).
+    Rozmiary: bajty dziennika karty na produkcji (jedna kopia)."""
+    roles, requests, held_steps, sizes = [], {}, {}, []
+    for index, card in enumerate(shape["cards"]):
+        sizes.append(int(card.get("bytes") or 0))
+        if card.get("held"):                       # trzymany proces żyje także na karcie zakończonej (K-38 na produkcji)
+            roles.append("held")
+            held_steps[index] = max(1, int(card.get("heldSteps") or 1))
+        elif card.get("finished"):
+            roles.append("archived" if card.get("column") == "archived" else "done")
+        elif card.get("paused") and card.get("undecidedOutside"):
+            roles.append("paused")
+            requests[index] = int(card["undecidedOutside"])
+        elif card.get("undecidedOutside") or card.get("permission"):
+            roles.append("outside")
+        elif card.get("question"):
+            roles.append("question")
+        elif card.get("approved"):
+            roles.append("approved")
+        else:
+            roles.append("plan")
+    return roles, requests, held_steps, sizes
+
+
+def paused_requests(roles):
+    """Indeks karty wstrzymanej → liczba jej próśb outside bez decyzji (`PAUSED_REQUESTS` po kolei)."""
+    return {index: PAUSED_REQUESTS[n] for n, index in enumerate(i for i, role in enumerate(roles) if role == "paused")}
 
 
 def _iso(stamp):
@@ -310,8 +427,9 @@ def _finish(log, step, ticket, result="done", **extra):
     log.add("step.finished", step=step, ticket=ticket, result=result, **extra)
 
 
-def _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done, last, note_id):
-    """Ticket: krok autora, (outside), review (czasem z poprawką), scalenie. `last` — stan końcowy ticketu."""
+def _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done, last, note_id, command=None):
+    """Ticket: krok autora, (outside), review (czasem z poprawką), scalenie. `last` — stan końcowy ticketu.
+    `command` — polecenie prośby outside (`last == "outside"`); domyślnie losowe z `OUTSIDE_COMMANDS`."""
     step = f"{card.lower()}-{ticket.lower()}-ticket-1"
     ident = _identity(card, project, base, step, "ticket", ticket)
     if note_id:
@@ -320,7 +438,7 @@ def _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_don
     _start(log, ident, step, project, repo, notes=[note_id] if note_id else [])
     marks.append((step, ticket, len(log.events)))
     if last == "outside":
-        _finish(log, step, ticket, result="denied", outside=True, canAllow=True, command=OUTSIDE_COMMANDS[
+        _finish(log, step, ticket, result="denied", outside=True, canAllow=True, command=command or OUTSIDE_COMMANDS[
             rng.randrange(len(OUTSIDE_COMMANDS))], pattern="make test-changed *", reason="pełne testy ticketu")
         return
     if last == "question":
@@ -364,11 +482,61 @@ def _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_don
     log.add("result", action="merge", key=ticket, ok=True, commit="def5678", resolved=False)
 
 
-def build_card(card, number, role, project, repo, base, target_bytes, now, seed):
-    """Zdarzenia jednej karty (lista słowników z `seq`, `ts`, `card`, `type`) i liczba zdarzeń wypełniających."""
+def _tickets(number, count):
+    """Numery ticketów karty. Offset 1000 omija `trialpolicy.LEGACY`/`EXCLUDED` (PT-173, PT-191…): przypadkowy ticket
+    chronionej próby zrobiłby z karty kartę z trzymanym procesem — tę rolę nadaje tylko `HELD_TICKET`."""
+    return [f"PT-{1000 + number * 10 + i}" for i in range(1, count + 1)]
+
+
+def _held_flow(log, card, project, repo, base, tickets, rng, marks, steps=0):
+    """Chronione próby K-38: kroki zakończone (bez kroku w toku), przekazanie i inwentaryzacja jak po pierwszym ticku —
+    jednostki kroków są dla atrapy `systemctl` aktywne (`HELD_UNIT_FRAGMENTS`), procesy trzymane żyją; tick odczytuje
+    stan każdej jednostki.
+
+    Pierwsze `len(tickets)` kroków to po jednym kroku autora na ticket z `tickets`; gdy `steps` jest większe (na produkcji
+    jedyna karta z trzymanym procesem ma 135 kroków chronionych prób: poprawki i kolejne podejścia), dalsze kroki
+    `fix` wracają do tych samych ticketów po kolei — każdy to osobna jednostka, którą inwentaryzacja pyta o stan."""
+    from tide_daemon import trialpolicy
+    items = []
+    for n in range(max(steps, len(tickets))):
+        ticket, round_no = tickets[n % len(tickets)], n // len(tickets)
+        kind, suffix = ("ticket", "ticket-1") if round_no == 0 else ("fix", f"fix-{round_no}")
+        step = f"{card.lower()}-{ticket.lower()}-{suffix}"
+        ident = _identity(card, project, base, step, kind, ticket)
+        _start(log, ident, step, project, repo)
+        marks.append((step, ticket, len(log.events)))
+        _finish(log, step, ticket, notes=_text(rng, 12), exit=0)
+        log.add("k38.handoff", step=step, ticket=ticket, version=1, instruction=trialpolicy.MESSAGE, preserved=True,
+                excluded=ticket in trialpolicy.EXCLUDED)
+        items.append({"step": step, "ticket": ticket, "state": "active", "unit": ident["unit"],
+                      "worktree": ident["worktree"], "stepDir": ident["stepDir"], "branch": ident["branch"],
+                      "wip": {}, "kind": "step"})
+    log.add("k38.inventory", version=1, items=items,
+            instruction="Zachowano procesy i WIP. Nie cofnięto wcześniejszych skutków.")
+
+
+def build_card(card, number, role, project, repo, base, target_bytes, now, seed, requests=0, held_steps=1):
+    """Zdarzenia jednej karty (lista słowników z `seq`, `ts`, `card`, `type`) i liczba zdarzeń wypełniających.
+
+    `requests` — rola `paused`: liczba próśb outside bez decyzji (po jednym tickecie na prośbę);
+    `held_steps` — rola `held`: liczba trzymanych kroków (co najmniej jeden na ticket chronionej próby; więcej — kroki
+    `fix` tych samych ticketów)."""
     rng = random.Random(f"{seed}-{number}")
     log = _Log(card, rng)
-    tickets = [f"PT-{number * 10 + i}" for i in range(1, 4)]
+    if role == "held":
+        tickets = list(HELD_TICKETS[:max(1, min(held_steps, len(HELD_TICKETS)))])
+    elif role == "paused":
+        tickets = _tickets(number, max(1, requests))
+    else:
+        tickets = _tickets(number, 3)
+    # Zatwierdzony plan w spoczynku: pierwszy ticket przechodzi całą drogę, pozostałe czekają na bloker z innej karty
+    # (żaden krok w toku, `_plan_next` nie ma czego uruchomić).
+    waiting = f"PT-{1000 + (number + 1) * 10 + 1}"
+    blockers = {t: [waiting] for t in tickets[1:]} if role == "approved" else {}
+    if role == "held":
+        # Bez nazwanego powodu czekania (`guard_reason`) karta stałaby się „zatrzymana” i opiekun zapisywałby zdarzenia
+        # co tick; bloker z innej karty to nazwany powód („blokery ticketów”).
+        blockers = {t: [waiting] for t in tickets}
     log.add("card.started", project=project, repo=repo, entry="plan", executor="Sonnet", program="claude",
             provider="anthropic", model="sonnet", check="make test", column="todo", prefix="PT", mode="full",
             baseRef="refs/heads/master", baseBranch="master", baseCommit="0123abc")
@@ -376,25 +544,46 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed)
     pid = _identity(card, project, base, plan, "planning", "")
     _start(log, pid, plan, project, repo)
     _finish(log, plan, "", notes=_text(rng, 10))
-    rows = [{"id": t, "workId": t, "title": f"Ticket {t}", "blockers": [], "executor": "Sonnet", "reviewer": "Opus",
-             "class": "standard", "note": ""} for t in tickets]
+    rows = [{"id": t, "workId": t, "title": f"Ticket {t}", "blockers": blockers.get(t, []), "executor": "Sonnet",
+             "reviewer": "Opus", "class": "standard", "note": ""} for t in tickets]
     log.add("plan.proposed", title=f"Plan {card}", prefix="PT", rows=rows, planner="Opus", box=None)
     log.add("plan.reviewed", reviewer="Opus", verdict="APPROVE", findings=[])
     log.add("plan.approved", rows=rows, map={}, planFile=f"docs/agents/plans/{card.lower()}.md")
     for ticket in tickets:
         log.add("ticket.assigned", ticket=ticket, executor="Sonnet", reviewer="Opus", program="claude",
                 provider="anthropic", model="sonnet")
+    if role in PLAN_COMMIT_ROLES:
+        # Wynik `card-branch` (gałąź karty już jest) — bez niego pierwszy tick zakładałby worktree w Gicie; wynik
+        # `plan-commit` dopisuje `expand` po ostatnim zdarzeniu (klucz zależy od `seq`).
+        branch, worktree = f"card/{card.lower()}", os.path.join(base, "wt", card.lower(), "card")
+        log.add("intent", action="card-branch", key=branch, repo=repo, branch=branch, worktree=worktree,
+                base="refs/heads/master", baseRef="refs/heads/master", baseBranch="master")
+        log.add("result", action="card-branch", key=branch, ok=True, branch=branch, worktree=worktree,
+                base="0123abc", existing=False)
     marks = []
     outside_at = rng.randrange(len(tickets))
     pending = {"outside": "outside", "question": "question"}.get(role, "")
-    open_index = 2 if pending else -1
-    for index, ticket in enumerate(tickets):
-        if index > open_index >= 0:
-            break
-        last = pending if index == open_index else ""
-        _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done=(index == outside_at and not last),
-                     last=last, note_id=f"n{number}" if index == 0 and not pending else "")
-    if not pending:
+    finished_card = role in ("done", "archived")
+    if role == "held":
+        _held_flow(log, card, project, repo, base, tickets, rng, marks, steps=held_steps)
+    elif role == "paused":
+        for ticket in tickets:                 # każda prośba to osobny ticket: krok `denied` + `outside`, bez decyzji
+            _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done=False, last="outside",
+                         note_id="", command=HANGING_COMMAND)
+        log.add("card.paused")
+    elif role == "approved":
+        _ticket_flow(log, card, project, repo, base, tickets[0], rng, marks, outside_done=False, last="",
+                     note_id=f"n{number}")
+    else:
+        open_index = 2 if pending else -1
+        for index, ticket in enumerate(tickets):
+            if index > open_index >= 0:
+                break
+            last = pending if index == open_index else ""
+            _ticket_flow(log, card, project, repo, base, ticket, rng, marks,
+                         outside_done=(index == outside_at and not last), last=last,
+                         note_id=f"n{number}" if index == 0 and not pending else "")
+    if finished_card:
         close = f"{card.lower()}-close-1"
         cid = _identity(card, project, base, close, "close", "")
         _start(log, cid, close, project, repo)
@@ -444,8 +633,28 @@ def expand(log, marks, extra, now, role):
     for seq, event in enumerate(out, 1):
         event["seq"] = seq
     log.events, log.offsets, log.clock = out, offsets, offsets[-1]
+    if role in PLAN_COMMIT_ROLES:
+        _plan_commit_result(log)
     log.stamp(now - 120.0 if role in ("outside", "question") else now - 86400.0 * 3)
     return log.events
+
+
+def plan_commit_key(st):
+    """Klucz akcji `plan-commit` z `FlowEngine._plan_commit`: `<seq zatwierdzenia planu>:<seq ostatniej zmiany planu>`."""
+    return f"{(st.plan_approved or {}).get('seq')}:{st.plan_change_seq}"
+
+
+def _plan_commit_result(log):
+    """Wynik `plan-commit` o kluczu, który silnik policzy z dziennika (ostatnia zmiana planu przed tym wpisem): bez niego
+    każdy tick karty z zatwierdzonym planem zaczynałby od commita planu w Gicie. Para zamiar–wynik nie zmienia klucza."""
+    from tide_daemon.cardflow import state
+    st = state.fold(log.events)
+    branch = f"card/{log.card.lower()}"
+    worktree = (st.results.get(("card-branch", branch)) or {}).get("worktree", "")
+    repo = next((e["repo"] for e in log.events if e["type"] == "intent" and e.get("action") == "card-branch"), "")
+    key = plan_commit_key(st)
+    log.add("intent", action="plan-commit", key=key, branch=branch, repo=repo, worktree=worktree)
+    log.add("result", action="plan-commit", key=key, ok=True, commit="abc1234")
 
 
 def _write_text(path, text):
@@ -484,16 +693,167 @@ def verify(journal, cards):
     return problems, events
 
 
-def populate(service, base, journal_mb, seed=105, now=None):
+def check_roles(engine, journal, cards, roles, requests):
+    """Kontrola stanu każdej roli na dziennikach z dysku (K-125 PT-486): zwraca (statystyki, lista problemów).
+
+    Sprawdza to, co ma uruchamiać drogi ticku: liczbę decyzji `permission` w kartach wstrzymanych (prośby bez
+    decyzji, polecenie zawsze od człowieka) i aktywnych, `paused`, tożsamość `held`, zatwierdzony plan z wynikami
+    `card-branch` i `plan-commit` (ticket czeka na bloker) oraz brak kroków w toku. Karta bez swojej roli nie ma
+    cudzych stanów (wstrzymania, trzymanego procesu). Dane, które stanu nie dają, są odrzucane."""
+    from tide_daemon.board import commands
+    from tide_daemon.cardflow import consent, decisions, state
+    problems, found = [], {"pausedDecisions": 0, "pausedRequests": [], "outsideDecisions": 0, "questionDecisions": 0,
+                           "heldCards": 0, "approvedCards": 0}
+    for index, card in enumerate(cards):
+        role = roles[index]
+        st = state.fold(journal.read_complete(card))
+        kinds = [d.get("kind") for d in decisions.build_decisions(st)]
+        held = [name for name, identity in st.process_identities.items() if identity.held]
+        if st.running():
+            problems.append(f"{card}: krok w toku")
+        if st.paused != (role == "paused"):
+            problems.append(f"{card}: paused {st.paused}, rola {role}")
+        if bool(held) != (role == "held"):
+            problems.append(f"{card}: trzymany proces {held}, rola {role}")
+        if role in ("done", "archived") and not st.card_finished:
+            problems.append(f"{card}: karta zakończona bez card.finished")
+        elif role == "outside":
+            found["outsideDecisions"] += kinds.count("permission") == 1
+        elif role == "question":
+            found["questionDecisions"] += "question" in kinds
+        elif role == "paused":
+            found["pausedDecisions"] += kinds.count("permission")
+            found["pausedRequests"].append(kinds.count("permission"))
+            problems.extend(_paused_problems(engine, card, st, kinds, requests.get(index, 0), commands, consent))
+        elif role == "held":
+            found["heldCards"] += 1
+            problems.extend(_held_problems(card, st, held))
+        elif role == "approved":
+            found["approvedCards"] += 1
+            problems.extend(_approved_problems(card, st))
+    if found["outsideDecisions"] != roles.count("outside") or found["questionDecisions"] != roles.count("question"):
+        problems.append(f"czekające decyzje: outside {found['outsideDecisions']}/{roles.count('outside')}, "
+                        f"pytania {found['questionDecisions']}/{roles.count('question')}")
+    wanted = sum(requests.values())
+    if found["pausedDecisions"] != wanted:
+        problems.append(f"decyzje permission w kartach wstrzymanych: {found['pausedDecisions']}/{wanted}")
+    return found, problems
+
+
+def _paused_problems(engine, card, st, kinds, wanted, commands, consent):
+    problems = []
+    if kinds.count("permission") != wanted:
+        problems.append(f"{card}: decyzje permission {kinds.count('permission')}/{wanted}")
+    asked = [name for name, done in st.finished.items() if done.get("outside") and done.get("result") == "denied"]
+    if len(asked) != wanted:
+        problems.append(f"{card}: prośby outside {len(asked)}/{wanted}")
+    project = engine._project(card)[1]
+    for name in asked:
+        step, done = st.steps.get(name) or {}, st.finished[name]
+        command = done.get("command") or ""
+        roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+        if name in st.step_decisions:
+            problems.append(f"{card}: prośba {name} ma decyzję")
+        if not commands.outside_allowed(command, project.denied_commands, roots) or not done.get("canAllow"):
+            problems.append(f"{card}: polecenie {name} odrzucone przez reguły (prośba nie ma iść ścieżką zgody)")
+        if not commands.outside_risky(command, roots, []):
+            problems.append(f"{card}: polecenie {name} mogłoby dostać automatyczną zgodę")
+        if consent.automatic(engine, card, step, command):
+            problems.append(f"{card}: prośba {name} dostałaby automatyczną zgodę")
+    return problems
+
+
+def _held_problems(card, st, held):
+    problems = []
+    for name in held:
+        identity = st.process_identities[name]
+        if identity.state != "ok":
+            problems.append(f"{card}: tożsamość {name!r} {identity.state}, ma być chroniona (ok)")
+        if not (st.steps.get(name) or {}).get("unit"):
+            problems.append(f"{card}: krok {name!r} bez jednostki — inwentaryzacja nie odczyta stanu")
+    return problems
+
+
+def _approved_problems(card, st):
+    problems = []
+    rows = (st.plan_approved or {}).get("rows") or []
+    if not rows:
+        return [f"{card}: brak zatwierdzonego planu"]
+    key = plan_commit_key(st)
+    if not (st.results.get(("plan-commit", key)) or {}).get("ok"):
+        problems.append(f"{card}: brak wyniku plan-commit o kluczu {key}")
+    if not any(res.get("ok") for (action, _key), res in st.results.items() if action == "card-branch"):
+        problems.append(f"{card}: brak wyniku card-branch")
+    merged = {t for (action, t), made in st.results.items() if action == "merge" and made.get("ok")}
+    waiting = [row["id"] for row in rows if row["id"] not in merged and row["blockers"] and
+               not set(row["blockers"]) <= merged and not any(s.get("ticket") == row["id"] for s in st.steps.values())]
+    if not waiting:
+        problems.append(f"{card}: żaden ticket nie czeka na bloker")
+    if st.open_intents():
+        problems.append(f"{card}: zamiar bez wyniku")
+    return problems
+
+
+FS_FILE_BYTES = 48          # rozmiar syntetycznego pliku w drzewie `flow/<karta>/` (produkcja: pliki wejścia/wyniku kroków)
+
+
+def apply_fs_shape(root, cards, shape):
+    """Kształt systemu plików Tablicy z produkcji (`perf_prod_shape.fs_shape`; same liczby), dane syntetyczne.
+
+    Dla każdej karty: w `flow/<karta>/steps/` powstaje tyle katalogów i małych plików, ile ma karta produkcji (poza
+    dziennikiem), a plik `cards/<karta>.md` rośnie do produkcyjnego rozmiaru (dopisany tekst po treści karty).
+    Zwraca liczby faktycznie utworzone: {"files", "dirs", "cardBytes"}. Bez `shape["fs"]` niczego nie robi."""
+    fs = shape.get("fs") or {}
+    flow, sizes = fs.get("flow") or {}, fs.get("cardFiles") or {}
+    made = {"files": 0, "dirs": 0, "cardBytes": 0}
+    for card, prod in zip(cards, (c["card"] for c in shape["cards"])):
+        want = flow.get(prod) or {}
+        base = os.path.join(root, "flow", card, "steps")
+        dirs = [os.path.join(base, f"s{n:04d}") for n in range(int(want.get("dirs") or 0))]
+        for path in dirs:
+            os.makedirs(path, exist_ok=True)
+        made["dirs"] += len(dirs)
+        if dirs:
+            for n in range(int(want.get("files") or 0)):
+                with open(os.path.join(dirs[n % len(dirs)], f"f{n:05d}.txt"), "w", encoding="utf-8") as fh:
+                    fh.write("x" * FS_FILE_BYTES)
+                made["files"] += 1
+        path = os.path.join(root, "cards", card + ".md")
+        target = int(sizes.get(prod) or 0)
+        if target and os.path.isfile(path):
+            size = os.path.getsize(path)
+            if size < target:
+                filler = "\n<!-- " + "synthetic filler text for production sized card files. " * 4 + "-->\n"
+                text = (filler * (((target - size) // len(filler)) + 1))[:target - size]
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(text)
+            made["cardBytes"] += os.path.getsize(path)
+    return made
+
+
+def populate(service, base, journal_mb, seed=105, now=None, shape=None):
     """Zastępuje dzienniki kart `service.cards` dziennikami o skali produkcji; zwraca opis danych (JSON).
 
     Karty zakończone dostają kolumnę `done`/`archived` w pliku karty, aktywne zostają w `todo`. Dzienniki są
-    zapisywane w kopii usługi i w Tablicy (ten sam tekst), sprawdzane ścisłym odczytem i commitowane w Tablicy."""
-    from tide_daemon.cardflow import decisions, state
+    zapisywane w kopii usługi i w Tablicy (ten sam tekst), sprawdzane ścisłym odczytem i commitowane w Tablicy.
+
+    `shape` (K-125 PT-486; wynik `perf_prod_shape.load_shape`): liczba kart (`service.cards` musi mieć tyle samo), role
+    (w tym liczba próśb wstrzymanych i trzymanych kroków) i rozmiar dziennika każdej karty pochodzą z produkcji
+    (`shape_plan`), a `journal_mb` jest ignorowane. Dane pozostają syntetyczne — z produkcji są tylko liczby."""
     from tide_daemon.cardflow.journal import Journal
     now = now or time.time()
     cards, store, journal = list(service.cards), service.store, service.engine.journal
-    roles = assign_roles(len(cards))
+    held_steps, sizes = {}, None
+    # Skala produkcji (od `FULL_PAUSED_CARDS` kart) ma kartę z trzymanym procesem o produkcyjnej liczbie kroków: tick
+    # pyta atrapę `systemctl` o każdą jednostkę (na produkcji `trialhold.inventory` to ~17 % ticku); mała skala — jeden.
+    default_held = PROD_HELD_STEPS if len(cards) >= FULL_PAUSED_CARDS else 1
+    if shape is not None:
+        roles, requests, held_steps, sizes = shape_plan(shape)
+        if len(roles) != len(cards):
+            raise ValueError(f"kształt ma {len(roles)} kart, Tablica reproduktora {len(cards)}")
+    else:
+        roles = assign_roles(len(cards))
+        requests = paused_requests(roles)
     weights = [random.Random(f"{seed}-w-{i}").uniform(0.6, 1.4) for i in range(len(cards))]
     generated = [i for i, role in enumerate(roles) if role != "plan"]
     kept = sum(os.path.getsize(journal.mirror_path(cards[i])) * 2 for i, role in enumerate(roles) if role == "plan")
@@ -506,34 +866,25 @@ def populate(service, base, journal_mb, seed=105, now=None):
         card, role = cards[index], roles[index]
         project = PROJECTS[index % len(PROJECTS)]
         repo = os.path.join(base, "ws", project)
-        target = int(budget * weights[index] / total_weight / 2)         # bajty jednej kopii
-        log, marks, extra = build_card(card, index + 1, role, project, repo, base, target, now, seed)
+        target = sizes[index] if sizes is not None else int(budget * weights[index] / total_weight / 2)  # B jednej kopii
+        log, marks, extra = build_card(card, index + 1, role, project, repo, base, target, now, seed,
+                                       requests=requests.get(index, 0),
+                                       held_steps=held_steps.get(index, default_held))
         events = expand(log, marks, extra, now, role)
         text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
         _write_text(journal.mirror_path(card), text)
         _write_text(journal.path(card), text)
+    fs_stats = apply_fs_shape(service.root, cards, shape) if shape is not None and shape.get("fs") else None
     fresh = Journal(service.root)
     problems, events = verify(fresh, cards)
     stats = {"roles": {role: roles.count(role) for role in sorted(set(roles))}, "events": events, "problems": problems}
-    outside = question = 0
-    for index in generated:
-        card, role = cards[index], roles[index]
-        st = state.fold(fresh.read_complete(card))
-        if st.running():
-            problems.append(f"{card}: krok w toku")
-        kinds = [d.get("kind") for d in decisions.build_decisions(st)]
-        if role == "outside":
-            outside += "permission" in kinds
-        elif role == "question":
-            question += "question" in kinds
-        elif not st.card_finished:
-            problems.append(f"{card}: karta zakończona bez card.finished")
-    stats["outsideDecisions"], stats["questionDecisions"] = outside, question
-    if outside != roles.count("outside") or question != roles.count("question"):
-        problems.append(f"czekające decyzje: outside {outside}/{roles.count('outside')}, "
-                        f"pytania {question}/{roles.count('question')}")
+    found, role_problems = check_roles(service.engine, fresh, cards, roles, requests)
+    stats.update(found)
+    problems.extend(role_problems)
     if problems:
         raise RuntimeError("dzienniki skali nie przechodzą kontroli: " + "; ".join(problems[:5]))
+    if fs_stats:
+        stats["fsShape"] = fs_stats
     subprocess.run(["git", "-C", service.root, "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", service.root, "-c", "commit.gpgsign=false", "commit", "-q", "-m",
                     "journals: production scale"], check=True, capture_output=True)
