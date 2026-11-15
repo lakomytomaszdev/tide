@@ -50,6 +50,11 @@ Tryb 10 okien (`--scale prod --windows 10`, K-105 PT-458; opis i ocena: `perf_cp
 i 10 okien po `--window` s mierzą CPU całego procesu usługi bez żadnych żądań do usługi; próbnik i seria `Snapshot` idą w
 osobnym oknie po nich. Ocena: każde okno ≤ 30 %. `--data-dir` bierze dane z `perf_k105_queue.py build-data`.
 
+K-125 PT-486: w skali produkcji dane mają też stany produkcji (wstrzymane karty z prośbami outside, trzymany proces K-38,
+plan w spoczynku), a `isolated_env` daje usłudze atrapę `systemctl` (`write_systemctl`: jednostka trzymanego procesu jest
+`active`, wywołania są liczone — wynik ma `fakeSystemctl`). Podział próbek ma dodatkowo ramki składowe ticku `outside`,
+`plan` i `inventory` (`COMPONENTS`, udział względem `engine.py:tick`); miara CPU się nie zmienia.
+
 Skrypt niczego nie zapisuje poza katalogiem tymczasowym (usuwany na końcu) i plikiem `--out`.
 Testy jednostkowe nie mierzą czasu; ten skrypt jest wyłącznie narzędziem pomiaru.
 """
@@ -97,6 +102,11 @@ OFF = ("--no-notifications", "--no-tab-marks", "--no-youtrack", "--no-idle", "--
        "--no-docker", "--no-report", "--no-activity-look", "--no-monitors", "--no-stream-shortcuts", "--no-box")
 # Kategorie podziału kosztu: ramka w stosie (sekcja „czas łączny” raportu próbnika).
 CATEGORIES = (("index", "semantic.py:sync"), ("probe", "processes.py:probe"), ("tick", "engine.py:tick"))
+# K-125 PT-486: drogi produkcji jako ramki SKŁADOWE ticku (nie osobne kategorie): ich próbki są częścią próbek
+# `engine.py:tick`, więc nie sumują się do `rest`, a udział liczy się względem próbek ticku.
+COMPONENTS = (("outside", "engine.py:_consent_recheck"), ("plan", "engine.py:_plan_next"),
+              ("inventory", "trialhold.py:inventory"))
+TICK_PERIOD_S = 5.0                  # `cardflow_monitor.POLL_MS`: tick przepływu co 5 s
 PROJECTS = ("plasma-tide", "alpha", "beta")
 TOPICS = ("Kontenery i mapowanie portów", "Formularz logowania", "Raport poranny i notki", "Ponawianie wysyłania",
           "Motyw SDDM i tapeta", "Indeks wyszukiwania sesji", "Sonda procesów", "Tablica kart i panel",
@@ -139,6 +149,7 @@ def isolated_env(base, address=""):
     binary = os.path.join(base, "bin", "incus")
     env.update(TIDE_BOARD_DIR=os.path.join(base, "board"), TIDE_FAKE_INCUS_STATE=os.path.join(base, "incus-state"),
                TIDE_FAKE_LOG=os.path.join(base, "incus.log"), TIDE_INCUS_BIN=binary,
+               TIDE_FAKE_SYSTEMCTL_LOG=systemctl_log(base),
                PATH=os.path.dirname(binary) + os.pathsep + env.get("PATH", "/usr/bin:/bin"),
                GIT_CONFIG_GLOBAL=os.path.join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM="1",
                QT_QPA_PLATFORM="offscreen", TIDE_CODEX_DESKTOP="", TIDE_CLAUDE_BIN="",
@@ -148,6 +159,7 @@ def isolated_env(base, address=""):
                TIDE_MODELS_CONFIG=os.path.join(base, "models.json"))
     if address:
         env["DBUS_SESSION_BUS_ADDRESS"] = address
+    write_systemctl(base)
     return env
 
 
@@ -209,6 +221,55 @@ def write_sessions(base, count, now):
             fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
         os.utime(path, (stamp, stamp))
     return claude
+
+
+def systemctl_log(base):
+    return os.path.join(base, "systemctl.log")
+
+
+def write_systemctl(base):
+    """Atrapa `systemctl` w katalogu `bin` reproduktora (pierwszy w `PATH` usługi; K-125 PT-486).
+
+    Prawdziwe `systemctl --user` w izolowanym środowisku kończy się błędem, a `stepstop.unit_state` zwraca wtedy
+    `unknown` — pamięć stanu jednostek z K-125 `unknown` nie zapamiętuje, więc koszt „przed” nie przypominałby
+    produkcji. Atrapa to krótki skrypt `/bin/sh` (koszt procesu potomnego zbliżony do prawdziwego wywołania):
+    `is-active` jednostki trzymanego procesu (nazwa z `perf_idle_scale.HELD_UNIT_FRAGMENT`) → `active`, kod 0 (trzymany
+    proces na produkcji żyje); `is-active` innej jednostki → `inactive`, kod 3 (jak `systemctl` bez takiej jednostki);
+    inne podpolecenia → kod 0 bez wyjścia. Każde wywołanie dopisuje linię z argumentami do dziennika atrapy
+    (`systemctl_calls`). Działa tylko w środowisku z `isolated_env` — nie w testach silnika ani na produkcji."""
+    binary = os.path.join(base, "bin", "systemctl")
+    os.makedirs(os.path.dirname(binary), exist_ok=True)
+    held = scale_mode.HELD_UNIT_FRAGMENT
+    script = ('#!/bin/sh\n'
+              'echo "$*" >> "${TIDE_FAKE_SYSTEMCTL_LOG:-/dev/null}"\n'
+              'case "$*" in\n'
+              f'*is-active*{held}*) echo active; exit 0;;\n'
+              '*is-active*) echo inactive; exit 3;;\n'
+              'esac\n'
+              'exit 0\n')
+    with open(binary, "w", encoding="utf-8") as fh:
+        fh.write(script)
+    os.chmod(binary, 0o755)
+    return binary
+
+
+def systemctl_calls(base):
+    """Liczba dotychczasowych wywołań atrapy `systemctl` (linie jej dziennika)."""
+    try:
+        with open(systemctl_log(base), "rb") as fh:
+            return sum(1 for _ in fh)
+    except OSError:
+        return 0
+
+
+def systemctl_stats(total, start, end, wall_s):
+    """Wywołania atrapy `systemctl` w oknie CPU (`end - start`), liczba ticków przepływu w oknie (`TICK_PERIOD_S`) i
+    wywołania na tick; `None`, gdy brak odczytu granic okna."""
+    calls = end - start if start is not None and end is not None else None
+    ticks = round(wall_s / TICK_PERIOD_S, 1) if wall_s else None
+    return {"callsTotal": total, "callsInCpuWindow": calls, "cpuWindowS": wall_s, "tickPeriodS": TICK_PERIOD_S,
+            "ticksInCpuWindow": ticks,
+            "callsPerTick": round(calls / ticks, 3) if calls is not None and ticks else None}
 
 
 def write_incus(base):
@@ -342,9 +403,14 @@ def parse_profile(text):
                 pass
     split = {key: total.get(frame, 0) for key, frame in CATEGORIES}
     split["rest"] = max(0, busy - sum(split.values()))
+    tick = split["tick"]
+    components = {key: {"frame": frame, "samples": total.get(frame, 0),
+                        "shareOfTick": round(total.get(frame, 0) / tick, 4) if tick else None}
+                  for key, frame in COMPONENTS}
     return {"busySamples": busy, "samples": split,
             "share": {k: (round(v / busy, 4) if busy else None) for k, v in split.items()},
-            "frames": {frame: total.get(frame, 0) for _key, frame in CATEGORIES}}
+            "frames": {frame: total.get(frame, 0) for _key, frame in CATEGORIES},
+            "components": components}
 
 
 def profile_window(base, pid, seconds, series=None, state=None, request=None):
@@ -573,7 +639,11 @@ def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None, 
             result.update(cpuwin.run_idle_measurement(daemon.pid, ReproService(base, daemon.pid, bus),
                                                       warmup_s=warmup, windows=windows, window_s=window,
                                                       on_window=on_window, deadline=deadline,
-                                                      cpu_count=result["cpuCount"]))
+                                                      cpu_count=result["cpuCount"],
+                                                      window_marks=lambda: systemctl_calls(base)))
+            marks = result.get("windowMarks") or {}
+            result["fakeSystemctl"] = systemctl_stats(systemctl_calls(base), marks.get("start"), marks.get("end"),
+                                                      (result.get("cpuWindow") or {}).get("wallS"))
             result["boxEnabled"] = box
             result["daemonAlive"] = daemon.poll() is None
             result["scale"] = {**(data or {}), "disk": scale_mode.disk_stats(os.path.join(base, "board"),
@@ -585,7 +655,10 @@ def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None, 
         result["embedAfterWarmup"] = {"calls": embed.calls, "texts": embed.texts}
         result["loadavgWindowStart"] = loadavg()
         rss_start = scale_mode.read_memory(daemon.pid)["VmRSS"] if scaled else None
+        calls_start = systemctl_calls(base)
         result["cpuWindow"] = cpu_window(daemon.pid, window)
+        calls_end = systemctl_calls(base)
+        result["fakeSystemctl"] = systemctl_stats(calls_end, calls_start, calls_end, result["cpuWindow"]["wallS"])
         result["loadavgWindowEnd"] = loadavg()
         if scaled:
             end = scale_mode.read_memory(daemon.pid)
@@ -648,6 +721,17 @@ def summary(result):
             f"loadavg {result['loadavgBefore']} → {result['loadavgAfter']}")
 
 
+def components_text(result):
+    """Udziały dróg produkcji w próbkach ticku i wywołania atrapy `systemctl` (puste, gdy brak profilu)."""
+    split = (result.get("profileWindow") or {}).get("split") or {}
+    parts = [f"{key} {100 * item['shareOfTick']:.1f} % ticku" for key, item in (split.get("components") or {}).items()
+             if item.get("shareOfTick") is not None]
+    fake = result.get("fakeSystemctl") or {}
+    if fake.get("callsInCpuWindow") is not None:
+        parts.append(f"systemctl {fake['callsInCpuWindow']} wywołań w oknie CPU")
+    return f" [{', '.join(parts)}]" if parts else ""
+
+
 def scale_summary(result):
     flow = result.get("flowThread") or {}
     tick = result.get("tick") or {}
@@ -657,7 +741,8 @@ def scale_summary(result):
     return (f"SHA {result['sha']} box={result['params']['box']} skala produkcji: {disk.get('cards')} kart, "
             f"{disk.get('totalMb')} MB dzienników; wątek przepływu {flow.get('name')} ({flow.get('source')}) "
             f"{flow.get('cpuPercent')} % rdzenia; CPU procesu {(result.get('cpuWindow') or {}).get('cpuPercent')} %; "
-            f"engine.tick {tick.get('share')} próbek ({tick.get('perSecond')}/s); Snapshot p95 {snap.get('p95Ms')} ms; "
+            f"engine.tick {tick.get('share')} próbek ({tick.get('perSecond')}/s){components_text(result)}; "
+            f"Snapshot p95 {snap.get('p95Ms')} ms; "
             f"VmRSS {memory.get('vmRssStartMb')} → {memory.get('vmRssEndMb')} MB, VmHWM {memory.get('vmHwmMb')} MB; "
             f"loadavg {result['loadavgBefore']} → {result['loadavgAfter']}")
 

@@ -902,6 +902,27 @@ Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tes
   progu; rozstrzyga tryb 10 okien”. Zostaje tylko ważność (loadavg).
 - **Porównywalność.** Reproduktor nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` ani
   `scanner` (~15 % próbek produkcji), więc jest wskaźnikiem. Rozstrzyga pomiar produkcji.
+- **Stany produkcji (K-125, PT-486).** Dane skali (`perf_idle_scale.assign_roles`/`build_card`/`populate`) mają poza
+  kartami zakończonymi i aktywnymi także: 4 karty **wstrzymane** z 7 prośbami outside bez decyzji (3, 2, 1, 1 — krok
+  `denied` + `outside`, polecenie to skrypt powłoki w worktree, więc zgoda zawsze od człowieka), kartę **z trzymanym
+  procesem K-38** (ticket chronionej próby, krok zakończony, jednostka dla atrapy `systemctl` aktywna) oraz kartę
+  **z zatwierdzonym planem w spoczynku** (wyniki `card-branch` i `plan-commit`, tickety czekają na bloker z innej
+  karty). Wszystkie są niezakończone, więc co tick przechodzą pełny przebieg karty i uruchamiają `_consent_recheck`,
+  `_plan_next` i `trialhold.inventory`. `populate` sprawdza każdą rolę (`check_roles`: `permission`, `paused`, `held`,
+  zatwierdzony plan, brak kroków w toku) i odrzuca dane, które stanu nie dają. Numery ticketów generatora zaczynają się
+  od `PT-1011`, żeby przypadkowy ticket chronionej próby nie robił z karty karty z trzymanym procesem.
+- **Atrapa `systemctl`.** `perf_idle_cpu.isolated_env` kładzie w `bin` reproduktora (obok atrapy `incus`, pierwszy w
+  `PATH` usługi) krótki skrypt `/bin/sh`: `is-active` jednostki trzymanego procesu → `active` (kod 0), inna jednostka →
+  `inactive` (kod 3), pozostałe podpolecenia → kod 0 bez wyjścia; każde wywołanie dopisuje linię do `systemctl.log`.
+  Bez niej `stepstop.unit_state` w izolowanym środowisku zwracałby `unknown`. Wynik pomiaru ma `fakeSystemctl` (wywołania
+  w oknie CPU, ticki, wywołania na tick). Atrapa nie działa w testach silnika ani na produkcji.
+- **Profil z drogami produkcji.** Podział próbek (`parse_profile`) ma pole `components`: `outside`
+  (`engine.py:_consent_recheck`), `plan` (`engine.py:_plan_next`), `inventory` (`trialhold.py:inventory`) — próbki
+  i udział **względem próbek `engine.py:tick`**; to ramki składowe ticku, więc nie zmieniają `rest`. Miara CPU (okno bez
+  próbnika) pozostaje bez zmian. Kryteria rzędu produkcji „przed” (`perf_idle_scale.profile_check`): `tick` ≥ 40 %
+  próbek pracy, `outside` 30–50 %, `plan` i `inventory` ≥ 5 % próbek ticku, atrapa `systemctl` co najmniej raz na tick.
+  Raport „przed” składa `perf_k125_report.py` z wyników kolejki do
+  `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`.
 
 ### Reproduktor: skrypt kolejki koordynatora
 
