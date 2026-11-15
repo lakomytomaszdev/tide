@@ -632,7 +632,17 @@ class NowLifecycleTest(ServiceCase):
         reply = self.must("StartCard", card_id, json.dumps({"entry": "now", "executor": "Sonnet"}))
         ticket = self.wait_host_start(card_id, "ticket")
         self.assertEqual(ticket["ticket"], reply["ticket"])
-        self.wait_column(card_id, "review", timeout=120)
+        # PT-474: kolumna `review` pojawia się już po scaleniu i sprzątnięciu ticketu, zanim tick założy `close`
+        # (state.py: „review APPROVE, do sprawdzenia”; zapisy ticku widać pojedynczo). Czekamy więc na stan, który
+        # test twierdzi: start i koniec kroku `close`, zapis domknięcia karty, a dopiero potem kolumnę.
+        close = self.wait_host_start(card_id, "close", timeout=120)
+        self.assertTrue(wait_until(lambda: self.finished(card_id, close["step"]), timeout=60),
+                        f"krok close {close['step']} bez step.finished: "
+                        f"{json.dumps(self.blockade(card_id), ensure_ascii=False)}")
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30),
+                        f"brak card.closed po kroku {close['step']}: "
+                        f"{json.dumps(self.blockade(card_id), ensure_ascii=False)}")
+        self.wait_column(card_id, "review", timeout=30)
         self.assertTrue(wait_until(lambda: all(self.finished(card_id, s["step"]) for s in self.steps(card_id)),
                                    timeout=20))
         steps = self.steps(card_id)

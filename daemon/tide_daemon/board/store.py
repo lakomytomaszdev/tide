@@ -27,7 +27,9 @@ import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+import threading
 from threading import RLock
+from types import SimpleNamespace
 
 from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
@@ -40,7 +42,7 @@ from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_ENTRY, DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, ENTRIES, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, LEGACY_SPEC_MODE, MANUAL_COLUMNS,
                     MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
-                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
+                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, MAX_TICKETS_KEY, PRIORITY_KEY, PRIORITIES, DEFAULT_PRIORITY, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     REVIEW_CLASSES, REVIEW_CLASSES_KEY, REVIEW_POLICIES, REVIEW_POLICY_KEY,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -48,6 +50,9 @@ from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUM
 
 ORDER_STEP = 10
 TMP_PREFIX = ".tide-tmp-"
+# K-113 #3: wpis zmieniony (ctime) w tym oknie przed odciskiem nie pozwala zapamiętać wczytania — kolejny zapis
+# w tej samej ziarnistości znaczników czasu (jiffy jądra) mógłby nie zmienić odcisku. Jak „racily clean” w gicie.
+_RACY_NS = 50_000_000
 GITIGNORE = f"""# Pliki tymczasowe zapisu Tide i edytorów — nie trafiają do historii tablicy.
 {TMP_PREFIX}*
 *.swp
@@ -76,7 +81,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
-               *LAUNCH_KEYS)
+               *LAUNCH_KEYS, "maxTickets", "priority", "startRef")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
@@ -120,6 +125,10 @@ class Change:
     high_water: int = 0      # następny wolny numer karty po tym zapisie (0 — bez zmiany)
 
 
+class BoardBusy(RuntimeError):
+    """Transakcję Tablicy trzyma inny wątek albo proces, a wołający (`BoardStore.without_waiting`) nie czeka."""
+
+
 class BoardStore:
     def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None,
                  approvals_path: str | None = None):
@@ -135,8 +144,16 @@ class BoardStore:
         self._transaction_depth = 0
         self._transaction_stack: contextlib.ExitStack | None = None
         self._board_locked = False
+        self._transaction_waits = True     # bieżąca zewnętrzna transakcja czeka na flock (False — `without_waiting`)
+        self._wait_local = threading.local()   # znacznik `without_waiting` bieżącego wątku (K-98 #2)
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
+        # K-98 #3: licznik zapisów plików Tablicy w tym procesie; kontekst odczytu (`BoardRead`) po jego zmianie
+        # wczytuje Tablicę ponownie (zapis w ticku unieważnia kontekst ticku).
+        self.generation = 0
+        # K-113 #3: pamięć ostatniego udanego wczytania dla kontekstu ticku — (odcisk wejść sprzed wczytania, Board);
+        # wyłącznie `load_for_tick`, nigdy publiczne `load()`, transakcje zapisu ani kontekst odświeżenia.
+        self._tick_memory: tuple | None = None
 
     # --- odczyt --------------------------------------------------------------------------------
 
@@ -144,9 +161,42 @@ class BoardStore:
         return is_board_repo(self.root)
 
     @contextlib.contextmanager
+    def without_waiting(self, wait_s: float = 0.0):
+        """K-98 #2: w tym bloku transakcje Tablicy z bieżącego wątku nie czekają na blokadę trzymaną przez inny wątek
+        (worker mutacji: StartCard, scalenie, tick) ani inny proces — rzucają `BoardBusy` od razu albo, z `wait_s`,
+        najpóźniej po tylu sekundach liczonych od wejścia w blok (jeden termin na cały blok, nie na transakcję).
+        Publikacja migawki w wątku głównym używa go, żeby nigdy nie stanąć na długiej mutacji; jawny Snapshot() czeka
+        krótko, żeby krótka transakcja ticku nie zostawiła mu starej wersji. Zwraca znacznik: `busy` jest prawdą, gdy
+        którakolwiek próba w bloku trafiła na zajętą blokadę (także gdy wołający złapał wyjątek i podał zastępczą
+        treść) — wtedy wynik bloku trzeba odrzucić. Blok zagnieżdżony korzysta ze znacznika i terminu zewnętrznego."""
+        outer = getattr(self._wait_local, "probe", None)
+        probe = outer if outer is not None else SimpleNamespace(
+            busy=False, deadline=time.monotonic() + wait_s if wait_s > 0 else None)
+        self._wait_local.probe = probe
+        try:
+            yield probe
+        finally:
+            self._wait_local.probe = outer
+
+    def read_was_busy(self) -> bool:
+        """Czy w bieżącym bloku `without_waiting` tego wątku któraś transakcja trafiła na zajętą blokadę."""
+        probe = getattr(self._wait_local, "probe", None)
+        return bool(probe is not None and probe.busy)
+
+    @contextlib.contextmanager
     def transaction(self):
-        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
-        with self._transaction_lock:
+        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart. W bloku `without_waiting`
+        zajęta blokada daje `BoardBusy` zamiast czekania."""
+        probe = getattr(self._wait_local, "probe", None)
+        if probe is None:
+            self._transaction_lock.acquire()
+        else:
+            left = probe.deadline - time.monotonic() if probe.deadline is not None else 0.0
+            if not (self._transaction_lock.acquire(timeout=left) if left > 0
+                    else self._transaction_lock.acquire(blocking=False)):
+                probe.busy = True
+                raise BoardBusy("Tablica: transakcję trzyma inny wątek")
+        try:
             if self._transaction_depth:
                 yield
                 return
@@ -154,6 +204,7 @@ class BoardStore:
                 try:
                     self._transaction_depth += 1
                     self._transaction_stack = stack
+                    self._transaction_waits = probe is None
                     # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także
                     # na Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje. Bez katalogu Tablicy blokadę
                     # bierze dopiero `ensure()` (`_hold_board_lock`) i trzyma do końca tej transakcji: świeży
@@ -168,22 +219,102 @@ class BoardStore:
                     self._transaction_depth = 0
                     self._transaction_stack = None
                     self._board_locked = False
+                    self._transaction_waits = True
+        finally:
+            self._transaction_lock.release()
 
     def _hold_board_lock(self) -> None:
         """Wspólna blokada Tablicy do końca bieżącej (zewnętrznej) transakcji; brakujący katalog zakłada
         (tak samo robi `box/profile.board_lock`). Ścieżka, która nie jest katalogiem — bez blokady
-        (`ensure()` i tak ją odrzuci)."""
+        (`ensure()` i tak ją odrzuci). Transakcja z `without_waiting`: blokada innego procesu → `BoardBusy`."""
         if self._board_locked or self._transaction_stack is None:
             return
         if not os.path.lexists(self.root):
             os.makedirs(self.root, exist_ok=True)
         if os.path.isdir(self.root):
-            self._transaction_stack.enter_context(lockfile.exclusive(self.root))
+            probe = getattr(self._wait_local, "probe", None)
+            deadline = probe.deadline if probe is not None and not self._transaction_waits else None
+            try:
+                self._transaction_stack.enter_context(
+                    lockfile.exclusive(self.root, blocking=self._transaction_waits, deadline=deadline))
+            except BlockingIOError:
+                if probe is not None:
+                    probe.busy = True
+                raise BoardBusy("Tablica: blokadę trzyma inny proces") from None
             self._board_locked = True
 
     def load(self) -> Board:
         with self.transaction():
             return self._load()
+
+    def load_for_tick(self) -> Board:
+        """K-113 #3: wczytanie Tablicy dla kontekstu ticku (`BoardRead` z `invalidate_on_write=True`).
+
+        Gdy odcisk wejść `load()` (`_load_fingerprint`) jest równy odciskowi ostatniego udanego wczytania tą drogą,
+        a pochodne stanu spoza Tablicy w pamiętanym `Board` nadal się zgadzają (`_derived_current`), zwraca ten sam
+        obiekt bez transakcji i bez czytania treści plików. Inaczej zwykłe `load()` — ta sama transakcja, te same
+        błędy, ta sama granica „tylko pliki wewnątrz Tablicy”; wpis pamięci dostaje odcisk sprzed wczytania, a błąd
+        wczytania nie jest pamiętany. `Board` z pamięci jest tylko do odczytu (dzielą go kolejne ticki)."""
+        key = self._load_fingerprint()
+        memory = self._tick_memory
+        if key is not None and memory is not None and memory[0] == key and _derived_current(memory[1]):
+            return memory[1]
+        self._tick_memory = None
+        board = self.load()
+        if key is not None:
+            self._tick_memory = (key, board)
+        return board
+
+    def _load_fingerprint(self):
+        """Odcisk wejść `_load()` bez czytania treści plików; None — tych wejść nie da się bezpiecznie pamiętać.
+
+        Skład: `generation` (zapis w tym procesie), `realpath` katalogu Tablicy, błędy kroku z magazynu zatwierdzeń
+        (`_step_approval_errors`, stan w pamięci), plik znacznika, nazwy w `tags/`, `projects/` i `cards/`, `lstat`
+        każdego czytanego pliku i tych katalogów (dla dowiązań także `realpath` i `stat` celu),
+        `projects/<slug>/box.yaml` (z katalogiem projektu), ścieżka i metadane magazynu zatwierdzeń kontraktów.
+        None, gdy czeka nieodtworzona intencja akceptacji zgłoszenia (odtwarza ją transakcja `load()`), gdy `lstat`
+        daje błąd inny niż brak pliku, albo gdy któryś wpis zmienił się w ostatnim `_RACY_NS` (ta sama ziarnistość
+        znaczników czasu mogłaby ukryć kolejną zmianę o tym samym rozmiarze w tym samym i-węźle)."""
+        root = self.root
+        try:
+            intents = os.listdir(os.path.join(root, ".git", "tide-acceptances"))
+        except FileNotFoundError:
+            intents = []
+        except OSError:
+            return None
+        if any(name.endswith(".json") and not name.endswith(".done.json") for name in intents):
+            return None
+        approvals = self.approvals_path or contract_approval.state_path()
+        entries = [MARKER_FILE, "tags", "projects", "cards"]
+        names = {}
+        try:
+            for folder in ("tags", "projects", "cards"):
+                try:
+                    listed = sorted(os.listdir(os.path.join(root, folder)))
+                except (FileNotFoundError, NotADirectoryError):
+                    listed = None
+                names[folder] = listed
+                for name in listed or ():
+                    if name.endswith(".md") and not name.startswith("."):
+                        entries.append(os.path.join(folder, name))
+                        if folder == "projects":
+                            entries.append(os.path.join(folder, name[:-3]))
+                            entries.append(os.path.join(folder, name[:-3], project_tests.PROFILE_FILE))
+            paths = [(rel, os.path.join(root, rel)) for rel in entries]
+            paths += [("<approvals-dir>", os.path.dirname(approvals)), ("<approvals>", approvals)]
+            stats, newest = [], 0
+            for rel, path in paths:
+                key, changed = _entry_key(path)
+                stats.append((rel, key))
+                newest = max(newest, changed)
+        except OSError:
+            return None
+        if newest > time.time_ns() - _RACY_NS:
+            return None
+        errors = tuple(sorted((slug, str(e.get("path")), str(e.get("message")))
+                              for slug, e in self._step_approval_errors.items()))
+        return (self.generation, os.path.realpath(root), errors, approvals,
+                tuple(sorted(names.items())), tuple(stats))
 
     def _load(self) -> Board:
         board = Board()
@@ -213,11 +344,13 @@ class BoardStore:
                                          "message": f"{card.id}: nieznany dodatkowy projekt „{slug}”"})
         return board
 
-    def snapshot(self, repos=None, derive=None) -> dict:
+    def snapshot(self, repos=None, derive=None, board: Board | None = None) -> dict:
         """Migawka dla D-Bus i --print-board. repos: ścieżki repozytoriów z katalogu projektów
         (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z pracy agentów (PT-5,
-        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu."""
-        board = self.load()
+        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu. `board`: Tablica już wczytana
+        w tym odświeżeniu (kontekst `BoardRead`, K-98 #1); bez niej — świeży odczyt. Migawka jej nie zmienia."""
+        board = self.load() if board is None else board
+        errors = list(board.errors)
         tags = dict(board.tags)
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
         counts: dict[str, int] = {}
@@ -236,7 +369,7 @@ class BoardStore:
                                       "repo": project.repo if project else "",
                                       "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
-                    board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
+                    errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
             card_data = _card_json(card, project, resolved, derived, extra)
             if project and project.repo:
                 from .plan_candidates import candidates
@@ -266,12 +399,12 @@ class BoardStore:
         busy = self.repo.busy() if exists else ""
         git_state = {"busy": busy, "pending": len(self.repo.pending), "error": self.repo.last_error}
         if exists:
-            board.errors.extend(self._flow_warnings(board))
+            errors.extend(self._flow_warnings(board))
         if busy:
-            board.errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
+            errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
         if self.repo.pending:
-            board.errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
-                                                                  f"commit ({self.repo.last_error})"})
+            errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
+                                                            f"commit ({self.repo.last_error})"})
         last = self.repo.last_commit() if exists else None
         return {
             "assignmentRules": assignment.rules(board),
@@ -292,7 +425,7 @@ class BoardStore:
             "projects": [_project_json(p, self.docs_dir(p), project_cards.get(p.slug, 0)) for p in projects],
             "cards": cards_out,
             "repos": available,
-            "errors": board.errors,
+            "errors": errors,
         }
 
     def _flow_warnings(self, board: Board) -> list[dict]:
@@ -514,21 +647,37 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
-    def project_card_base(self, card_id: str, base: dict) -> dict:
-        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
+    def project_card_base(self, card_id: str, base: dict, board: Board | None = None, guard=None) -> dict:
+        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard.
+
+        `board`: Tablica z kontekstu odczytu ticku (K-98 #3). Gdy według niej pola bazy już są zapisane, nie ma
+        zapisu ani wczytania; inaczej zwykła transakcja zapisu ze świeżym odczytem (`_execute`).
+        `guard`: fabryka kontekstu wchodzona w planie transakcji tuż przed zapisem zmienionych pól (K-105 PT-459:
+        świeże porównanie historii karty, gdy baza pochodzi z pamięci; wywołujący trzyma blokadę dziennika do końca
+        zapisu). Wyjątek z niej przerywa transakcję bez zapisu; bez zmiany pól nie jest wchodzona."""
+        fields = (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit"))
+
         def plan(board):
             card = self._card(board, card_num(card_id))
             change = Change(result={"ok": True, "id": card.id})
             if card.column in ("done", "archived"):
                 return change
             changed = []
-            for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
+            for key, public in fields:
                 value = base.get(public) or ""
                 if value or card.doc.has(key):
                     changed += _doc_set(card.doc, key, value)
             if changed:
+                if guard is not None:
+                    with guard():           # tylko przed faktycznym zapisem pól; odmowa przerywa transakcję
+                        pass
                 change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
             return change
+        card = board.cards.get(card_num(card_id)) if board is not None else None
+        if card is not None and (card.column in ("done", "archived") or all(
+                _doc_same(card.doc, key, base.get(public) or "")
+                for key, public in fields if (base.get(public) or "") or card.doc.has(key))):
+            return {"ok": True, "id": card.id, "commitError": ""}     # bez zmiany: bez transakcji i wczytania
         return self._execute(plan)
 
     def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
@@ -716,6 +865,12 @@ class BoardStore:
         for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
             if v.get(key):
                 doc.set(key, v[key])
+        if v.get("maxTickets"):
+            doc.set(MAX_TICKETS_KEY, v["maxTickets"])
+        if v.get("priority", DEFAULT_PRIORITY) != DEFAULT_PRIORITY:
+            doc.set(PRIORITY_KEY, v["priority"])
+        if v.get("startRef"):  # tylko ustawione — karta bez pola nie zmienia pliku
+            doc.set("start-ref", v["startRef"])
         if v.get("planPath"):
             doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
@@ -747,6 +902,20 @@ class BoardStore:
         for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS):
             if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
+        if "maxTickets" in v:      # PT-375: pusta wartość usuwa klucz (limit z ustawienia przepływu)
+            if v["maxTickets"] is None:
+                if card.doc.remove(MAX_TICKETS_KEY):
+                    changed.append(MAX_TICKETS_KEY)
+            else:
+                changed += _doc_set(card.doc, MAX_TICKETS_KEY, v["maxTickets"])
+        if "priority" in v:        # PT-377: `normal` to brak klucza (także zła wartość w pliku znika)
+            if v["priority"] == DEFAULT_PRIORITY:
+                if card.doc.remove(PRIORITY_KEY):
+                    changed.append(PRIORITY_KEY)
+            else:
+                changed += _doc_set(card.doc, PRIORITY_KEY, v["priority"])
+        if "startRef" in v and (v["startRef"] or card.doc.has("start-ref")):
+            changed += _doc_set(card.doc, "start-ref", v["startRef"])
         if "planPath" in v:
             project = board.projects.get(primary)
             checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
@@ -1247,6 +1416,7 @@ class BoardStore:
         tmp = os.path.join(folder, TMP_PREFIX + secrets.token_hex(6))
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
+        self.generation += 1        # przed podmianą: kontekst wczytany w trakcie zapisu też jest nieaktualny
         os.replace(tmp, path)
         return os.path.relpath(path, self.root)
 
@@ -1321,7 +1491,7 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "movedFrom": card.moved_from,
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
-        "youtrack": card.youtrack,
+        "youtrack": card.youtrack, "startRef": card.start_ref,
         "baseRef": base["baseRef"], "baseBranch": base["baseBranch"], "baseCommit": base["baseCommit"],
         "baseVersion": flow.get("baseVersion", 0),
         "specRevision": {"repo": card.spec_revision_repo, "ref": card.spec_revision_ref,
@@ -1331,6 +1501,11 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
         # Dodatkowe projekty (PT-28): slugi z pliku i rozwiązane projekty (nieznane slugi pomijamy — błąd w errors).
         "projects": list(card.projects),
+        # Limit ticketów w toku (PT-375): nadpisanie karty (None — ustawienie domyślne); limit efektywny dokłada
+        # usługa przepływu (`derived.flow.ticketLimit`), a bez niej — ustawienie domyślne.
+        "maxTickets": card.max_tickets,
+        # Priorytet karty (PT-377): high, normal, low (zła wartość w pliku — normal i wpis w errors).
+        "priority": card.priority,
         "extraProjects": [{"slug": p.slug, "name": p.name, "repo": p.repo, "repoMissing": p.repo_missing}
                           for p in extra],
         "description": card.description,
@@ -1521,6 +1696,14 @@ def _card_values(data: dict, create: bool = False) -> dict:
         if not key:
             raise BoardError(f"pole youtrack to klucz zgłoszenia, np. LEGAL-35 („{out['youtrack']}”)")
         out["youtrack"] = key
+    if "startRef" in data:
+        start = _line(data["startRef"], PATH_MAX, "startRef")
+        if start:
+            from ..cardflow.gitops import FlowGit
+            error = FlowGit().ref_syntax_error("/", start)   # ta sama składnia co baza karty; bez dostępu do repo
+            if error:
+                raise BoardError(f"startRef: {error} („{start}”)")
+        out["startRef"] = start
     if "planPath" in data:
         path = _line(data["planPath"], PATH_MAX, "planPath")
         if path and (not os.path.isabs(path) or not path.lower().endswith(".md")):
@@ -1528,6 +1711,12 @@ def _card_values(data: dict, create: bool = False) -> dict:
         out["planPath"] = path
     if "check" in data:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
+    if "maxTickets" in data:
+        out["maxTickets"] = _max_tickets(data["maxTickets"])
+    if "priority" in data:
+        if not isinstance(data["priority"], str) or data["priority"] not in PRIORITIES:
+            raise BoardError("priority musi być jedną z wartości: high, normal, low")
+        out["priority"] = data["priority"]
     out.update(_entry_mode_values(data, allow_empty=True))
     if "tool" in data:
         out["tool"] = _enum(data["tool"], ("", *TOOLS), "tool") if _text(data["tool"], "tool").strip() else ""
@@ -1553,6 +1742,17 @@ def _card_values(data: dict, create: bool = False) -> dict:
     if "projects" in data:
         out["projects"] = _projects(data["projects"])
     return out
+
+
+def _max_tickets(value) -> int | None:
+    """`maxTickets` (PT-375): liczba 1..6 (także napis z cyframi); pusta wartość (None, "") — brak nadpisania."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().isdecimal():
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 6:
+        raise BoardError("maxTickets musi być liczbą całkowitą od 1 do 6 (pusta wartość — ustawienie domyślne)")
+    return value
 
 
 def _projects(value) -> list[str]:
@@ -1680,8 +1880,12 @@ def _new_project_doc(name: str, repo: str) -> Document:
     return doc
 
 
+def _doc_same(doc: Document, key: str, value) -> bool:
+    return doc.get(key) == ("" if value is None else str(value)) and doc.has(key)
+
+
 def _doc_set(doc: Document, key: str, value) -> list[str]:
-    if doc.get(key) == ("" if value is None else str(value)) and doc.has(key):
+    if _doc_same(doc, key, value):
         return []
     doc.set(key, value)
     return [key]
@@ -1691,6 +1895,42 @@ def _inside(path: str, root: str) -> bool:
     real_root = os.path.realpath(root)
     real = os.path.realpath(path)
     return real == real_root or real.startswith(real_root + os.sep)
+
+
+def _stat_key(st) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _entry_key(path: str) -> tuple:
+    """Wpis odcisku wczytania (K-113 #3): `lstat` ścieżki (urządzenie, i-węzeł, typ i prawa, właściciel, rozmiar,
+    mtime, ctime), dla dowiązania także `realpath` (od niego zależy granica `_inside`) i `stat` celu. Bez czytania
+    treści i bez `realpath` dla zwykłych plików. Zwraca (klucz, najnowszy ctime); brak pliku — (None, 0).
+    Inny błąd `lstat` — OSError (odcisk niepewny)."""
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None, 0
+    key, newest = _stat_key(st), st.st_ctime_ns
+    if stat.S_ISLNK(st.st_mode):
+        try:
+            target = os.stat(path)
+        except OSError as exc:
+            key += (os.path.realpath(path), exc.errno)
+        else:
+            key += (os.path.realpath(path), _stat_key(target))
+            newest = max(newest, target.st_ctime_ns)
+    return key, newest
+
+
+def _derived_current(board: Board) -> bool:
+    """Czy pola projektów wyliczone przy wczytaniu ze stanu spoza Tablicy (istnienie repozytorium, domyślne
+    `ai-docs` z `docs/agents` repozytorium — model.parse_project) są nadal aktualne dla pamiętanego `Board`."""
+    for project in board.projects.values():
+        if project.repo_missing != (bool(project.repo) and not os.path.isdir(project.repo)):
+            return False
+        if not project.ai_docs_set and project.ai_docs != default_ai_docs(project.repo):
+            return False
+    return True
 
 
 def _rel(root: str, path: str) -> str:

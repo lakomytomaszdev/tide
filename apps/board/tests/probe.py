@@ -42,6 +42,8 @@ class Scripted(module.Backend):
     def __init__(self, snapshot):
         super().__init__(None, snapshot)
         self.replies = []
+        self.hold = set()      # członkowie /Board, których odpowiedź czeka na release()
+        self.held = []
         self.branch_replies = []
         self.branch_calls = []
         self.branch_delay = 10
@@ -75,7 +77,15 @@ class Scripted(module.Backend):
         self.callsChanged.emit()
         reply = self.replies.pop(0) if self.replies else {"ok": True, "id": args[0] if member != "CreateCard" else "K-99",
                                                            "commitError": ""}
+        if member in self.hold:
+            # PT-408: długie wywołanie — odpowiedź dopiero na `release()`, jak z usługi, która jeszcze pracuje.
+            self.held.append([tag, member, reply])
+            return
         QTimer.singleShot(10, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+
+    def release(self, index=0, reply=None):
+        tag, member, ready = self.held.pop(index)
+        self.replied.emit(tag, json.dumps(ready if reply is None else reply, ensure_ascii=False))
 
     def set_snapshot(self, snapshot):
         self._snapshot = json.dumps(snapshot, ensure_ascii=False)

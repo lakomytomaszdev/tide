@@ -65,8 +65,13 @@ function tileDetail(n) {
     return n.total ? cards(n.total) : ""
 }
 
-function toolTip(available, exists, n) {
+// Usługa po restarcie jeszcze nie opublikowała Tablicy (Snapshot `readState: "preparing"`) i nie ma poprzedniej
+// migawki — „wczytywanie”, nie „brak kart” (PT-385).
+var LOADING = "wczytywanie…"
+
+function toolTip(available, exists, n, loading) {
     if (!available) return "Usługa tide-daemon nie działa"
+    if (loading) return "Tablica pracy się wczytuje…"
     if (!exists || !n.total) return "Tablica pracy jest pusta — kliknij, aby dopisać pierwszą kartę"
     const parts = []
     if (n.progress) parts.push(n.progress + " w toku")

@@ -178,7 +178,8 @@ class FlowInProcess(unittest.TestCase):
         with open(self.settings, "w", encoding="utf-8") as fh:
             # Testy decyzji sprawdzają ręczne zgody; automatyczne mają własny test (auto_consent = True).
             json.dump({"stepGuardMinutes": self.guard_minutes, "autoConsent": self.auto_consent,
-                       "reviewRoundsBeforeQuestion": 3, "escalateErrors": self.escalate_errors}, fh)
+                       "reviewRoundsBeforeQuestion": 3, "escalateErrors": self.escalate_errors,
+                       "ticketsPerCard": 6}, fh)   # PT-375: limit ticketów na kartę ma własne testy
         patcher = mock.patch.dict(os.environ, {
             "HOME": os.path.join(self.base, "home"), "XDG_RUNTIME_DIR": self.runtime,
             "XDG_STATE_HOME": os.path.join(self.base, "state"), "XDG_CONFIG_HOME": os.path.join(self.base, "config"),

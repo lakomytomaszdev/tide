@@ -14,7 +14,7 @@ from .state import fold, ticket_of
 
 class CaretakerChat:
     def talk_to_caretaker(self, card_id: str, request: dict) -> dict:
-        from .engine import FlowError
+        from .errors import FlowError
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:

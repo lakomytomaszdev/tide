@@ -30,6 +30,7 @@ Rectangle {
     signal sessionRequested(string session)
     signal agentRequested(string session)
     signal launchRequested(string id)
+    signal diffRequested(string id)
     signal keyNavigation(string id, int dx, int dy)
     signal keyMove(string id, int dx, int dy)
 
@@ -221,6 +222,7 @@ Rectangle {
                         onSessionRequested: session => columnRoot.sessionRequested(session)
                         onAgentRequested: session => columnRoot.agentRequested(session)
                         onLaunchRequested: columnRoot.launchRequested(cardId)
+                        onDiffRequested: columnRoot.diffRequested(cardId)
                         onKeyNavigation: (dx, dy) => columnRoot.keyNavigation(cardId, dx, dy)
                         onKeyMove: (dx, dy) => columnRoot.keyMove(cardId, dx, dy)
                     }

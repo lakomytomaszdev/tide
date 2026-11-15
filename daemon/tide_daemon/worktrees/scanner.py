@@ -43,6 +43,7 @@ from .cancellation import Cancellation
 from .git import (HEAD_RESTARTS, MAIN_CANDIDATES, Git, common_dir, parse_status, parse_worktree_list,
                   pick_main_branch, reflog_has_own_commit, worktree_gitdir)
 from .naming import guess_tool, humanize_branch
+from .pull import flow_card
 
 MAX_DEPTH = 3
 SIZE_TTL = 30 * 60
@@ -112,6 +113,13 @@ class Worktree:
     own_commits: bool | None = None  # czy w gałęzi powstał własny commit (reflog); None: nie wiadomo
     nested: tuple = ()            # inne worktrees wewnątrz tego katalogu
     real: str = ""                # ścieżka bez dowiązań — do porównań z katalogami agentów
+    upstream: str = ""            # skrót upstreamu gałęzi (origin/master); pusty: „tylko lokalnie” albo odłączony HEAD
+    upstream_ahead: int | None = None   # commity gałęzi poza upstreamem (stan z ostatniego fetch); None: brak liczb
+    upstream_behind: int | None = None  # commity upstreamu poza gałęzią
+    main_ahead: int | None = None       # to samo względem lokalnej gałęzi głównej; None: brak głównej
+    main_behind: int | None = None
+    remotes: tuple = ()           # nazwy zdalnych repozytorium (z konfiguracji, bez sieci)
+    last_fetch: float = 0.0       # mtime FETCH_HEAD we wspólnym katalogu gita; 0: nigdy nie pobrano
 
     @property
     def merged(self) -> bool:
@@ -232,6 +240,10 @@ class WorktreeScanner:
         self.items: list[Worktree] = []
         self._sizes: dict[str, tuple[int, float]] = {}  # ścieżka → (bajty, kiedy policzone)
         self._lock = threading.Lock()
+        # Dziennik kart przepływu (funkcja() -> Journal albo None, PT-353): gałęzie kart w przepływie dla pola
+        # `flowBranch` i odmowy `card-step` przy „Zaciągnij”. Czytany w wątku roboczym, przy odświeżeniu.
+        self.journal_source = None
+        self._flows: dict = {}
 
     def stop(self) -> None:
         self._cancel.close()
@@ -246,6 +258,7 @@ class WorktreeScanner:
             items += self.scan_repo(repo)
         items = _dedupe(items)
         _mark_nested(items)
+        flows = self.read_flows()
         if self.sessions is not None:
             try:
                 self.sessions.refresh(self.clock())
@@ -253,7 +266,22 @@ class WorktreeScanner:
                 print(f"tide-daemon: worktrees: sesje: {exc!r}", flush=True)
         with self._lock:
             self.items = items
+            self._flows = flows
         return items
+
+    def journal(self):
+        """Bieżący dziennik kart albo None (bez przepływu karty albo przed startem Tablicy)."""
+        return self.journal_source() if self.journal_source else None
+
+    def read_flows(self) -> dict:
+        """Gałęzie kart w przepływie (pull.flow_branches); błąd odczytu → pusto, bo pole listy to tylko
+        podpowiedź — „Zaciągnij” czyta dziennik na nowo i przy błędzie odmawia."""
+        from .pull import flow_branches
+        try:
+            return flow_branches(self.journal())
+        except Exception as exc:  # dziennik jest dodatkiem do listy — nie może zatrzymać odświeżenia
+            print(f"tide-daemon: worktrees: dziennik kart: {exc!r}", flush=True)
+            return {}
 
     def scan_repo(self, repo_path: str) -> list[Worktree]:
         listed = self.git.run(repo_path, "worktree", "list", "--porcelain")
@@ -274,6 +302,9 @@ class WorktreeScanner:
 
         heads = [e.head for e in entries if e.head and not e.bare]
         commits = self._commits(repo_path, heads)
+        upstreams = self._upstreams(repo_path)
+        remotes = self._remotes(repo_path)
+        last_fetch = _mtime(os.path.join(common_dir(repo_path), "FETCH_HEAD"))
 
         out = []
         for entry in entries:
@@ -283,7 +314,8 @@ class WorktreeScanner:
             wt = Worktree(repo=name, repo_path=repo_path, path=entry.path, head=entry.head[:7],
                           branch=entry.branch, detached=entry.detached, is_main=entry is main_entry,
                           locked=entry.locked, main_branch=main_branch,
-                          missing=entry.prunable or not os.path.isdir(entry.path))
+                          missing=entry.prunable or not os.path.isdir(entry.path),
+                          remotes=remotes, last_fetch=last_fetch)
             wt.real = os.path.realpath(entry.path)
             wt.last_change, wt.subject = commits.get(entry.head, (0.0, ""))
             if not wt.missing:
@@ -292,12 +324,54 @@ class WorktreeScanner:
                 count = self.git.run(repo_path, "rev-list", "--count", f"refs/heads/{main_branch}..{entry.head}")
                 if count.ok and count.out.strip().isdigit():
                     wt.unmerged = int(count.out)
+            if entry.head:
+                self._read_divergence(wt, entry.head, upstreams.get(entry.branch) if entry.branch else None)
             if entry.head and not wt.missing and not wt.is_main and not wt.protected and wt.unmerged != 0:
                 wt.unpushed = self._only_here(repo_path, entry.head, entry.branch)
             if wt.merged and wt.dirty == 0 and not wt.missing and not wt.is_main and not wt.protected:
                 wt.own_commits = own_commits(repo_path, wt)
             out.append(wt)
         return out
+
+    def _upstreams(self, repo_path: str) -> dict[str, tuple[str, str]]:
+        """gałąź → (pełna nazwa upstreamu, skrót) — jedno wywołanie gita na repozytorium; gałęzie bez
+        upstreamu pomijamy."""
+        res = self.git.run(repo_path, "for-each-ref", "--format=%(refname:short)%09%(upstream)%09%(upstream:short)",
+                           "refs/heads")
+        out = {}
+        for line in res.out.splitlines() if res.ok else ():
+            name, _, rest = line.partition("\t")
+            full, _, short = rest.partition("\t")
+            if name and full:
+                out[name] = (full, short or full)
+        return out
+
+    def _remotes(self, repo_path: str) -> tuple:
+        """Nazwy zdalnych z lokalnej konfiguracji (bez `git remote` i bez sieci)."""
+        res = self.git.run(repo_path, "config", "--local", "--list", "--name-only")
+        names = []
+        for key in res.out.splitlines() if res.ok else ():
+            if key.startswith("remote.") and key.rsplit(".", 1)[-1] in ("url", "fetch", "pushurl"):
+                name = key[len("remote."):key.rindex(".")]
+                if name and name not in names:
+                    names.append(name)
+        return tuple(names)
+
+    def _read_divergence(self, wt: Worktree, head: str, upstream) -> None:
+        """Ahead/behind względem upstreamu i lokalnej głównej: jedno `rev-list --left-right --count`
+        na każde porównanie (lewa liczba: commity HEAD, prawa: commity drugiej strony)."""
+        if upstream:
+            wt.upstream = upstream[1]
+            wt.upstream_ahead, wt.upstream_behind = self._left_right(wt.repo_path, head, upstream[0])
+        if wt.main_branch:
+            wt.main_ahead, wt.main_behind = self._left_right(wt.repo_path, head, f"refs/heads/{wt.main_branch}")
+
+    def _left_right(self, repo_path: str, head: str, other: str) -> tuple:
+        res = self.git.run(repo_path, "rev-list", "--left-right", "--count", f"{head}...{other}")
+        parts = res.out.split() if res.ok else []
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            return int(parts[0]), int(parts[1])
+        return None, None
 
     def _only_here(self, repo_path: str, head: str, branch: str) -> int:
         """Commity osiągalne z head, a z żadnej innej lokalnej gałęzi ani gałęzi zdalnej (stan
@@ -368,17 +442,19 @@ class WorktreeScanner:
         (live_sessions) — mają pierwszeństwo przy powiązaniu worktree z sesją."""
         with self._lock:
             items = list(self.items)
+            flows = self._flows
         agents = _agents_by_worktree(items, cwds)
         cards = _agents_by_worktree(items, card_paths)
         linked = (self.sessions.link([(w.path, w.real) for w in items], live)
                   if self.sessions is not None else {})
         now = self.clock() if now is None else now
-        out = [self._describe(w, w.path in agents, linked.get(w.path), now, w.path in cards) for w in items]
+        out = [self._describe(w, w.path in agents, linked.get(w.path), now, w.path in cards,
+                              bool(flow_card(flows, w.repo_path, w.branch))) for w in items]
         out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
         return out
 
     def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0,
-                  has_card: bool = False) -> dict:
+                  has_card: bool = False, flow_branch: bool = False) -> dict:
         blocker = wt.blocker(has_agent)
         force_blocker = wt.force_blocker(has_agent)
         tag, title = humanize_branch(wt.branch)
@@ -397,11 +473,19 @@ class WorktreeScanner:
             "isMain": wt.is_main,
             "hasAgent": has_agent,
             "hasCard": has_card,
+            "flowBranch": flow_branch,
             "dirty": wt.dirty,
             "mainBranch": wt.main_branch,
             "merged": wt.merged,
             "unmerged": wt.unmerged,
             "unpushed": wt.unpushed,
+            "upstream": wt.upstream,
+            "upstreamAhead": wt.upstream_ahead,
+            "upstreamBehind": wt.upstream_behind,
+            "mainAhead": wt.main_ahead,
+            "mainBehind": wt.main_behind,
+            "remotes": list(wt.remotes),
+            "lastFetch": iso(wt.last_fetch) if wt.last_fetch else "",
             "lastChange": iso(wt.last_change),
             "lastChangeTs": round(wt.last_change, 3),
             "size": self.size_of(wt.path),
@@ -514,6 +598,21 @@ class WorktreeScanner:
             f"gałąź zostaje: {_first_line(deleted.err)}"
 
 
+    # --- pobieranie ---------------------------------------------------------------------------
+
+    def fetch(self, repo_path: str) -> dict:
+        """„Pobierz”: `git fetch <zdalny>` ze wszystkich zdalnych repozytorium z listy (fetch.py).
+        Wynik {ok, …} albo {ok: False, reason, message}; lista odświeża się po stronie wywołującego."""
+        from .fetch import fetch_repository
+        return fetch_repository(self, repo_path)
+
+    def pull(self, path: str, agents=(), cards=()) -> dict:
+        """„Zaciągnij”: `merge --ff-only` do upstreamu w worktree z listy (pull.py). agents/cards: migawka
+        katalogów agentów i miejsc przepływu karty z chwili żądania. Wynik {ok, …} albo {ok: False, reason,
+        message}; lista odświeża się po stronie wywołującego."""
+        from .pull import pull_fast_forward
+        return pull_fast_forward(self, path, agents, cards, self.journal())
+
     # --- brakujące katalogi -------------------------------------------------------------------
 
     def prune(self, repo_path: str) -> dict:
@@ -613,6 +712,13 @@ def _commits_word(n: int) -> str:
     if n == 1:
         return "commit"
     return "commity" if 2 <= ones <= 4 and not 12 <= tens <= 14 else "commitów"
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
 
 
 def _clip(text: str, limit: int) -> str:

@@ -20,6 +20,12 @@ Rectangle {
     property string homeDir: ""
     signal toggled()
     signal openRequested(string path, string app)
+    signal diffRequested(string path, string kind)   // kind: "worktree" (zmiany w katalogu) albo "range" (względem głównej)
+    // „Zaciągnij” (PT-353): fast-forward do upstreamu; stan żądania i wynik trzyma strona.
+    property bool pullBusy: false
+    property var pullNote: null
+    signal pullRequested(string path)
+    readonly property var pullBlocker: Logic.pullBlocker(worktree)
 
     readonly property string kind: worktree.group || ""
     readonly property bool selectable: Logic.selectable(worktree)
@@ -133,6 +139,91 @@ Rectangle {
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 12
                 elide: Text.ElideRight
+            }
+            Text {
+                objectName: "worktreeSync"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: Logic.syncLabel(row.worktree)
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.monoFamily
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "worktreeRepoRemotes"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: Logic.repoLine(row.worktree, row.nowTs)
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            // Zmiany w widoku diffa (PT-360): bez terminala, Esc wraca na listę.
+            Row {
+                objectName: "worktreeChangeActions"
+                // Jawne warunki, nie visible dzieci: to widoczność efektywna, więc po ukryciu strony (przełącznik
+                // Katalogi/Gałęzie, inny widok okna) wiersz zostawał ukryty na stałe.
+                visible: Logic.canShowChanges(row.worktree) || Logic.canShowBranchChanges(row.worktree)
+                         || Logic.canOfferPull(row.worktree)
+                spacing: 8
+                topPadding: 2
+                PillButton {
+                    id: pull
+                    objectName: "pullButton"
+                    visible: Logic.canOfferPull(row.worktree)
+                    implicitHeight: 26
+                    horizontalPadding: 10
+                    pixelSize: 12
+                    text: Logic.pullButtonText(row.pullBusy, row.worktree)
+                    enabled: !row.pullBusy && row.pullBlocker === null
+                    toolTip: row.pullBlocker !== null ? "Nie można zaciągnąć: " + row.pullBlocker.text
+                             : "Przesuwa " + (row.worktree.branch || "") + " do " + (row.worktree.upstream || "")
+                               + " wyłącznie fast-forward. Tide nie scala historii ani nie robi rebase."
+                    onClicked: row.pullRequested(row.worktree.path)
+                }
+                Text {
+                    objectName: "pullReason"
+                    visible: Logic.canOfferPull(row.worktree) && !row.pullBusy && row.pullBlocker !== null
+                    anchors.verticalCenter: pull.verticalCenter
+                    text: row.pullBlocker !== null ? row.pullBlocker.text : ""
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                }
+                PillButton {
+                    id: changes
+                    objectName: "worktreeChanges"
+                    visible: Logic.canShowChanges(row.worktree)
+                    implicitHeight: 26
+                    horizontalPadding: 10
+                    pixelSize: 12
+                    text: "Zmiany w katalogu"
+                    toolTip: "Niezacommitowana praca: w indeksie, poza indeksem i pliki nieśledzone"
+                    onClicked: row.diffRequested(row.worktree.path, "worktree")
+                }
+                PillButton {
+                    id: branchChanges
+                    objectName: "worktreeBranchChanges"
+                    visible: Logic.canShowBranchChanges(row.worktree)
+                    implicitHeight: 26
+                    horizontalPadding: 10
+                    pixelSize: 12
+                    text: "Zmiany względem głównej"
+                    toolTip: "Zmiany gałęzi " + (row.worktree.branch || "") + " względem " + (row.worktree.mainBranch || "")
+                    onClicked: row.diffRequested(row.worktree.path, "range")
+                }
+            }
+            Text {
+                objectName: "pullNote"
+                Layout.fillWidth: true
+                visible: row.pullNote !== null
+                text: row.pullNote ? row.pullNote.text : ""
+                color: row.pullNote && row.pullNote.ok ? Tide.Tokens.positive : Tide.Tokens.neutral
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
             }
         }
 

@@ -4,7 +4,8 @@
 SUITES = {
     "kwin": [("kwin/tests", "test*.py")],
     "colors": [("theme/colors/tests", "test*.py")],
-    "scripts": [("scripts/tests", "test*.py")],
+    "syntax": [("theme/syntax/tests", "test*.py")],
+    "scripts": [("scripts/tests", "test*.py"), ("scripts/k99/tests", "test*.py")],
     "board": [("apps/board/tests", "test*.py")],
     "daemon": [("daemon/tests", "test*.py")],
     "issues": [("daemon/tests", "test_issues*.py"), ("apps/issues/tests", "test*.py")],
@@ -64,7 +65,31 @@ FILE_TEST_MODULES = {
     "tools/sessions_preview.py": ("apps/sessions/tests/test_window.py",),
     "tools/module_loop.py": ("daemon/tests/test_module_loop.py",),
     "tools/coordinator/metrics.py": ("daemon/tests/test_coordinator_metrics.py",),
+    "scripts/measure_idle_prod.py": ("daemon/tests/test_perf_cpu_windows.py",),
+    # Dokumenty czytane przez testy z prawdziwego repozytorium. Klucz omija regułę
+    # Markdown i regułę koordynacji, więc sam wybiera swoich odbiorców.
+    "docs/agents/plans/followups/replay-code.md": (
+        "daemon/tests/test_cardflow_base_change.py",
+        "daemon/tests/test_cardflow_base_change_dbus.py",
+        "daemon/tests/test_install.py",
+    ),
+    "docs/agents/plans/2026-11-05-k-50-flow.md": ("daemon/tests/test_cardflow_base_change.py",),
+    "docs/agents/tickets/k-50-flow/pt-201.md": ("daemon/tests/test_cardflow_base_change.py",),
+    "docs/agents/tickets/k-50-flow/pt-208.md": ("daemon/tests/test_cardflow_base_change.py",),
 }
+
+# Pliki koordynacji (raporty, pomiary JSON, raporty HTML, dziennik interwencji, plany kart)
+# commituje koordynator po każdym kroku. Nie są kodem ani konfiguracją produktu, więc
+# ich zmiana nie wybiera testów, także dla .json, .html, .tsv i przy usunięciu pliku
+# (13.11: jeden JSON dawał pełny przebieg, 467 modułów, 15 min). Prefiksy są dosłowne,
+# z ukośnikiem: nie obejmują docs/, docs/agents/ ani np. docs/agents/masterplan-old/.
+# Plik z tych katalogów, który czyta jakiś test, wymaga wpisu w FILE_TEST_MODULES:
+# klucz mapy ma pierwszeństwo przed tą listą i sam wybiera swoje moduły.
+COORDINATION_PATHS = (
+    "docs/agents/masterplan/",
+    "docs/agents/interwencje/",
+    "docs/agents/plans/",
+)
 
 # Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty
 # (QML, generatory ładowane po ścieżce) zachowują bezpieczny dobór katalogowy.

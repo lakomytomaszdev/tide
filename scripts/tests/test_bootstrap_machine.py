@@ -92,10 +92,19 @@ class PackagesFromCodeTest(unittest.TestCase):
         provided = {path.removesuffix("/qmldir").replace("/", ".") for path in packages.QMLDIRS.values()}
         self.assertEqual(sorted(imports - provided), [])
 
+    # Jedyny wyjątek: opcjonalny moduł KSyntaxHighlighting (PT-351). Ładuje go dynamicznie `Qt.createComponent` tylko ten
+    # plik; gdy modułu nie ma, import się nie udaje, a okno działa bez podświetlania. Nie jest wymaganym pakietem.
+    OPTIONAL_KDE_IMPORTS = {"apps/common/qml/git/ModuleHighlighter.qml": "import org.kde.syntaxhighlighting"}
+
     def test_window_never_imports_plasma_only_qml(self):
         for path in (ROOT / "apps").rglob("*.qml"):
-            with self.subTest(str(path.relative_to(ROOT))):
-                self.assertNotIn("import org.kde.", path.read_text(encoding="utf-8"))
+            rel = str(path.relative_to(ROOT))
+            with self.subTest(rel):
+                text = path.read_text(encoding="utf-8")
+                allowed = self.OPTIONAL_KDE_IMPORTS.get(rel)
+                if allowed:
+                    text = text.replace(allowed, "")
+                self.assertNotIn("import org.kde.", text)
 
     def test_qml_packages_are_required_apt_packages(self):
         required = packages.names("apt", "required")

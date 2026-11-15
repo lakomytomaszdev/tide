@@ -232,6 +232,26 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(self.sha(self.target), self.source_commit)
         self.assertEqual(r["resultCommit"], self.source_commit)
 
+    def test_two_windows_on_one_card_merge_once_then_same_operation_or_stale_preview(self):
+        """K-99 PT-395: okno Tablicy i okno Worktrees tej samej karty. Pierwsza zgoda scala; ta sama zgoda z drugiego
+        okna (ten sam podgląd) odnajduje tę samą operację bez drugiego scalenia, a zgoda z podglądu innego celu sprzed
+        scalenia dostaje `stale-preview` bez zmian w repozytorium i dzienniku."""
+        git(self.repo, "branch", "feature/other", self.before)
+        board_window, worktrees_window = self.preview(), self.preview()
+        self.assertEqual(board_window["previewToken"], worktrees_window["previewToken"])
+        other = self.call("preview_card_merge", {"targetRef": "refs/heads/feature/other"})
+        self.assertTrue(other["ok"] and other.get("previewToken"), other)
+        first = self.call("merge_card", self.request(board_window))
+        self.assertTrue(first["ok"], first)
+        self.assert_success()
+        events, before = self.flow.engine.journal.read(self.card_id), fingerprint(self.repo)
+        second = self.call("merge_card", self.request(worktrees_window))
+        self.assertEqual(second, first, "ta sama operacja, bez drugiego scalenia")
+        self.assertEqual(self.flow.engine.journal.read(self.card_id), events)
+        self.assertEqual(fingerprint(self.repo), before)
+        self.assert_refused(self.request(other))
+        self.assert_success()
+
     def test_preview_and_auto_check_alone_never_create_merge_intent(self):
         before = fingerprint(self.repo)
         self.assertTrue(self.preview()["canMerge"])

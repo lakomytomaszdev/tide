@@ -474,6 +474,44 @@ class ActionOnJournalTest(EngineOnJournal):
                 break
 
 
+class UserRetryBeforeResumeTest(EngineOnJournal):
+    """PT-475: ponowienie użytkownika (`ResolveCardStep retry`) zapisuje tylko `step.retry`, a krok potomny
+    `plan-fix` rusza w kolejnym przebiegu. Gdy zapis wpadnie w tick po `_advance_card`, a przed `_caretake`,
+    problem nie może już startować opiekuna — inaczej krok opiekuna rusza, staje się nieaktualny (`stale`, poza
+    limitem) i w oknie są cztery starty zamiast trzech (siódmy start w teście limitu)."""
+
+    def setUp(self):
+        super().setUp()
+        for event in second_failure_journal().events:
+            fields = {k: v for k, v in event.items() if k not in ("seq", "ts", "type")}
+            self.add("K-1", event["type"], **fields)
+
+    def test_a_user_retry_waiting_for_its_resume_starts_no_caretaker(self):
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(caretaker.plan_fix_waiting(st), ["K-1-plan-1-2"])
+        reply = self.engine.resolve_step("K-1", {"choice": "retry", "step": "K-1-plan-1-2",
+                                                 "answer": "Popraw datę na ISO 8601."})
+        self.assertTrue(reply["ok"], reply)
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(caretaker.problems(st), [], "ponowiony krok czeka na wznowienie, nie na opiekuna")
+        self.assertEqual(caretaker.plan_fix_waiting(st), [])
+        with mock.patch.object(self.engine, "_caretaker_launch") as launch:
+            self.engine._caretake("K-1", st)
+        launch.assert_not_called()
+        events = self.journal.read("K-1")
+        self.assertEqual([e for e in events if e["type"] in (caretaker.STARTED, caretaker.ESCALATED)], [])
+        # Wznowiony krok znowu nie przeszedł sprawdzenia: opiekun rusza przy nowym kroku łańcucha (n = 1).
+        self.add("K-1", "step.started", step="K-1-plan-1-3", kind="plan-fix", ticket="", round=3, executor="Sonnet",
+                 worktree="/w", stepDir="/w.K-1-plan-1-3.step", parentStep="K-1-plan-1-2", attempt=1)
+        self.add("K-1", "step.finished", step="K-1-plan-1-3", ticket="", result="done")
+        self.add("K-1", "plan.checked", step="K-1-plan-1-3", valid=False, errors=ERRORS)
+        with mock.patch.object(self.engine, "_caretaker_launch") as launch:
+            self.engine._caretake("K-1", fold(self.journal.read("K-1")))
+        launch.assert_called_once()
+        run = launch.call_args.args[2]
+        self.assertEqual((run["problem"], run["target"], run["n"]), ("plan-fix:K-1-plan-1-2", "K-1-plan-1-3", 1))
+
+
 class PlanFlowTest(FlowInProcess):
     """Przebiegi przez `FlowEngine` z atrapą `claude` (plan z nieudaną poprawką, druga nieudana poprawka formatu)."""
     proposal = fixtures.PlanFlowTest.proposal

@@ -596,7 +596,7 @@ class IssueService:
             result = {"ok": False, "apiVersion": API_VERSION, "error": "io-error",
                       "message": f"Błąd odczytu lub zapisu sprawy: {exc}."}
         except Exception as exc:
-            from .cardflow.engine import FlowError
+            from .cardflow.errors import FlowError
             if isinstance(exc, FlowError):
                 result = {"ok": False, "apiVersion": API_VERSION, "error": exc.code, "message": str(exc)}
             else:

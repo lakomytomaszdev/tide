@@ -30,6 +30,13 @@ Rectangle {
     property string caretakerExecutor: ""
     property int caretakerActionLimit: 3
     property int caretakerDecisionMinutes: 10
+    // Równoległość (K-39): ciężkie polecenia naraz na maszynie (`heavyLimit`, PT-373) i tickety naraz na kartę
+    // (`ticketsPerCard`, PT-375); zakres 1..6 sprawdza usługa, pola tylko ograniczają wybór.
+    property int heavyLimit: 2
+    property int ticketsPerCard: 2
+    property bool concurrencyDirty: false
+    property bool concurrencyBusy: false
+    property string concurrencyError: ""
     property bool caretakerDirty: false
     property bool caretakerBusy: false
     property string caretakerError: ""
@@ -74,6 +81,20 @@ Rectangle {
         caretakerDirty = false
     }
 
+    function loadConcurrencySettings() {
+        const value = flowSettings || {}
+        heavyLimit = Number.isInteger(value.heavyLimit) ? value.heavyLimit : 2
+        ticketsPerCard = Number.isInteger(value.ticketsPerCard) ? value.ticketsPerCard : 2
+        concurrencyDirty = false
+    }
+
+    function saveConcurrencySettings() {
+        concurrencyBusy = true
+        concurrencyError = ""
+        flowSettingsSaveRequested(nextTag("concurrency-settings"),
+            { heavyLimit: heavyLimit, ticketsPerCard: ticketsPerCard })
+    }
+
     function saveCaretakerSettings() {
         caretakerBusy = true
         caretakerError = ""
@@ -85,10 +106,13 @@ Rectangle {
     onFlowSettingsChanged: {
         if (!flowSettingsDirty && !flowSettingsBusy) loadFlowSettings()
         if (!caretakerDirty && !caretakerBusy) loadCaretakerSettings()
+        if (!concurrencyDirty && !concurrencyBusy) loadConcurrencySettings()
     }
     onVisibleChanged: if (visible) {
         flowSettingsDirty = false
         loadFlowSettings()
+        concurrencyDirty = false
+        loadConcurrencySettings()
         caretakerDirty = false
         loadCaretakerSettings()
     }
@@ -180,6 +204,10 @@ Rectangle {
             flowSettingsBusy = false
             flowSettingsError = error
             if (!error) flowSettingsDirty = false
+        } else if (tag.indexOf("concurrency-settings:") === 0) {
+            concurrencyBusy = false
+            concurrencyError = error
+            if (!error) concurrencyDirty = false
         } else if (tag.indexOf("caretaker-settings:") === 0) {
             caretakerBusy = false
             caretakerError = error
@@ -342,6 +370,85 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: page.flowSettingsError !== ""
                         text: page.flowSettingsError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+
+                    SectionTitle { text: "PRZEPŁYW KARTY · RÓWNOLEGŁOŚĆ" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Ile ciężkich poleceń (testy, budowanie) biegnie naraz na maszynie i ile ticketów jednocześnie "
+                              + "prowadzi jedna karta. Zmniejszenie niczego nie przerywa; działa przy kolejnym starcie."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: 8
+                        rowSpacing: 6
+                        Text {
+                            text: "Ciężkie polecenia naraz"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        QQC2.SpinBox {
+                            objectName: "heavyLimit"
+                            wheelEnabled: false
+                            editable: true
+                            from: 1
+                            to: 6
+                            value: page.heavyLimit
+                            onValueModified: {
+                                page.heavyLimit = value
+                                page.concurrencyDirty = true
+                            }
+                            Accessible.name: "Ciężkie polecenia naraz"
+                        }
+                        Text {
+                            text: "Tickety naraz na kartę"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        QQC2.SpinBox {
+                            objectName: "ticketsPerCard"
+                            wheelEnabled: false
+                            editable: true
+                            from: 1
+                            to: 6
+                            value: page.ticketsPerCard
+                            onValueModified: {
+                                page.ticketsPerCard = value
+                                page.concurrencyDirty = true
+                            }
+                            Accessible.name: "Tickety naraz na kartę"
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Item { Layout.fillWidth: true }
+                        PillButton {
+                            objectName: "concurrencySave"
+                            text: "Zapisz"
+                            enabled: page.concurrencyDirty && !page.concurrencyBusy
+                            onClicked: page.saveConcurrencySettings()
+                        }
+                    }
+                    Text {
+                        objectName: "concurrencyError"
+                        Layout.fillWidth: true
+                        visible: page.concurrencyError !== ""
+                        text: page.concurrencyError
                         textFormat: Text.PlainText
                         color: Tide.Tokens.rose
                         font.family: Tide.Theme.uiFamily

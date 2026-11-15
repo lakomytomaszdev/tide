@@ -39,7 +39,8 @@ WAIT_PRIORITY = ("user", "blocker", "limit")
 
 TICKET_STATUS = {"planned": "w planie", "queued": "w kolejce", "running": "pracuje", "review": "review",
                  "fix": "poprawki", "merging": "scalanie", "you": "czeka na Ciebie", "limit": "czeka na limit",
-                 "blocked": "czeka na bloker", "waiting": "czeka", "merged": "scalony", "rejected": "odrzucony"}
+                 "blocked": "czeka na bloker", "waiting": "czeka", "merged": "scalony", "rejected": "odrzucony",
+                 "card-limit": "czeka na miejsce w karcie"}
 
 
 def enrich(st: FlowState, out: dict) -> dict:
@@ -359,6 +360,66 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
     if latest.get("step") in st.caretaking:
         return status("running", "sprawdza opiekun")
     return status("waiting")
+
+
+def heavy_queued(st: FlowState, out: dict, held: dict) -> dict:
+    """Status ciężkiego polecenia w kolejce (PT-373): `held` — krok → (zajęte, limit) z żywej kolejki silnika
+    (`_heavy_view`). Ticket, którego ostatni krok czeka na miejsce ciężkich, dostaje
+    „w kolejce: <polecenie> (ciężkie polecenia: <zajęte> z <limit> zajęte)”; kafelek karty dostaje ten sam dopisek.
+    Lekkie polecenia i ciężkie bez wstrzymania limitem zachowują dotychczasowy napis.
+
+    Cisza (K-39 #6, PT-376): wartość `held` może być zdaniem usługi („czeka na ciszę: obciążenie 7,1 przy progu 6,0”,
+    „wstrzymane: na czele kolejki czeka polecenie wymagające ciszy (K-36)”). Ticket dostaje wtedy to zdanie jako napis
+    statusu i `cause: quiet`, a kafelek karty — zdanie w nawiasie po napisie kolejki."""
+    if not held or not out:
+        return out
+    from . import mergecheck
+    from .heavyqueue import queued_label, quiet_hold
+    from .state import NOTE_MAX, _clip
+
+    def labelled(text: str, value) -> str:
+        return f"{text} ({value})" if quiet_hold(value) else queued_label(text, *value)
+
+    for ticket in out.get("tickets") or []:
+        latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket.get("id")), {})
+        found = held.get(latest.get("step"))
+        label = str(ticket.get("statusLabel") or "")
+        if found and ticket.get("status") == "queued" and label.startswith(QUEUED_PREFIX):
+            if quiet_hold(found):
+                ticket.update(statusLabel=found, cause=QUIET_CAUSE)
+            else:
+                ticket["statusLabel"] = queued_label(label, *found)
+    note = str(out.get("note") or "")
+    found = held.get(st.last_step) if "w kolejce poza piaskownicą: " in note else None
+    if found is None and "testy po scaleniu w kolejce" in note:
+        found = next((value for name, value in held.items() if mergecheck.is_step(name)), None)
+    if found is not None:
+        out["note"] = _clip(labelled(note, found), NOTE_MAX)
+    return out
+
+
+def card_limit(st: FlowState, out: dict, limit: int, override) -> dict:
+    """Limit ticketów w toku karty (PT-375): `flow.ticketLimit` = `{limit, running, override}` (limit efektywny,
+    liczba ticketów w toku, `max-tickets` karty albo None) i status „czeka na miejsce w karcie (<n> z <limit>)”
+    ticketu, który nie wystartował, bo limit jest pełny (`step.waiting` z `cause: card-limit`). Liczba i limit są
+    bieżące (zmiana limitu odświeża napis bez nowego zdarzenia); bez pełnego limitu ticket zostaje „w kolejce"."""
+    from . import ticketlimit
+    rows = (st.plan_approved or {}).get("rows") or []
+    running = len(ticketlimit.in_progress(st, rows)) if rows else 0
+    out["flow"]["ticketLimit"] = {"limit": limit, "running": running, "override": override}
+    if running < limit:
+        return out
+    for ticket in out.get("tickets") or []:
+        wait = st.waiting.get((ticket.get("id"), "ticket")) or {}
+        if ticket.get("status") == "queued" and wait.get("cause") == ticketlimit.CAUSE:
+            ticket["status"], ticket["statusLabel"] = "card-limit", ticketlimit.wait_reason(running, limit)
+    return out
+
+
+QUIET_CAUSE = "quiet"           # `cause` ticketu czekającego na ciszę (#6)
+
+
+QUEUED_PREFIX = "w kolejce: "   # prefiks statusu ticketu w kolejce (okno nie liczy po nim: prognoza z `queue`, PT-374)
 
 
 def _command(done: dict) -> str:

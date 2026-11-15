@@ -438,6 +438,11 @@ HOST_BOUNDARY = "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` 
 BOX_BOUNDARY = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
                 "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
 HOST_REPORT = "`denied` albo `outside`"
+# K-39 #6 (PT-376): polecenie wymagające ciszy rusza dopiero na spokojnej maszynie, a w trakcie nic ciężkiego nie startuje.
+EXCLUSIVE_HINT = """Do każdego pomiaru wydajności i innego polecenia, którego wynik zależy od obciążenia maszyny, dopisz w wyniku
+`"exclusive": true` (np. {"result":"outside","command":"bash <skrypt pomiaru>","reason":"…","exclusive":true}) —
+Tide uruchomi je dopiero na spokojnej maszynie i w trakcie nie wpuści innych ciężkich poleceń.
+"""
 BOX_REPORT = "`denied`"
 HOST_OUTSIDE = """Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
 Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
@@ -447,7 +452,7 @@ Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani
 jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
 np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
 worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
-"""
+""" + EXCLUSIVE_HINT
 # Krok w pudełku nie uruchamia poleceń na hoście: wynik `outside` Tide odrzuca (FlowError box-outside w silniku).
 BOX_OUTSIDE = """Ograniczenie pudełka: ten krok biegnie w pudełku i nie ma wyniku `outside` — Tide nie uruchamia poleceń
 kroku na hoście i odrzuci taką prośbę. Testy, budowanie, Docker i instalację paczek wykonuj w pudełku; sieć idzie

@@ -179,10 +179,11 @@ class KRunnerMeaningTest(unittest.TestCase):
 
     def test_meaning_results_and_word_results_when_server_is_down(self):
         self.assertTrue(wait_until(lambda: os.path.exists(self.index_file), timeout=20), "indeks zapisany")
-        with open(self.index_file, encoding="utf-8") as fh:
-            stored = self._json.load(fh)
-        self.assertEqual(stored["model"], "bge-m3:latest")
-        self.assertIn("claude:h-titled", stored["items"])
+        from tide_daemon.krunner import semantic
+        stored = semantic.Store(self.index_file)   # format 2: dziennik JSON Lines (K-98 #5, PT-346)
+        self.assertEqual(stored.load(), "")
+        self.assertEqual(stored.model, "bge-m3:latest")
+        self.assertIn("claude:h-titled", stored.items)
         self.assertEqual(self._stat.S_IMODE(os.stat(self.index_file).st_mode), 0o600)
         posts = [r for r in self.server.requests if r["path"] == "/api/embed"]
         self.assertTrue(all(r["body"]["keep_alive"] == "2m" for r in posts))

@@ -272,6 +272,87 @@ Window {
         ], "po założeniu projektu zapamiętane repozytorium wskazuje ten projekt")
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
 
+    def test_preparing_keeps_the_previous_snapshot_or_shows_loading_until_changed(self):
+        """PT-385 (N4): Snapshot z `readState: "preparing"` (usługa po restarcie) nie daje „0 kart”: bez poprzedniej
+        migawki — „wczytywanie” do najbliższego /Board Changed (usługa wysyła go przy pierwszej publikacji, a
+        DaemonSource wtedy odczytuje Snapshot ponownie); z poprzednią — zostaje poprzednia. Test na sygnał, nie na czas."""
+        with open(os.path.join(WIDGET_DIR, "contents/ui/main.qml"), encoding="utf-8") as fh:
+            main = fh.read()
+        self.assertIn("readonly property var snapshot: board.snapshot", main)
+        self.assertIn("daemon: source", main)
+        self.assertNotIn("changedSignal", main, "widżet odświeża się na /Board Changed (domyślny sygnał)")
+        with open(os.path.join(WIDGETS_DIR, "lib", "DaemonSource.qml"), encoding="utf-8") as fh:
+            self.assertIn('function dbusChanged() { if (source.changedSignal === "Changed") source.refresh() }',
+                          fh.read())
+        preparing = {"version": 0, "readState": "preparing", "exists": True, "cards": [], "projects": [],
+                     "tags": [], "repos": [], "errors": []}
+        ready = dict(preview.snapshot(preview.MOCK_CARDS), version=7, readState="ready")
+        with tempfile.TemporaryDirectory(prefix="tide-board-preparing-") as tmp:
+            preview.stage_board(tmp)
+            harness = os.path.join(tmp, "Preparing.qml")
+            with open(harness, "w", encoding="utf-8") as fh:
+                fh.write("""import QtQuick
+import QtQuick.Window
+import "board/contents/ui" as Board
+import "board/contents/ui/boardtexts.js" as Texts
+Window {
+    id: win
+    width: 460; height: 520; visible: true
+    property var log: []
+    QtObject {
+        // Atrapa DaemonSource: refresh() odpowiada tym, co usługa teraz podaje (`served`), a /Board Changed
+        // (dbusChanged) woła refresh() — jak w widgets/lib/DaemonSource.qml.
+        id: fake
+        property var result: null
+        property var served: null
+        property int refreshes: 0
+        signal refreshed()
+        function refresh() { refreshes++; result = served; refreshed() }
+        function dbusChanged() { refresh() }
+    }
+    Board.BoardSnapshot { id: board; daemon: fake }
+    Board.CompactBoard { id: tile; counts: Texts.counts(board.snapshot); loading: board.loading }
+    Board.SidebarBoard { id: side; y: 100; width: 300; snapshot: board.snapshot; loading: board.loading }
+    Board.BoardPopup { id: popup; y: 260; width: 420; snapshot: board.snapshot; loading: board.loading }
+    function state(tag) {
+        const n = Texts.counts(board.snapshot)
+        log.push([tag, board.loading, n.total, tile.summary, side.summary, popup.children[1].text,
+                  Texts.toolTip(true, !!board.snapshot && board.snapshot.exists === true, n, board.loading)])
+    }
+    Timer {
+        interval: 50; running: true
+        onTriggered: {
+            fake.served = %s
+            fake.refresh()                       // start widżetu razem z usługą
+            state("first")
+            fake.served = %s                      // usługa opublikowała Tablicę…
+            state("published-no-signal")
+            fake.dbusChanged()                    // …i wysłała /Board Changed
+            state("changed")
+            fake.served = %s                      // restart usługi
+            fake.refresh()
+            state("restart")
+            log.push(["refreshes", fake.refreshes])
+            console.warn("PREPARING " + JSON.stringify(log))
+            Qt.quit()
+        }
+    }
+}
+""" % (json.dumps(preparing), json.dumps(ready, ensure_ascii=False), json.dumps(preparing)))
+            env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+            log = subprocess.run(["qml6", harness], env=env, capture_output=True, text=True, timeout=60).stderr
+        match = re.search(r"PREPARING (.*)$", log, re.M)
+        self.assertIsNotNone(match, log[-3000:])
+        first, waiting, changed, restart, refreshes = json.loads(match.group(1))
+        self.assertEqual(first, ["first", True, 0, "wczytywanie…", "wczytywanie…", "Tablica się wczytuje…",
+                                 "Tablica pracy się wczytuje…"], "bez poprzedniej migawki — wczytywanie, nie „brak kart”")
+        self.assertEqual(waiting[1:], first[1:], "do sygnału Changed — dalej wczytywanie")
+        self.assertEqual(changed[:4], ["changed", False, 11, "2 w toku · 1 czeka · 1 do sprawdzenia"],
+                         "Changed po pierwszej publikacji — odczyt i gotowa migawka")
+        self.assertEqual(restart[1:], changed[1:], "„preparing” po restarcie zachowuje poprzednią migawkę")
+        self.assertEqual(refreshes, ["refreshes", 3], "bez dodatkowych odczytów z zegara")
+        self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
     def test_sidebar_tile(self):
         side = preview.render_sidebar()
         self.assertEqual((side["title"], side["summary"]), ("Tablica · 11 kart", "2 w toku · 1 czeka · 1 do sprawdzenia"))

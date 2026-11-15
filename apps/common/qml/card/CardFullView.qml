@@ -29,6 +29,7 @@ import "../tide" as Tide
 import "decision.js" as Decision
 import "move.js" as Move
 import "settings.js" as Settings
+import "../git/start.js" as Start
 import "ticket.js" as TicketLib
 
 Rectangle {
@@ -118,16 +119,12 @@ Rectangle {
     // Ustawienia ticketu (PT-332): kafelek przekazuje prośbę dalej; przycisk na kafelku dodaje kolejny ticket karty.
     property bool ticketSettingsEnabled: false
     signal ticketSettingsRequested(string ticketId)
-    // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
-    signal mergeMainRequested()
-    signal previewMergeRequested(string target)
-    signal chooseMergeRequested()
-    readonly property string defaultMergeTarget: flow && flow.base && flow.base.status === "known"
-                                                 && (flow.base.baseRef || "").indexOf("refs/heads/") === 0
-                                                 ? flow.base.baseRef.substring(11) : ""
+    // Jedno „Scal…” domkniętej, niescalonej karty (K-99, PT-401): gospodarz otwiera okno scalania z podglądem
+    // dla domyślnego celu. Karta scalona pokazuje „Scalono do …” zamiast przycisku.
+    signal mergeRequested()
+    readonly property bool merged: Boolean(flow && flow.merged)
     signal baseChangeRequested()
     property bool baseChangeAvailable: false
-    property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
@@ -148,6 +145,12 @@ Rectangle {
     property var confirming: null
     readonly property string typedBranch: branchField.text.trim()
     readonly property var typedYoutrack: Settings.issueKey(youtrackField.text)
+    // Tickety naraz (PT-375): nadpisanie karty (0 — brak, ustawienie domyślne) i limit obowiązujący z usługi.
+    readonly property int storedMaxTickets: card && card.maxTickets ? card.maxTickets : 0
+    readonly property int effectiveMaxTickets: flow && flow.ticketLimit ? flow.ticketLimit.limit : 0
+    readonly property var typedMaxTickets: Settings.maxTickets(maxTicketsField.text)
+    // Priorytet karty (PT-377): kolejność kroków czekających na miejsce u dostawcy; brak w migawce — normalny.
+    readonly property string storedPriority: card && Settings.priorityLabel(card.priority) ? card.priority : "normal"
 
     // Jedna lista akcji dla sekcji ustawień i menu „Karta ▾”: {id, label, effect, danger, input}.
     // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
@@ -228,6 +231,29 @@ Rectangle {
         if (key === storedYoutrack || key === "") return
         settingRequested("update", { field: "youtrack", value: key,
             effect: "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
+    }
+
+    // Pusta wartość usuwa nadpisanie (limit z ustawienia przepływu); zmniejszenie niczego nie zatrzymuje.
+    function applyMaxTickets() {
+        const value = typedMaxTickets
+        if (value === null) {
+            settingError = "Tickety naraz: liczba od 1 do 6 albo puste pole (ustawienie domyślne)."
+            return
+        }
+        settingError = ""
+        if (value === (storedMaxTickets || "")) return
+        settingRequested("update", { field: "maxTickets", value: value,
+            effect: value === "" ? "Karta " + card.id + ": tickety naraz wg ustawienia domyślnego."
+                                 : "Karta " + card.id + ": najwyżej " + value + " tickety naraz. Trwające nie są zatrzymywane." })
+    }
+
+    // Priorytet zmienia tylko kolejność czekających kroków; trwających nie zatrzymuje i nie omija limitu dostawcy.
+    function applyPriority(value) {
+        settingError = ""
+        if (!Settings.priorityLabel(value) || value === storedPriority) return
+        settingRequested("update", { field: "priority", value: value,
+            effect: "Karta " + card.id + ": priorytet " + Settings.priorityLabel(value).toLowerCase()
+                    + ". Zmienia kolejność kroków czekających na miejsce u dostawcy." })
     }
 
     function askFinish(params) {
@@ -526,6 +552,14 @@ Rectangle {
                     elide: Text.ElideMiddle
                 }
                 Tide.TextButton {
+                    objectName: "fullBranchDiff"
+                    visible: !!(view.flow && view.flow.cardBranch)
+                    text: "Zmiany gałęzi"
+                    variant: "outline"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
+                    onClicked: view.branchDiffRequested()
+                }
+                Tide.TextButton {
                     objectName: "fullDescription"
                     text: "Edytuj opis"
                     variant: "outline"
@@ -639,32 +673,22 @@ Rectangle {
                 }
             }
 
-            RowLayout {
+            // „Start od: …” (K-99, PT-389) zastępuje surowe „Baza: refs/heads/… · SHA”.
+            CardStartLine {
+                objectName: "fullStartLine"
                 Layout.fillWidth: true
-                visible: view.baseChangeAvailable && !!view.flow
-                Text {
-                    Layout.fillWidth: true
-                    text: "Baza: " + (view.flow && view.flow.base && view.flow.base.baseRef || "unknown")
-                          + " · " + (view.flow && view.flow.base && view.flow.base.baseCommit || "unknown")
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    color: Tide.Tokens.textMuted
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                }
-                Tide.TextButton {
-                    objectName: "fullBaseChange"
-                    text: "Podejrzyj korektę bazy"
-                    onClicked: view.baseChangeRequested()
-                }
+                derived: view.derived
+                changeAllowed: view.baseChangeAvailable
+                onChangeRequested: view.baseChangeRequested()
             }
             ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
-                visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
+                visible: view.merged || Boolean(view.mainPhase && view.mainPhase.state === "you")
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
+                    visible: !view.merged
                     text: "Karta jest domknięta na swojej gałęzi. Wybierz cel, sprawdź podgląd i potwierdź scalenie."
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
@@ -673,39 +697,24 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
                 Tide.TextButton {
-                    objectName: "fullBranchDiff"
-                    text: "Diff gałęzi"
-                    variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
-                    onClicked: view.branchDiffRequested()
-                }
-                Tide.TextButton {
-                    objectName: "fullPreviewMerge"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    visible: view.mergePreviewAvailable
-                    text: "Podgląd scalenia do " + (view.defaultMergeTarget || "…")
-                    enabled: view.defaultMergeTarget !== ""
-                    variant: "outline"
-                    onClicked: view.previewMergeRequested(view.defaultMergeTarget)
-                }
-                Tide.TextButton {
-                    objectName: "fullMergeMain"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    text: view.defaultMergeTarget ? "Scal do " + view.defaultMergeTarget : "Scal…"
+                    objectName: "fullMerge"
+                    text: "Scal…"
+                    visible: !view.merged
                     enabled: !view.mergeBusy
                     Accessible.name: text
-                    onClicked: {
-                        if (view.defaultMergeTarget) view.previewMergeRequested(view.defaultMergeTarget)
-                        else view.chooseMergeRequested()
-                    }
+                    onClicked: view.mergeRequested()
                 }
-                Tide.TextButton {
-                    objectName: "fullMergeChoose"
-                    text: "Scal…"
-                    visible: view.defaultMergeTarget !== ""
-                    onClicked: view.chooseMergeRequested()
+                Text {
+                    objectName: "fullMerged"
+                    Layout.fillWidth: true
+                    visible: view.merged
+                    text: Start.mergedLine(view.flow)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.mint
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                    wrapMode: Text.Wrap
+                    Accessible.name: text
                 }
             }
 
@@ -1294,6 +1303,79 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: "Teraz: " + (view.storedYoutrack || "brak") + "."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    // Tickety naraz (PT-375): puste pole = ustawienie domyślne; limit pilnuje usługa przy starcie ticketu.
+                    RowLayout {
+                        objectName: "settingTicketsRow"
+                        Layout.fillWidth: true
+                        spacing: 12
+                        QQC2.TextField {
+                            id: maxTicketsField
+                            objectName: "settingMaxTicketsField"
+                            Layout.preferredWidth: 220
+                            placeholderText: view.effectiveMaxTickets > 0 ? "domyślnie " + view.effectiveMaxTickets : "domyślnie"
+                            text: view.storedMaxTickets > 0 ? String(view.storedMaxTickets) : ""
+                            maximumLength: 2
+                            selectByMouse: true
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            Accessible.name: "Tickety naraz (teraz: " + (view.storedMaxTickets > 0 ? view.storedMaxTickets : "domyślnie") + ")"
+                            onAccepted: view.applyMaxTickets()
+                            onTextChanged: view.settingError = ""
+                        }
+                        Tide.TextButton {
+                            objectName: "settingMaxTicketsButton"
+                            text: "Ustaw tickety naraz"
+                            variant: "outline"
+                            onClicked: view.applyMaxTickets()
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Tickety naraz: " + (view.storedMaxTickets > 0 ? view.storedMaxTickets : "domyślnie"
+                                  + (view.effectiveMaxTickets > 0 ? " (" + view.effectiveMaxTickets + ")" : ""))
+                                  + ". Puste pole przywraca ustawienie domyślne."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    // Priorytet (PT-377): zwolnione miejsce u dostawcy bierze najpierw krok karty o wyższym priorytecie.
+                    RowLayout {
+                        objectName: "settingPriorityRow"
+                        Layout.fillWidth: true
+                        spacing: 12
+                        Text {
+                            text: "Priorytet"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                        }
+                        Repeater {
+                            model: Settings.PRIORITIES
+                            delegate: Tide.TextButton {
+                                required property string modelData
+                                objectName: "settingPriority_" + modelData
+                                text: Settings.priorityLabel(modelData)
+                                variant: view.storedPriority === modelData ? "filled" : "outline"
+                                Accessible.name: "Priorytet " + Settings.priorityLabel(modelData).toLowerCase()
+                                                 + (view.storedPriority === modelData ? " (teraz)" : "")
+                                onClicked: view.applyPriority(modelData)
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Zwolnione miejsce u dostawcy bierze najpierw krok karty o wyższym priorytecie, "
+                                  + "a przy równym — krok czekający dłużej."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily

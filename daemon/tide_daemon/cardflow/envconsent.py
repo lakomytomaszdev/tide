@@ -142,9 +142,110 @@ def _template_items(items: list, accepted=()) -> list:
     return out
 
 
-def _project_state(engine, card_id: str):
-    item, project = engine._project(card_id)
+def _project_state(engine, card_id: str, read=None):
+    """(slug, repozytorium) projektu karty. `read` — kontekst odczytu jednego odświeżenia (K-98 #1); bez niego
+    świeży odczyt Tablicy (zatwierdzenie zgody i każda inna operacja ze skutkiem)."""
+    item, project = engine._project(card_id) if read is None else engine._project(card_id, read)
     return project.slug, project.repo or ""
+
+
+# ------------------------------------------------------------ pamięć widoku (K-98 #1, tylko prezentacja)
+
+STAT_BUDGET = 4096     # najwyżej tyle metadanych kopii paczek w kluczu; powyżej klucz nie trafia (zawsze przeliczenie)
+
+
+class _Miss:
+    """Wartość klucza, która nie równa się żadnej innej — przeliczenie bez pamięci."""
+
+    def __eq__(self, other):
+        return False
+
+    def __hash__(self):
+        return id(self)
+
+
+def _sig(path: str):
+    """Metadane pliku/katalogu bez czytania treści: inode, rozmiar, mtime i ctime (zmiana praw też unieważnia)."""
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        return ("missing", exc.errno)
+    return (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+
+
+def _tree_sig(root: str, budget: int):
+    """Metadane drzewa (np. magazynu kopii paczek): ścieżki i `_sig`, bez czytania i hashowania plików."""
+    out = [("/", _sig(root))]
+    stack = [root]
+    while stack:
+        folder = stack.pop()
+        try:
+            with os.scandir(folder) as entries:
+                names = sorted((e.name, e.is_dir(follow_symlinks=False)) for e in entries)
+        except OSError as exc:
+            out.append((folder, "unreadable", exc.errno))
+            continue
+        for name, is_dir in names:
+            path = os.path.join(folder, name)
+            out.append((os.path.relpath(path, root), _sig(path)))
+            if len(out) > budget:
+                return _Miss()
+            if is_dir:
+                stack.append(path)
+    return tuple(out)
+
+
+def _snapshots_sig(snapshots: str, read=None):
+    """Metadane magazynu kopii paczek projektu; w odświeżeniu z kontekstem liczone raz na projekt, nie na kartę."""
+    def compute():
+        return _tree_sig(snapshots, STAT_BUDGET) if os.path.isdir(snapshots) else _sig(snapshots)
+    return read.once(("pack-snapshots", snapshots), compute) if read is not None else compute()
+
+
+def view_key(engine, card_id: str, st, slug: str, repo: str, wait: str, read=None):
+    """Klucz pamięci sekcji „Środowisko karty” z wejść, które ją wyznaczają — bez wczytania Tablicy ponad kontekst.
+
+    Pamięć służy wyłącznie prezentacji (panel karty). Zatwierdzenie zgody i bariery pudełka przeliczają odcisk
+    i prawa świeżo i nigdy nie czytają tej pamięci. Klucz obejmuje: projekt i repozytorium karty oraz rejestr
+    repozytoriów projektów (z kontekstu odświeżenia), stan karty (dziennik i kopia usługi), wersję planu,
+    oczekiwanie na środowisko, wyłącznik i plik skutecznych ustawień, profile projektu i karty, dziennik pudełka
+    (zgody `box.approved`, `box.ready`), propozycję z repozytorium, zgodę projektu (magazyn manifestu) i manifest
+    wejść (magazyn kopii paczek), a także tryb poświadczeń K3/K1. Zmiana któregokolwiek unieważnia wpis."""
+    from ..box import exposure
+    board = read.board if read is not None else engine.store.load()
+    registry = tuple(sorted((s, p.repo or "") for s, p in board.projects.items()))
+    item = board.cards.get(card_num_of(card_id))
+    proposal = st.plan_proposed or {}
+    revision = st.plan_revision or {}
+    journal = engine.journal
+    settings_paths = [box_settings.settings_path()]
+    if isinstance(getattr(engine, "settings", None), str):
+        settings_paths.append(engine.settings)
+    try:
+        store_root = exposure.root(slug)
+    except (exposure.ExposureError, bp.ProfileError, ValueError):
+        store_root = ""
+    snapshots = packs.snapshot_root(slug)
+    return (
+        slug, repo, registry, (item.project, tuple(item.projects)) if item is not None else None,
+        _sig(journal.path(card_id)), _sig(journal.mirror_path(card_id)),
+        proposal.get("seq"), bool(revision.get("pending")), revision.get("seq"), bool(st.plan_approved), wait,
+        boxes_enabled(engine), tuple(_sig(p) for p in settings_paths),
+        _sig(bp.project_path(slug)), _sig(bp.card_path(slug, card_id)), _sig(bs.journal_path(slug)),
+        _sig(repo) if repo else None, _sig(os.path.join(repo, ".tide", "box.yaml")) if repo else None,
+        _sig(store_root) if store_root else None,
+        _sig(os.path.join(store_root, "state.json")) if store_root else None,
+        _snapshots_sig(snapshots, read),
+        tuple(sorted((p, tuple(sorted(k3.credential_mode(p).items()))) for p in ("claude", "codex"))),
+    )
+
+
+def card_num_of(card_id: str):
+    from ..board.model import card_num
+    try:
+        return card_num(card_id)
+    except Exception:
+        return None
 
 
 def _stamp(profile: dict) -> str:
@@ -243,13 +344,13 @@ def yaml_base(card: dict) -> str:
     return bp.dump({k: v for k, v in card.items() if k not in ("box", CONSENT_KEY)})
 
 
-def model(engine, card_id: str, st) -> dict:
-    """Sekcja „Środowisko karty” dla panelu planu."""
-    slug, repo = _project_state(engine, card_id)
+def model(engine, card_id: str, st, read=None) -> dict:
+    """Sekcja „Środowisko karty” dla panelu planu. `read` — kontekst odczytu jednego odświeżenia (K-98 #1)."""
+    slug, repo = _project_state(engine, card_id, read)
     from ..box import exposure
     if slug == exposure.PROJECT:
         from . import projectconsent
-        return projectconsent.model(engine, card_id, st)
+        return projectconsent.model(engine, card_id, st, read)
     project, new, tmpl_items, empty, notes = _project_profile(slug, repo)
     card = _card_proposal(engine, card_id, st, slug)
     known = templates.known_domains()
@@ -360,7 +461,8 @@ def only_plan_reply(engine, card_id: str, plan: dict) -> dict:
 
 def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     """`ApproveCardEnvironment(card, yaml, onlyPlan)`; wynik JSON-owy dla D-Bus."""
-    from .engine import FlowError, fold
+    from .errors import FlowError
+    from .state import fold
     from ..board.model import card_num
     try:
         card_id = f"K-{card_num(card_id)}"
@@ -426,7 +528,7 @@ def _record_disabled(engine, prepared: Prepared, plan: dict) -> dict:
     Zapisuje profile w Tablicy i `box.approved`, niczego nie usuwa (wcześniejsze zgody, propozycje i historia zostają).
     Nie kopiuje paczek, nie zleca budowy ani startu, nie woła Incusa i nie czyści `boxWait`. Zgoda na środowisko
     zostaje odroczona: po włączeniu pudełka trzeba ją potwierdzić (wtedy dopiero kopia paczek i budowa)."""
-    from .engine import fold
+    from .state import fold
     slug, card_id = prepared.slug, prepared.card_id
     saved = []
     if prepared.new_project:
@@ -468,26 +570,46 @@ def _thread_launcher(slug: str, profile: dict, action: str) -> None:
 
 # ------------------------------------------------------------ BoxStatus
 
-def status(engine, slug: str, card: str = "") -> dict:
-    """`BoxStatus(slug)`: stan, hash, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu."""
-    from .engine import fold
+PREPARING_MESSAGE = "Tablica się przygotowuje — stan pudełka nieznany; spróbuj za chwilę"
+
+
+def preparing_status() -> dict:
+    """`BoxStatus` przed pierwszą opublikowaną migawką Tablicy (K-98 #2): jawne „nieznane”, nie gotowe pudełko."""
+    return {"ok": False, "error": "preparing", "readState": "preparing", "state": "unknown",
+            "message": PREPARING_MESSAGE}
+
+
+def status(engine, slug: str, card: str = "", published=None) -> dict:
+    """`BoxStatus(slug)`: stan, hash, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu. Tylko odczyt.
+
+    K-98 #2: `published` to opublikowana migawka Tablicy (`board_monitor.Published`): projekty, karty i `boxWait`
+    kart pochodzą z jednej wersji stanu, bez blokady dziennika ani Tablicy, więc odczyt nie czeka na kolejkę
+    mutacji; odpowiedź niesie `version` tej migawki. Stan pudełka i slotu to bieżący odczyt hosta (Incus, dziennik
+    pudełka, `admission.view` — bez zapisu). Bez `published` (silnik bez BoardMonitor) — świeży odczyt Tablicy
+    i dzienników kart."""
+    from .state import fold
     from . import boxcontrol
-    card, name = boxcontrol.target(engine, slug, card)
-    board = engine.store.load()
+    board = published.board if published is not None else engine.store.load()
+    card, name = boxcontrol.target(engine, slug, card, board=board)
     builder = (engine.box_builder or (lambda: box_builder.Builder(box_settings.load())))()
     st = builder.status(slug, card) if card else builder.status(slug)
     out = st.to_dict()
     from ..box import admission
-    out['admission'] = admission.snapshot(builder.incus)
+    out['admission'] = admission.view(builder.incus)
     out["nicLabel"] = "filtrowanie NIC: " + ("tak" if st.nic_filtering else "nie")
     cards = []
     for num, item in sorted(board.cards.items()):
         if item.project != slug:
             continue
         cid = f"K-{num}"
-        if engine.journal.has(cid):
+        if published is not None:
+            if cid in published.box_wait:
+                cards.append({"card": cid, "boxWait": published.box_wait[cid]})
+        elif engine.journal.has(cid):
             cards.append({"card": cid, "boxWait": boxwait.card_box_wait(fold(engine.journal.read(cid)))})
     out["cards"] = cards
+    if published is not None:
+        out.update(version=published.version, readState="ready")
     out["timings"] = [{k: e[k] for k in ("type", "duration", "reason") if k in e}
                       for e in bs.events(slug, name) if e.get("type") in ("box.stop", "box.reset") and "duration" in e]
     out["ok"] = True

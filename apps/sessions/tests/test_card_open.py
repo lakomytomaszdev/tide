@@ -183,6 +183,37 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual(json.loads(out["calls"][1][2]), {"step": "s1", "option": 1})
         self.assertTrue(out["state"]["decisionOpen"], "podgląd z pliku odrzuca zapis — decyzja wraca do okna")
 
+    def test_plan_decision_vanishes_while_approving_and_its_button_is_inactive_after_the_click(self):
+        """PT-408: decyzja „Zatwierdzić plan?” znika, gdy zatwierdzanie trwa (`plan.approving` liczy usługa z dziennika),
+        a po kliknięciu przycisku decyzja jest od razu nieaktywna — drugi klik nie wysyła drugiego wywołania."""
+        from apps.board.tests.decisionfix import journal_c
+        events = journal_c() + [{"v": 1, "seq": 4, "ts": "2026-11-03T23:50:00+01:00", "card": CARD,
+                                 "type": "plan.approval_requested", "proposal": 2}]
+        approving = self.data_file("approving", full_card(preview_data(os.path.join(self.tmp, "approving")), events))
+        out = self.probe(approving, "result['approving'] = js('flowCards[0].derived.flow.plan.approving')\n"
+                                    "result['decisions'] = js('Logic.cardDecisions(flowCards[0]).length')\n"
+                                    "result['opened'] = js(\"openDecisions('\" + %r + \"')\")" % CARD)
+        self.assertTrue(out["approving"])
+        self.assertEqual(out["decisions"], 0, "w trakcie zatwierdzania nie ma czego zatwierdzać drugi raz")
+        self.assertFalse(out["opened"])
+
+        body = ("backend._write = lambda tag, member, args: (backend._calls.append([member, *args]), "
+                "backend.callsChanged.emit())\n"      # usługa jeszcze nie odpowiedziała
+                "click_entry(0)\n"
+                "result['before'] = js('decisionDialog.pending.map(d => d.kind).join()')\n"
+                "js(\"(function all(it, n, o) { o = o || []; if (it.objectName === n) o.push(it); \"\n"
+                "   \"for (const c of it.children) all(c, n, o); return o })(decisionDialog, 'decisionOption')[0].picked()\")\n"
+                "js('decisionDialog.choose()')\nQTest.qWait(100)\n"
+                "result['afterClick'] = js('decisionDialog.pending.length')\n"
+                "js('decisionDialog.choose()')\nQTest.qWait(100)\n"
+                "result['calls'] = calls()")
+        clean = self.data_file("approve-ready", full_card(preview_data(os.path.join(self.tmp, "approve-ready")),
+                                                          journal_c(findings=[], verdict="APPROVE")))
+        out = self.probe(clean, body)
+        self.assertIn("plan", out["before"])
+        self.assertEqual(out["afterClick"], 0, "decyzja po kliknięciu nie czeka na drugi klik")
+        self.assertEqual([c for c in out["calls"] if c[0] == "ApproveCardPlan"], [["ApproveCardPlan", CARD]])
+
     def test_review_answer_sends_ticket_and_round_of_the_shown_question(self):
         # PT-316: okno odpowiada na pytanie, które pokazuje; bez ticketu (stare dane) idzie goły napis.
         out = self.probe(self.waiting, "click_entry(0)\n"

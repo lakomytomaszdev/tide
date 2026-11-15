@@ -1,4 +1,6 @@
-"""PT-200: istniejący widok, menu celu, klawiatura i granica zgody."""
+"""PT-200, K-99 #6/#16: wybór celu scalenia w oknie scalania osadzonym w Tablicy (jedno „Scal…” w panelu i pełnej
+karcie otwiera okno; z bazą znaną liczy od razu podgląd dla niej, bez niej otwiera wybór celu), skróty, wyszukiwanie,
+klawiatura i granica zgody."""
 import json
 
 from .test_card_full_view import STATE_PY
@@ -12,20 +14,28 @@ class MergeTargetViewTest(ProbeCase):
         name = "feature/nowa-baza/" + "pelna-nazwa-" * 12
         out = self.probe(STATE_PY + "\nnew_name = " + repr(name) + r'''
 click(card("K-8"))
-out["before"] = obj("fullMergeMain").property("text")
+out["label"] = obj("fullMerge").property("text")
+replies.append({"ok": True, "targetRef": "refs/heads/old-base", "targetBranch": "old-base"})
+click(named("fullMerge"))
+assert until(lambda: not obj("mergeWindow").property("busy"))
+out["before"] = obj("mergeWindowTarget").property("text")
+click(named("mergeWindowClose"))
 snap = json.loads(backend.snapshotJson)
 flow = next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]
 flow.update(initialBase=flow["base"], base={"status": "known", "baseRef": "refs/heads/" + new_name}, baseVersion=2)
 set_snapshot(snap)
-assert until(lambda: obj("fullMergeMain").property("text") == "Scal do " + new_name)
-out["after"] = obj("fullMergeMain").property("text")
 replies.append({"ok": True, "targetRef": "refs/heads/" + new_name, "targetBranch": new_name})
-click(named("fullMergeMain"))
+click(named("fullMerge"))
+assert until(lambda: not obj("mergeWindow").property("busy"))
+out["after"] = obj("mergeWindowTarget").property("text")
 out["calls"] = calls()
 ''', data)
-        self.assertEqual(out["before"], "Scal do old-base")
-        self.assertEqual(out["after"], "Scal do " + name)
-        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/" + name})
+        # Etykieta przycisku nie niesie celu („Scal do <cel>” jest tylko w oknie); cel bierze się z bieżącej bazy.
+        self.assertEqual(out["label"], "Scal…")
+        self.assertEqual(out["before"], "K-8 → old-base")
+        self.assertEqual(out["after"], "K-8 → " + name)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]],
+                         [{"targetRef": "refs/heads/old-base"}, {"targetRef": "refs/heads/" + name}])
 
     def closed(self, base=None):
         data = full_d(self.data)
@@ -37,11 +47,11 @@ out["calls"] = calls()
                 phase["state"] = "you"
         return data
 
-    def test_recent_shortcuts_order_dedup_blocked_and_explicit_preview_keep_default(self):
+    def test_choose_opens_window_with_default_target_shortcuts_recent_and_search(self):
         name = "feature/<b>" + "long-target/" * 5 + "end"
         out = self.probe(STATE_PY + FIND_PY + "\nlong_name = " + repr(name) + r'''
 click(card("K-8"))
-out["default"] = obj("fullMergeMain").property("text")
+out["default"] = obj("fullMerge").property("text")
 def branch(name, selectable=True):
     return {"ref": "refs/heads/" + name, "name": name, "commit": "a" * 40, "kind": "local",
             "selectable": selectable, "reason": "Cel należy do innej karty" if not selectable else ""}
@@ -49,139 +59,112 @@ base, main, blocked, recent, manual = [branch("feature/base"), branch("master"),
                                        branch(long_name), branch("manual")]
 backend.branch_replies.append({"ok": True, "branches": [base, main, blocked, recent, manual],
                               "mainRef": main["ref"], "recentTargets": [main, base, blocked, recent],
-                              "warnings": [], "hasMore": False})
-click(named("fullMergeChoose"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
+                              "defaultTargetRef": base["ref"], "warnings": [], "hasMore": False})
+replies.append({"ok": True, "canMerge": True, "targetRef": base["ref"], "targetBranch": "feature/base",
+                "previewToken": "default-token"})
+click(named("fullMerge"))
+assert until(lambda: obj("mergeWindow").property("opened") and not obj("mergeWindow").property("busy"))
+out["window"] = [obj("mergeWindowTarget").property("text"), obj("mergeWindowMerge").property("enabled")]
+out["defaultCalls"] = calls()
+click(named("mergeWindowTargetToggle"))
+engine.rootContext().setContextProperty("targetPicker", obj("mergeWindowBranchPicker"))
 out["shortcuts"] = js("targetPicker.mergeShortcuts.map(b => b.ref)")
 out["searchResults"] = js("targetPicker.searchBranches.map(b => b.ref)")
-out["unselected"] = obj("mergeTargetPreview").property("enabled")
 out["positions"] = [js(FIND + "(targetPicker, 'mergeTargetShortcut0').mapToItem(targetPicker, 0, 0).y"),
                     js(FIND + "(targetPicker, 'mergeTargetSearch').mapToItem(targetPicker, 0, 0).y")]
 click(at(FIND + "(targetPicker, 'mergeTargetShortcut2')"))
-out["blocked"] = [obj("mergeTargetPreview").property("enabled"), calls()]
+out["blocked"] = [obj("mergeWindowTarget").property("text"), len(calls())]
 out["rendered"] = js("(function () { const row = " + FIND + "(targetPicker, 'mergeTargetShortcut3'); "
                      "return [row.children[0].text, row.children[0].textFormat, row.children[0].truncated] })()")
 replies.append({"ok": True, "canMerge": True, "targetRef": recent["ref"],
                 "targetBranch": long_name, "targetCommit": "a" * 40, "previewToken": "recent-token"})
 click(at(FIND + "(targetPicker, 'mergeTargetShortcut3')"))
-assert until(lambda: not obj("mergePreview").property("busy"))
-out["menuClosed"] = not obj("mergeTargetMenu").property("visible")
-out["confirmation"] = obj("mergePreviewConfirm").property("text")
+assert until(lambda: not obj("mergeWindow").property("busy"))
+out["confirmation"] = obj("mergeWindowMerge").property("text")
+out["windowTarget"] = [obj("mergeWindowTarget").property("text"), obj("mergeWindow").property("targetRef")]
+backend.branch_replies.extend([{"ok": True, "branches": [branch("feature/first"), branch(long_name)],
+                               "mainRef": main["ref"], "recentTargets": [], "hasMore": False,
+                               "warnings": []}] * len("feature"))
+click(named("mergeTargetSearch"))
+type_text("feature")
+assert until(lambda: not obj("mergeWindowBranchPicker").property("loading"))
+key(Qt.Key.Key_Down)
+key(Qt.Key.Key_Return)
+assert until(lambda: not obj("mergeWindow").property("busy"))
+out["afterSearch"] = obj("mergeWindow").property("targetRef")
 out["calls"] = calls()
-click(named("mergePreviewClose"))
-out["defaultAfter"] = obj("fullMergeMain").property("text")
+out["branchCalls"] = backend.branch_calls
+click(named("mergeWindowClose"))
+out["defaultAfter"] = obj("fullMerge").property("text")
 ''', self.closed({"status": "known", "baseRef": "refs/heads/feature/base"}))
+        self.assertEqual(out["default"], "Scal…")
+        self.assertEqual(out["window"], ["K-8 → feature/base", True])
+        self.assertEqual([json.loads(c[2]) for c in out["defaultCalls"]], [{"targetRef": "refs/heads/feature/base"}])
         self.assertEqual(out["shortcuts"], ["refs/heads/feature/base", "refs/heads/master",
                                             "refs/heads/card/other", "refs/heads/" + name])
         self.assertEqual(out["searchResults"], ["refs/heads/manual"])
         self.assertLess(*out["positions"])
-        self.assertFalse(out["unselected"])
-        self.assertEqual(out["blocked"], [False, []])
+        self.assertEqual(out["blocked"], ["K-8 → feature/base", 1], "cel niewybieralny nie wysyła podglądu")
         self.assertEqual(out["rendered"], ["Ostatni cel · refs/heads/" + name, 0, False])
-        self.assertTrue(out["menuClosed"])
+        self.assertEqual(out["windowTarget"], ["K-8 → " + name, "refs/heads/" + name])
         self.assertEqual(out["confirmation"], "Scal do " + name)
-        self.assertEqual(len(out["calls"]), 1)
-        self.assertEqual(out["calls"][0][:2], ["PreviewCardMerge", "K-8"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/" + name})
-        self.assertEqual(out["defaultAfter"], "Scal do feature/base")
-        self.assertEqual(out["default"], out["defaultAfter"])
-
-    def test_local_base_default_menu_search_keyboard_long_name_and_explicit_preview(self):
-        name = "feature/<b>" + "very-long-name/" * 14 + "target"
-        data = self.closed({"status": "known", "baseRef": "refs/heads/feature/base"})
-        out = self.probe(STATE_PY + FIND_PY + "\nlong_name = " + repr(name) + r'''
-click(card("K-8"))
-out["default"] = obj("fullMergeMain").property("text")
-def branch(name, selectable=True):
-    return {"ref": "refs/heads/" + name, "name": name, "commit": "a" * 40, "kind": "local",
-            "selectable": selectable, "reason": "Cel należy do czynnego kroku" if not selectable else ""}
-listing = {"ok": True, "branches": [branch("feature/base"), branch("master"), branch("card/other", False)],
-           "mainRef": "refs/heads/master", "recentTargets": [], "hasMore": True, "warnings": []}
-backend.branch_replies.append(listing)
-click(named("fullMergeChoose"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-out["menu"] = obj("mergeTargetMenu").property("visible")
-out["unselected"] = obj("mergeTargetPreview").property("enabled")
-engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
-click(at(FIND + "(targetPicker, 'mergeTargetResult0')"))
-out["excluded"] = obj("mergeTargetPreview").property("enabled")
-backend.branch_replies.extend([{**listing, "branches": [branch("feature/first"), branch(long_name)], "hasMore": False}] * len("feature"))
-click(named("mergeTargetSearch"))
-type_text("feature")
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-key(Qt.Key.Key_Down)
-key(Qt.Key.Key_Return)
-out["selected"] = obj("mergeTargetPreview").property("enabled")
-out["rendered"] = json.loads(js("(function () { const row = " + FIND + "(targetPicker, 'mergeTargetResult1'); "
-                               "return JSON.stringify([row.children[0].text, row.children[0].textFormat, row.children[0].truncated]) })()"))
-out["beforePreview"] = calls()
-replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/" + long_name,
-                "targetBranch": long_name, "targetCommit": "a" * 40, "previewToken": "selected-token"})
-click(named("mergeTargetPreview"))
-assert until(lambda: not obj("mergePreview").property("busy"))
-out["confirmation"] = obj("mergePreviewConfirm").property("text")
-click(named("mergePreviewClose"))
-out["calls"] = calls()
-out["branchCalls"] = backend.branch_calls
-out["defaultAfter"] = obj("fullMergeMain").property("text")
-''', data)
-        self.assertEqual(out["default"], "Scal do feature/base")
-        self.assertTrue(out["menu"])
-        self.assertFalse(out["unselected"])
-        self.assertFalse(out["excluded"])
-        self.assertTrue(out["selected"])
-        self.assertEqual(out["rendered"], [name, 0, False])
-        self.assertEqual(out["beforePreview"], [])
-        self.assertEqual(out["confirmation"], "Scal do " + name)
-        self.assertEqual(len(out["calls"]), 1)
-        self.assertEqual(out["calls"][0][:2], ["PreviewCardMerge", "K-8"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/" + name})
+        self.assertEqual(out["afterSearch"], "refs/heads/" + name)
+        self.assertEqual([json.loads(c[2])["targetRef"] for c in out["calls"]],
+                         ["refs/heads/feature/base", "refs/heads/" + name, "refs/heads/" + name])
         self.assertEqual(json.loads(out["branchCalls"][-1][2]), {"purpose": "merge", "text": "feature", "limit": 50})
         self.assertEqual(out["defaultAfter"], out["default"])
 
-    def test_unknown_remote_require_choice_error_retry_cancel_and_project_change_revoke_pending_reply(self):
+    def test_unknown_or_remote_base_error_retry_cancel_and_project_change_revoke_pending_reply(self):
         for base in ({"status": "unknown", "baseRef": ""},
-                     {"status": "known", "baseRef": "refs/remotes/origin/feature/base"}):
+                     {"status": "known", "baseRef": "refs/remotes/team/feature/base"}):
             with self.subTest(base=base):
                 out = self.probe(STATE_PY + r'''
 click(card("K-8"))
-out["default"] = obj("fullMergeMain").property("text")
+out["default"] = obj("fullMerge").property("text")
 backend.branch_replies.append({"ok": False, "message": "Błąd odczytu <b>gita"})
-click(named("fullMergeMain"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-out["message"] = obj("mergeBranchPicker").property("message")
-out["errorEnabled"] = obj("mergeTargetPreview").property("enabled")
+click(named("fullMerge"))
+assert until(lambda: obj("mergeWindow").property("opened")
+             and not obj("mergeWindowBranchPicker").property("loading"))
+out["message"] = obj("mergeWindowBranchPicker").property("message")
+out["errorEnabled"] = obj("mergeWindowMerge").property("enabled")
+out["errorCalls"] = len(calls())
 click(named("mergeTargetRefresh"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-out["noImplicitMain"] = obj("mergeTargetPreview").property("enabled")
+assert until(lambda: not obj("mergeWindowBranchPicker").property("loading"))
+wait(100)
+out["afterRetry"] = [obj("mergeWindowMerge").property("enabled"), obj("mergeWindow").property("proposal"),
+                     obj("mergeWindow").property("targetRef"), len(calls())]
 key(Qt.Key.Key_Escape)
-out["cancelled"] = not obj("mergeTargetMenu").property("visible")
+out["cancelled"] = not obj("mergeWindow").property("opened")
 backend.branch_delay = 500
-click(named("fullMergeMain"))
-assert obj("mergeBranchPicker").property("loading")
+click(named("fullMerge"))
+assert obj("mergeWindowBranchPicker").property("loading")
 snap = json.loads(backend.snapshotJson)
 next(c for c in snap["cards"] if c["id"] == "K-8")["project"] = "another-project"
 set_snapshot(snap)
 wait(600)
-out["closedAfterProject"] = not obj("mergeTargetMenu").property("visible")
-out["pendingTag"] = obj("mergeBranchPicker").property("pendingTag")
-out["calls"] = calls()
+out["closedAfterProject"] = not obj("mergeWindow").property("opened")
+out["pendingTag"] = obj("mergeWindowBranchPicker").property("pendingTag")
+out["calls"] = len(calls())
 ''', self.closed(base))
+                unknown = base["status"] == "unknown"
                 self.assertEqual(out["default"], "Scal…")
                 self.assertEqual(out["message"], "Błąd odczytu <b>gita")
                 self.assertFalse(out["errorEnabled"])
-                self.assertFalse(out["noImplicitMain"])
+                self.assertEqual(out["errorCalls"], 0)
+                # Po ponowieniu: baza nieznana — główna jest tylko propozycją (podgląd tak, „Scal do” nie);
+                # baza zdalna bez jednoznacznego śledzenia — bez celu i bez podglądu.
+                self.assertEqual(out["afterRetry"], [False, unknown, "refs/heads/master" if unknown else "",
+                                                     1 if unknown else 0])
                 self.assertTrue(out["cancelled"])
                 self.assertTrue(out["closedAfterProject"])
                 self.assertEqual(out["pendingTag"], "")
-                self.assertEqual(out["calls"], [])
+                self.assertEqual(out["calls"], 1 if unknown else 0)
 
     def test_remote_creation_proposal_custom_name_preview_and_cancel_do_not_confirm(self):
         out = self.probe(STATE_PY + FIND_PY + r'''
 click(card("K-8"))
 proposal = {"ref": "refs/heads/feature/full/base", "name": "feature/full/base", "kind": "create",
-            "label": "Utwórz lokalną feature/full/base od origin/feature/full/base", "commit": "b" * 40,
+            "label": "Utwórz lokalną feature/full/base od team/feature/full/base", "commit": "b" * 40,
             "selectable": True, "reason": ""}
 main = {"ref": "refs/heads/master", "name": "master", "kind": "local", "commit": "a" * 40,
         "selectable": True, "reason": ""}
@@ -189,43 +172,52 @@ recent = {**main, "ref": "refs/heads/recent", "name": "recent"}
 backend.branch_replies.append({"ok": True, "branches": [main, recent, proposal], "createTarget": proposal,
                               "recentTargets": [recent], "defaultTargetRef": "",
                               "mainRef": main["ref"], "warnings": []})
-click(named("fullMergeMain"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
+click(named("fullMerge"))
+assert until(lambda: obj("mergeWindow").property("opened")
+             and not obj("mergeWindowBranchPicker").property("loading"))
+engine.rootContext().setContextProperty("targetPicker", obj("mergeWindowBranchPicker"))
+out["noTarget"] = [obj("mergeWindow").property("targetRef"), len(calls())]
 out["label"] = js(FIND + "(targetPicker, 'mergeTargetResult0').children[0].text")
 click(at(FIND + "(targetPicker, 'mergeTargetResult0')"))
-out["selectedProposal"] = js("targetPicker.selected.ref")
-out["before"] = calls()
+out["selectedProposal"] = [js("targetPicker.selected.ref"), obj("mergeWindow").property("targetRef")]
+out["before"] = [json.loads(c[2]) for c in calls()]
+js("(function () { const f = " + FIND + "(page, 'mergeWindowPickerScroll').contentItem; "
+   "f.contentY = Math.max(0, f.contentHeight - f.height) })()")
+wait(60)
 click(named("mergeNewTargetName"))
 type_text("alternative/full/target")
 out["typed"] = obj("mergeNewTargetName").property("text")
-out["pickerMessage"] = obj("mergeBranchPicker").property("message")
-out["pickerLoading"] = obj("mergeBranchPicker").property("loading")
-out["ready"] = obj("mergeTargetPreview").property("enabled")
+out["afterTyping"] = len(calls())
+out["ready"] = obj("mergeWindowNewTargetPreview").property("enabled")
 replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/alternative/full/target",
     "targetBranch": "alternative/full/target", "targetCommit": "b" * 40, "previewToken": "create-token",
     "targetWorktree": "/tmp/project-worktrees/merge-target-safe", "targetWorktreeExists": False,
     "targetPreparation": {"createRef": True, "createWorktree": True, "startCommit": "b" * 40,
-                          "remoteRef": "refs/remotes/origin/feature/full/base", "remoteCommit": "b" * 40,
+                          "remoteRef": "refs/remotes/team/feature/full/base", "remoteCommit": "b" * 40,
                           "path": "/tmp/project-worktrees/merge-target-safe"}})
-click(named("mergeTargetPreview"))
-assert until(lambda: not obj("mergePreview").property("busy"))
-out["text"] = obj("mergePreviewText").property("text")
-out["confirm"] = obj("mergePreviewConfirm").property("enabled")
+click(named("mergeWindowNewTargetPreview"))
+assert until(lambda: not obj("mergeWindow").property("busy"))
+click(named("mergeWindowDetailsToggle"))
+out["text"] = obj("mergeWindowDetails").property("text")
+out["confirm"] = obj("mergeWindowMerge").property("enabled")
 key(Qt.Key.Key_Escape)
+out["closed"] = not obj("mergeWindow").property("opened")
 out["calls"] = calls()
-''', self.closed({"status": "known", "baseRef": "refs/remotes/origin/feature/full/base"}))
-        self.assertIn("Utwórz lokalną feature/full/base od origin/feature/full/base", out["label"])
-        self.assertEqual(out["selectedProposal"], "refs/heads/feature/full/base")
-        self.assertEqual(out["before"], [])
+''', self.closed({"status": "known", "baseRef": "refs/remotes/team/feature/full/base"}))
+        self.assertTrue(out["closed"], "Escape zamyka okno scalania")
+        self.assertEqual(out["noTarget"], ["", 0])
+        self.assertIn("Utwórz lokalną feature/full/base od team/feature/full/base", out["label"])
+        self.assertEqual(out["selectedProposal"], ["refs/heads/feature/full/base", "refs/heads/feature/full/base"])
+        self.assertEqual(out["before"], [{"targetRef": "refs/heads/feature/full/base"}])
+        self.assertEqual(out["typed"], "alternative/full/target")
+        self.assertEqual(out["afterTyping"], 1, "wpisywanie nazwy nie wysyła podglądu")
         self.assertTrue(out["ready"], out)
         self.assertTrue(out["confirm"])
         self.assertIn("Commit startu celu: " + "b" * 40, out["text"])
-        self.assertIn("refs/remotes/origin/feature/full/base", out["text"])
+        self.assertIn("refs/remotes/team/feature/full/base", out["text"])
         self.assertIn("Po zgodzie: utwórz własny worktree", out["text"])
-        self.assertEqual(len(out["calls"]), 1)
-        self.assertEqual(out["calls"][0][0], "PreviewCardMerge")
-        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/alternative/full/target"})
+        self.assertEqual([c[0] for c in out["calls"]], ["PreviewCardMerge"] * 2)
+        self.assertEqual(json.loads(out["calls"][1][2]), {"targetRef": "refs/heads/alternative/full/target"})
 
     def test_exact_unique_tracker_is_default_but_multiple_trackers_require_choice(self):
         for unique in (True, False):
@@ -238,12 +230,42 @@ branches = [{"ref": "refs/heads/local/one", "name": "local/one", "kind": "local"
              "selectable": True, "reason": ""}]
 backend.branch_replies.append({"ok": True, "branches": branches, "mainRef": "refs/heads/master",
                               "defaultTargetRef": branches[0]["ref"] if unique else "", "warnings": []})
-click(named("fullMergeMain"))
-assert until(lambda: not obj("mergeBranchPicker").property("loading"))
-out["ready"] = obj("mergeTargetPreview").property("enabled")
+replies.append({"ok": True, "canMerge": True, "targetRef": branches[0]["ref"], "targetBranch": "local/one",
+                "previewToken": "tracker-token"})
+click(named("fullMerge"))
+assert until(lambda: obj("mergeWindow").property("opened")
+             and not obj("mergeWindowBranchPicker").property("loading"))
+wait(150)
+out["ready"] = obj("mergeWindowMerge").property("enabled")
+out["target"] = obj("mergeWindow").property("targetRef")
 key(Qt.Key.Key_Escape)
 out["calls"] = calls()
 '''
-                out = self.probe(body, self.closed({"status": "known", "baseRef": "refs/remotes/origin/feature/base"}))
+                out = self.probe(body, self.closed({"status": "known", "baseRef": "refs/remotes/team/feature/base"}))
                 self.assertEqual(out["ready"], unique)
-                self.assertEqual(out["calls"], [])
+                self.assertEqual(out["target"], "refs/heads/local/one" if unique else "")
+                self.assertEqual([json.loads(c[2]) for c in out["calls"]],
+                                 [{"targetRef": "refs/heads/local/one"}] if unique else [])
+
+    def test_panel_merge_opens_window_with_default_target(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Gotowe", "mainBranch": "develop", "cardBranch": "card/k-6-eksport",
+                    "base": {"status": "known", "baseRef": "refs/heads/develop"},
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + r'''
+click(card("K-6"))
+backend.branch_replies.append({"ok": True, "defaultTargetRef": "refs/heads/develop", "mainRef": "refs/heads/develop",
+                              "branches": [{"ref": "refs/heads/develop", "name": "develop", "kind": "local",
+                                            "commit": "a" * 40, "selectable": True, "reason": ""}],
+                              "recentTargets": [], "warnings": []})
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
+assert until(lambda: obj("mergeWindow").property("opened") and not obj("mergeWindow").property("busy"))
+out["window"] = [obj("mergeWindow").property("opened"), obj("mergeWindowTarget").property("text")]
+out["calls"] = [[c[0], c[1], json.loads(c[2])] for c in calls()]
+''', data=data)
+        self.assertEqual(out["window"], [True, "K-6 → develop"])
+        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-6", {"targetRef": "refs/heads/develop"}]])

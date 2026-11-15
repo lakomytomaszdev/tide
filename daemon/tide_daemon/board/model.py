@@ -63,6 +63,13 @@ LAUNCH_KEYS = ("entry", "mode", "tool", "worktree", "launched")
 # Dodatkowe projekty karty (PT-28): slugi po przecinku, główny zostaje w `project`. W nowych plikach
 # tylko wtedy, gdy są ustawione. Najwyżej PROJECTS_MAX (agent dostaje ich repozytoria przez --add-dir).
 PROJECTS_KEY = "projects"
+# Limit ticketów w toku na kartę (PT-375): 1..6, brak klucza — ustawienie przepływu `ticketsPerCard`.
+MAX_TICKETS_KEY = "max-tickets"
+# Priorytet karty (PT-377): kolejność kroków czekających na miejsce u dostawcy (`cardflow/stepqueue`). Brak klucza
+# albo zła wartość — `normal`; w nowych plikach tylko wtedy, gdy różny od `normal`.
+PRIORITY_KEY = "priority"
+PRIORITIES = ("high", "normal", "low")
+DEFAULT_PRIORITY = "normal"
 # Kolumna wyświetlana karty (z pracy agentów albo ręczna) w chwili ostatniego MoveCard (PT-29): „do poprawy”
 # (karta zostaje w swojej kolumnie po skończonej pracy) tylko po przeniesieniu z review albo done.
 MOVED_FROM_KEY = "moved-from"
@@ -184,6 +191,7 @@ class Card:
     base_ref: str = ""
     base_branch: str = ""
     base_commit: str = ""
+    start_ref: str = ""       # podpowiedź „start od…” (pełny ref); nie jest bazą ani zgodą, `start-ref` w pliku
     spec_revision_ref: str = ""
     spec_revision_commit: str = ""
     spec_revision_repo: str = ""
@@ -194,6 +202,8 @@ class Card:
     worktree: str = ""
     launched: str = ""
     projects: list = field(default_factory=list)   # dodatkowe projekty (slugi), bez głównego
+    max_tickets: int | None = None   # `max-tickets` (PT-375, 1..6); None — ustawienie domyślne przepływu
+    priority: str = "normal"         # `priority` (PT-377): high, normal, low
     description: str = ""
     path: str = ""
     doc: Document | None = None
@@ -301,7 +311,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
-    for key in ("base-ref", "base-branch", "base-commit", "spec-revision-ref", "spec-revision-commit", "spec-revision-repo"):
+    for key in ("base-ref", "base-branch", "base-commit", "start-ref", "spec-revision-ref", "spec-revision-commit", "spec-revision-repo"):
         setattr(card, key.replace("-", "_"), doc.get(key).strip())
     card.plan = doc.get("plan").strip()
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
@@ -309,6 +319,17 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.tool = _choice(doc.get("tool"), TOOLS, "", f"{name}: nieznane narzędzie uruchomienia", path, errors)
     card.worktree = doc.get("worktree").strip()
     card.launched = doc.get("launched").strip()
+    raw_max = doc.get(MAX_TICKETS_KEY).strip()
+    if raw_max:
+        if raw_max.isdecimal() and 1 <= int(raw_max) <= 6:
+            card.max_tickets = int(raw_max)
+        else:
+            errors.append(_err(path, f"{name}: niepoprawny limit ticketów „{raw_max}” (1–6) — obowiązuje ustawienie domyślne"))
+    raw_priority = doc.get(PRIORITY_KEY).strip()
+    if raw_priority in PRIORITIES:
+        card.priority = raw_priority
+    elif raw_priority:
+        errors.append(_err(path, f"{name}: niepoprawny priorytet „{raw_priority}” (high, normal, low) — obowiązuje normal"))
     for slug in split_tags(doc.get(PROJECTS_KEY)):
         if not SLUG_RE.match(slug):
             errors.append(_err(path, f"{name}: niepoprawny dodatkowy projekt „{slug}” — pomijam"))

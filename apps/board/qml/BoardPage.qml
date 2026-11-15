@@ -11,6 +11,8 @@ import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
+import "git" as Git
+import "git/start.js" as Start
 import "board.js" as Logic
 import "card/decision.js" as Decision
 
@@ -24,7 +26,11 @@ Rectangle {
     property string homeDir: ""
     property real nowTs: Date.now() / 1000
     property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
-    property bool canDiff: false         // PT-5: diff gałęzi karty
+    property bool canDiff: true          // „Zmiany gałęzi” na kafelku Do sprawdzenia (K-36, #17)
+    property var diffBackend: null       // backend widoku diffa (gitDiff, listCardBranches, replied) — ustawia BoardView
+    property bool diffOpen: false        // nakładka widoku diffa nad panelem albo pełną kartą (Esc wraca tam, skąd otwarto)
+    property string diffCardId: ""
+    property string diffWorkDir: ""      // worktree gałęzi karty (z listy Worktrees) dla „Otwórz w edytorze”; pusty — brak
     property var markdownRenderer: null  // backend.renderMarkdown: plan i specyfikacja w panelu karty jako bezpieczny HTML
     // Filtry i układ.
     property string tagFilter: ""
@@ -146,8 +152,6 @@ Rectangle {
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal environmentApproveRequested(string tag, string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
-    signal branchDiffRequested(string tag, string cardId)
-    signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
     signal mergeRequested(string tag, string cardId, string request)
     signal previewBaseChangeRequested(string tag, string cardId, string request)
@@ -172,20 +176,19 @@ Rectangle {
         const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
         return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
     }
-    function chooseMerge(cardId) {
+    // Jedyne wejście do okna scalania (K-99, PT-390/#6, PT-401): „Scal…” z panelu i pełnej karty. Gdy baza karty jest
+    // znana i jest gałęzią lokalną, okno od razu prosi o podgląd dla niej; bez niej bierze domyślny cel i skróty
+    // z odpowiedzi `ListCardBranches`. Zgodę wysyła tylko jego „Scal do <cel>”.
+    function openMergeWindow(cardId) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
         const base = card && card.derived && card.derived.flow && card.derived.flow.base
-        mergeTargets.cardId = cardId
-        mergeTargets.contextKey = mergeContext(cardId)
-        mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
-        mergeTargets.open()
-    }
-    function previewMerge(cardId, target, targetRef) {
-        const tag = nextTag("preview-merge:" + cardId)
-        mergePreview.show(tag, cardId, target)
-        mergePreview.contextKey = mergeContext(cardId)
-        mergePreview.targetRef = targetRef || "refs/heads/" + target
-        previewMergeRequested(tag, cardId, JSON.stringify({targetRef: mergePreview.targetRef}))
+        const known = base && base.status === "known"
+        const heads = known && (base.baseRef || "").indexOf("refs/heads/") === 0
+        const target = heads ? base.baseRef.substring(11) : ""
+        mergeWindow.contextKey = mergeContext(cardId)
+        mergeWindow.baseRef = known ? base.baseRef : ""
+        mergeWindow.startLine = card && card.derived ? Start.cardStartLine(card.derived.flow) : ""
+        mergeWindow.open(cardId, target ? "refs/heads/" + target : "", target)
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -225,6 +228,27 @@ Rectangle {
     // Wiersze projektów liczone tylko w widoku wierszy; w „Razem” nikt ich nie czyta.
     readonly property var lanesRaw: layoutMode === "lanes" ? Logic.groupLanes(cards) : []
     property var panelCard: null
+    // PT-408: zatwierdzanie planu — oczekiwanie TEGO okna na odpowiedź ApproveCardPlan / ApproveCardEnvironment.
+    // Plan: trwa do zdarzenia `plan.approved` (następna migawka) albo błędu; migawka dodatkowo niesie `approving`.
+    // Różnica planu: wyłącznie do doręczenia odpowiedzi (migawka nie ma `approving`, `plan.approved` nie przychodzi).
+    property string planApproveCard: ""
+    property bool planApproveDiff: false
+    readonly property bool planApproveWaiting: planApproveCard !== "" && !!panelCard && panelCard.id === planApproveCard
+    function beginPlanApproval(cardId) {
+        const flow = panelCard && panelCard.id === cardId && panelCard.derived ? panelCard.derived.flow : null
+        const plan = flow ? flow.plan : null
+        planApproveDiff = !!(plan && plan.revision && plan.revision.pending)
+        planApproveCard = cardId
+        planApproveFallback.stop()
+    }
+    // Odpowiedź usługi kończy oczekiwanie (sukces z mapą, błąd, różnica planu). Wyjątek: `approving: true` (zatwierdza
+    // już inne wywołanie) — plan zostaje „w trakcie”, aż przyjdzie migawka (z krótkim bezpiecznikiem).
+    function planApprovalReplied(failed, approving) {
+        if (planApproveCard === "") return
+        if (!failed && approving && !planApproveDiff) planApproveFallback.restart()
+        else planApproveCard = ""
+    }
+    Timer { id: planApproveFallback; interval: 4000; onTriggered: page.planApproveCard = "" }
     property var decisionCard: null
     property var fullCard: null
     property var errorLines: []
@@ -391,6 +415,23 @@ Rectangle {
         delete notes[tag]
         settingNotes = notes
         return text
+    }
+
+    // „Zmiany gałęzi” (K-36, #17): widok diffa źródła `card` jako nakładka na okno. Panel albo pełna karta
+    // zostają pod nią, więc Esc (closeRequested widoku) wraca dokładnie tam, skąd użytkownik przyszedł.
+    function openDiff(cardId) {
+        if (!cardId) return
+        diffCardId = cardId
+        diffWorkDir = ""
+        diffOpen = true
+        if (diffBackend && typeof diffBackend.cardWorktree === "function")
+            diffBackend.cardWorktree("diffWorkDir:" + cardId, cardId)
+    }
+
+    function closeDiff() {
+        diffOpen = false
+        if (mergeWindow.opened) mergeWindow.forceActiveFocus()   // „Zmiany gałęzi” z okna scalania wracają do okna
+        else page.forceActiveFocus()
     }
 
     // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
@@ -767,7 +808,7 @@ Rectangle {
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
         if (tag.indexOf("merge-targets:") === 0) {
-            mergeTargets.picker.receive(tag, reply)
+            mergeWindow.receiveBranches(tag, reply)
             return
         }
         if (tag.indexOf("base-change-branches:") === 0) {
@@ -897,41 +938,31 @@ Rectangle {
             planManager.error = error
             if (!error) planManager.notice = "Zmiana planu zapisana."
         } else if (tag.indexOf("plan-approve:") === 0) {
+            const approveText = !error && reply.approving ? "Zatwierdzanie trwa — karta ruszy sama."
+                              : "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            planApprovalReplied(!!error, !!reply.approving)
             cardPanel.busy = false
             cardPanel.error = error
-            if (!error) cardPanel.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            if (!error) cardPanel.notice = approveText
             planManager.busy = false
             planManager.error = error
-            if (!error) planManager.notice = "Plan zatwierdzony. Uruchamiam pierwszy gotowy ticket."
+            if (!error) planManager.notice = approveText
         } else if (tag.indexOf("env-approve:") === 0) {
             // Odmowę waliduje usługa; panel pokazuje jej komunikat i pozycje (nowe do zaznaczenia), nic nie zgaduje.
+            if (tag.indexOf("env-approve:plan:") === 0) planApprovalReplied(!!error || !!reply.preview, !!reply.approving)
             cardPanel.busy = false
             cardPanel.environmentError = error
             cardPanel.environmentReply = error || reply.exposure || reply.revoked ? reply : null
-            if (!error) cardPanel.notice = reply.preview ? "Podgląd zakresu gotowy. Zaznacz zgodę po przeczytaniu."
+            if (!error) cardPanel.notice = reply.approving ? "Zatwierdzanie trwa — karta ruszy sama." : reply.preview ? "Podgląd zakresu gotowy. Zaznacz zgodę po przeczytaniu."
                 : reply.message ? reply.message : reply.onlyPlan
                 ? "Plan zatwierdzony. Środowisko czeka na zatwierdzenie."
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
-        } else if (tag.indexOf("branch-diff:") === 0) {
-            cardPanel.error = error
-            if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
-        } else if (tag.indexOf("preview-merge:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            mergePreview.result = error ? null : reply
-            if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
-        } else if (tag.indexOf("merge-card:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            if (error) {
-                // Ponowna zgoda wymaga nowego odczytu; stary przycisk nie może ponowić mutacji.
-                mergePreview.result = null
-            } else {
-                mergePreview.close()
-                showToast("Karta scalona do " + reply.targetBranch + ".", "mint")
-            }
+        } else if (tag.indexOf("diff:") === 0) {
+            return   // odpowiedź `Git.Diff` odbiera sam widok diffa (DiffView), nie Tablica
+        } else if (tag.indexOf("preview-merge:") === 0 || tag.indexOf("merge-card:") === 0) {
+            // Okno samo pomija odpowiedź z innym tagiem niż bieżące żądanie (stary podgląd, zamknięte okno).
+            const merged = mergeWindow.receive(tag, error, reply)
+            if (merged) showToast(merged + ".", "mint")
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -952,10 +983,10 @@ Rectangle {
 
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
     onSnapshotChanged: {
+        if (planApproveFallback.running) planApproveCard = ""   // PT-408: po odpowiedzi nową migawkę przejmuje stan zatwierdzania
         refreshColumnSpecs()
         optimistic = []
-        if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
-        if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
+        if (mergeWindow.opened && mergeWindow.contextKey !== mergeContext(mergeWindow.cardId)) mergeWindow.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
             const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
@@ -1622,6 +1653,7 @@ Rectangle {
                         onSessionRequested: session => page.sessionRequested(session)
                         onAgentRequested: session => page.agentRequested(session)
                         onLaunchRequested: id => page.openLaunch(id, false)
+                        onDiffRequested: id => page.openDiff(id)
                         onKeyNavigation: (id, dx, dy) => page.navigate(id, dx, dy)
                         onKeyMove: (id, dx, dy) => page.keyMove(id, dx, dy)
                     }
@@ -1740,6 +1772,7 @@ Rectangle {
                                             onSessionRequested: session => page.sessionRequested(session)
                                             onAgentRequested: session => page.agentRequested(session)
                                             onLaunchRequested: id => page.openLaunch(id, false)
+                                            onDiffRequested: id => page.openDiff(id)
                                         }
                                     }
                                 }
@@ -1916,19 +1949,22 @@ Rectangle {
         }
         onPlanEditRequested: (cardId, request) =>
             page.planEditRequested(page.nextTag("plan-edit:" + cardId), cardId, JSON.stringify(request))
-        onPlanApproveRequested: cardId =>
+        approveWaiting: page.planApproveWaiting
+        onPlanApproveRequested: cardId => {
+            if (page.planApproveWaiting) return   // PT-408: odpowiedź jeszcze nie wróciła — drugie wywołanie nie wychodzi
+            page.beginPlanApproval(cardId)
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
-        onEnvironmentApproveRequested: (cardId, yaml, onlyPlan) => {
+        }
+        onEnvironmentApproveRequested: (cardId, yaml, onlyPlan, approvesPlan) => {
+            if (approvesPlan && page.planApproveWaiting) return
             cardPanel.environmentError = ""
-            page.environmentApproveRequested(page.nextTag("env-approve:" + cardId), cardId, yaml, onlyPlan)
+            if (approvesPlan) page.beginPlanApproval(cardId)
+            page.environmentApproveRequested(page.nextTag("env-approve:" + (approvesPlan ? "plan:" : "") + cardId), cardId, yaml, onlyPlan)
         }
         onPlanManagerRequested: page.openPlanManager()
-        onBranchDiffRequested: cardId =>
-            page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
-        onMergeMainRequested: cardId =>
-            page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
-        onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
-        onChooseMergeRequested: cardId => page.chooseMerge(cardId)
+        onBranchDiffRequested: cardId => page.openDiff(cardId)
+        onBaseChangeRequested: cardId => { if (page.openFull(cardId)) page.openBaseChange(cardId) }
+        onMergeRequested: cardId => page.openMergeWindow(cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -1969,7 +2005,10 @@ Rectangle {
             planManager.busy = true
             page.stepResolveRequested(page.nextTag("step-resolve:" + cardId), cardId, JSON.stringify(request))
         }
+        approveWaiting: page.planApproveWaiting
         onApproveRequested: cardId => {
+            if (page.planApproveWaiting) return
+            page.beginPlanApproval(cardId)
             planManager.busy = true
             page.planApproveRequested(page.nextTag("plan-approve:" + cardId), cardId)
         }
@@ -2028,7 +2067,7 @@ Rectangle {
         visible: page.decisionOpen && !page.managing
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
-        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.queue,
                                           page.decisionCardRaw ? page.decisionCardRaw.project : "")
         cardOpen: page.cardOpen
         onCardOpenRequested: value => page.setCardOpen(value)
@@ -2058,7 +2097,6 @@ Rectangle {
         onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
-        mergePreviewAvailable: true
         // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
         ticketSettingsEnabled: true
         onTicketSettingsRequested: id => page.openTicketSettings(id)
@@ -2068,8 +2106,8 @@ Rectangle {
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
-        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340): obciążenie z migawki wszystkich kart.
-        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340, PT-374): stan kolejki z pola `queue` migawki.
+        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.queue,
                                                           page.fullCardRaw ? page.fullCardRaw.project : "") : null
         moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
         canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
@@ -2082,10 +2120,8 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
-        onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
-        onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
-        onChooseMergeRequested: page.chooseMerge(page.fullCardId)
-        onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
+        onMergeRequested: page.openMergeWindow(page.fullCardId)
+        onBranchDiffRequested: page.openDiff(page.fullCardId)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }
@@ -2114,26 +2150,28 @@ Rectangle {
         onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
 
-    MergePreview {
-        id: mergePreview
-        parent: page
+    // Okno scalania (wspólny komponent git/MergeWindow.qml): Tablica tylko przekłada sygnały na wywołania usługi.
+    Git.MergeWindow {
+        id: mergeWindow
+        anchors.fill: parent
         z: 60
-        onConfirmRequested: request => {
-            requestTag = page.nextTag("merge-card:" + cardId)
-            page.mergeRequested(requestTag, cardId, JSON.stringify(request))
+        onPreviewRequested: targetRef => {
+            const tag = page.nextTag("preview-merge:" + cardId)
+            track(tag)
+            page.previewMergeRequested(tag, cardId, JSON.stringify({targetRef: targetRef}))
         }
-        onRefreshRequested: page.previewMerge(cardId, targetBranch, targetRef)
-    }
-    MergeTargetPicker {
-        id: mergeTargets
-        parent: page
-        z: 60
-        onRequested: text => {
+        onBranchesRequested: text => {
             const tag = page.nextTag("merge-targets:" + cardId)
-            picker.pendingTag = tag
+            trackBranches(tag)
             page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
         }
-        onPreviewRequested: target => page.previewMerge(cardId, target.name, target.ref)
+        onMergeRequested: request => {
+            const tag = page.nextTag("merge-card:" + cardId)
+            track(tag)
+            page.mergeRequested(tag, cardId, JSON.stringify(request))
+        }
+        onChangesRequested: cardId => page.openDiff(cardId)
+        onClosed: page.forceActiveFocus()
     }
     CardUi.BaseChangePreview {
         id: baseChangePreview
@@ -2141,7 +2179,7 @@ Rectangle {
         z: 65
         selectedBase: baseChangePicker.selected
         selectionReady: baseChangePicker.ready
-        selectionContent: BranchPicker {
+        selectionContent: Git.BranchPicker {
             id: baseChangePicker
             Layout.fillWidth: true
             active: baseChangePreview.visible && baseChangePreview.selecting
@@ -2190,10 +2228,44 @@ Rectangle {
         }
     }
 
+    // Odpowiedź na „katalog worktree karty” (PT-361); spóźniona odpowiedź dla innej karty jest pomijana.
+    Connections {
+        target: page.diffBackend
+        ignoreUnknownSignals: true
+        function onReplied(tag, text) {
+            if (tag !== "diffWorkDir:" + page.diffCardId) return
+            try {
+                const reply = JSON.parse(text)
+                page.diffWorkDir = reply && reply.ok && typeof reply.path === "string" ? reply.path : ""
+            } catch (e) { page.diffWorkDir = "" }
+        }
+    }
+
+    // Widok diffa (K-36): nad panelem i pełną kartą, na całe okno Tide.
+    Loader {
+        id: diffLoader
+        objectName: "branchDiffOverlay"
+        anchors.fill: parent
+        z: 100
+        active: page.diffOpen
+        sourceComponent: Component {
+            Git.DiffView {
+                objectName: "branchDiffView"
+                request: ({source: "card", card: page.diffCardId})
+                backend: page.diffBackend
+                workDir: page.diffWorkDir
+                onCloseRequested: page.closeDiff()
+                Component.onCompleted: forceActiveFocus()
+            }
+        }
+    }
+
     // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka okno decyzji, panel, pełną kartę albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            if (page.decisionOpen && !page.managing) page.closeDecisions()
+            if (page.diffOpen) page.closeDiff()
+            else if (mergeWindow.opened) mergeWindow.close()
+            else if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()
             else if (page.fullOpen && !page.managing) page.closeFull()

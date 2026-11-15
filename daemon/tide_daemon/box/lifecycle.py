@@ -33,12 +33,11 @@ def active_steps(builder, slug, name, engine=None):
     """
     from ..cardflow.journal import Journal
     from ..cardflow import trialhold
-    from ..cardflow.state import fold
     from .runner import BoxRunner
 
     journal = engine.journal if engine is not None else Journal(bp.board_dir())
     try:
-        states = [fold(trialhold.read_process_history(journal, card)) for card in journal.cards_complete()]
+        states = [trialhold.process_state(journal, card)[1] for card in journal.cards_complete()]
     except (OSError, ValueError, TypeError, KeyError):
         return ["niepełna historia kart"]
     # Dawny runner --demo nie miał box.use ani karty. Skan trwałych śladów
@@ -186,14 +185,15 @@ class Lifecycle:
 def tick(engine):
     """Wywoływane po obsłużeniu kroków; odroczone sprzątanie jest ponawiane także po restarcie."""
     from ..cardflow import boxstep
-    from ..cardflow.state import fold
     from .builder import BoxBusy
     settings = boxstep.settings_of(engine)
     if not settings.enabled:
         return
     from ..cardflow import trialhold
     try:
-        states = {card: fold(trialhold.read_process_history(engine.journal, card))
+        # K-105 PT-415: stan procesu karty z pamięci według wersji dziennika (ta sama pamięć ścisła PT-411, co przed
+        # ticketem), bez nowego `fold` i modelu tożsamości co tick dla każdej karty.
+        states = {card: trialhold.process_state(engine.journal, card)[1]
                   for card in engine.journal.cards_complete()}
     except (OSError, ValueError, TypeError, KeyError):
         # Nie ufamy nawet projektowi z tolerancyjnie odczytanego fragmentu.

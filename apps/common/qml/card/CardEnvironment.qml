@@ -17,6 +17,8 @@ ColumnLayout {
 
     property var environment: null           // model z usługi (patrz wyżej); null — sekcja ukryta
     property bool planPending: true          // plan czeka na zatwierdzenie; inaczej tylko „Zatwierdź środowisko”
+    property bool planApproving: false       // PT-408: plan się zatwierdza (oczekiwanie okna albo `approving` z migawki)
+    readonly property bool approvingPlan: planPending && planApproving
     property bool busy: false
     property string error: ""                // komunikat usługi po odmowie
     property var reply: null                 // odpowiedź usługi po odmowie: `items` do ponownego pokazania
@@ -33,7 +35,8 @@ ColumnLayout {
     }
     readonly property var shownItems: reply && reply.items && reply.items.length ? reply.items
                                       : (environment && environment.items) || []
-    signal approveRequested(string yaml, bool onlyPlan)
+    // `approvesPlan`: żądanie zatwierdza plan (zatwierdzenie albo „Tylko plan”), a nie podgląd/wycofanie zgody projektu.
+    signal approveRequested(string yaml, bool onlyPlan, bool approvesPlan)
 
     visible: !!environment
     spacing: 8
@@ -332,7 +335,7 @@ ColumnLayout {
             enabled: !section.busy && !!section.environment && !!section.environment.exposureControls
             onClicked: {
                 section.exposureAccepted = false
-                section.approveRequested(section.composeYaml("preview"), false)
+                section.approveRequested(section.composeYaml("preview"), false, false)
             }
         }
         Tide.TextButton {
@@ -343,7 +346,7 @@ ColumnLayout {
             enabled: !section.busy
             onClicked: {
                 section.exposureAccepted = false
-                section.approveRequested(section.composeYaml("revoke"), false)
+                section.approveRequested(section.composeYaml("revoke"), false, false)
             }
         }
     }
@@ -353,20 +356,21 @@ ColumnLayout {
         spacing: 8
         Tide.TextButton {
             objectName: "envApprove"
-            text: section.planPending ? "Zatwierdź plan i środowisko" : "Zatwierdź środowisko"
+            text: section.approvingPlan ? "Zatwierdzanie…"
+                  : section.planPending ? "Zatwierdź plan i środowisko" : "Zatwierdź środowisko"
             variant: "filled"
-            enabled: !section.busy && (!section.projectExposure || section.exposureAccepted || !!section.exposure.approved)
+            enabled: !section.busy && !section.approvingPlan && (!section.projectExposure || section.exposureAccepted || !!section.exposure.approved)
             opacity: enabled ? 1 : 0.45
-            onClicked: section.approveRequested(section.composeYaml(), false)
+            onClicked: section.approveRequested(section.composeYaml(), false, section.planPending)
         }
         Tide.TextButton {
             objectName: "envOnlyPlan"
             visible: section.planPending
             text: "Tylko plan"
             variant: "outline"
-            enabled: !section.busy
+            enabled: !section.busy && !section.approvingPlan
             opacity: enabled ? 1 : 0.45
-            onClicked: section.approveRequested(section.composeYaml(), true)
+            onClicked: section.approveRequested(section.composeYaml(), true, true)
         }
         Tide.TextButton {
             objectName: "envEdit"

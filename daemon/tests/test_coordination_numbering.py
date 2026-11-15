@@ -12,6 +12,7 @@ import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from . import coordfix as F
 from .gitrepos import git
@@ -498,6 +499,127 @@ class ReservationTest(unittest.TestCase):
         self.assertEqual(got["ids"], [f"{preview['prefix']}-1"])
         with self.assertRaises(reservations.ReservationError):   # jawny prefiks YouTracka dalej odmawia
             reservations.reserve(self.repo, prefix="LOG", dry_run=True, path=self.registry, local_fallback=True)
+
+    # --- rezerwacja zbiorcza (K-102 #1) ---------------------------------------------------------
+
+    def batch(self, keys, **kwargs):
+        return reservations.reserve_many(self.repo, [{"request_key": k, "title": f"Ticket {k}"} for k in keys],
+                                         path=self.registry, **kwargs)
+
+    def registry_entries(self):
+        with open(self.registry, encoding="utf-8") as fh:
+            return json.load(fh)["reservations"]
+
+    def test_batch_of_18_gets_consecutive_numbers_in_order_with_one_registry_write(self):
+        keys = [f"K-9:plan:4:#{n}" for n in range(1, 19)]
+        writes = []
+        original = os.fsync
+        with mock.patch.object(reservations.os, "fsync", side_effect=lambda fd: (writes.append(fd), original(fd))):
+            got = self.batch(keys)
+        self.assertEqual(got["ids"], [f"PT-{n}" for n in range(22, 40)])
+        self.assertEqual(got["prefix"], "PT")
+        self.assertEqual(len(writes), 1, "rejestr zapisany jeden raz")
+        entries = self.registry_entries()
+        self.assertEqual([(e["request_key"], e["number"]) for e in entries], list(zip(keys, range(22, 40))))
+        self.assertTrue(all(e["request_count"] == 1 and e["request_title"] == e["title"] and
+                            e["request_seed"] == "plany" for e in entries))
+
+    def test_batch_retry_returns_the_same_numbers_without_new_entries(self):
+        keys = [f"K-9:plan:4:#{n}" for n in range(1, 6)]
+        first = self.batch(keys)
+        before = os.stat(self.registry).st_mtime_ns
+        again = self.batch(keys)
+        self.assertEqual(again["ids"], first["ids"])
+        self.assertEqual(len(self.registry_entries()), 5)
+        self.assertEqual(os.stat(self.registry).st_mtime_ns, before, "ponowienie nic nie zapisuje")
+        # Wpis zbiorczy ma kształt pojedynczego reserve(count=1): odzyskanie zamiaru po restarcie zwraca ten numer.
+        single = reservations.reserve(self.repo, title="Ticket K-9:plan:4:#3", path=self.registry,
+                                      request_key="K-9:plan:4:#3")
+        self.assertEqual(single["ids"], [first["ids"][2]])
+
+    def test_batch_mixes_keys_reserved_one_by_one_with_new_ones(self):
+        old = reservations.reserve(self.repo, title="Ticket K-9:plan:4:#2", path=self.registry,
+                                   request_key="K-9:plan:4:#2")
+        self.assertEqual(old["ids"], ["PT-22"])
+        got = self.batch(["K-9:plan:4:#1", "K-9:plan:4:#2", "K-9:plan:4:#3"])
+        self.assertEqual(got["ids"], ["PT-23", "PT-22", "PT-24"])
+        self.assertEqual(len(self.registry_entries()), 3)
+
+    def test_batch_respects_at_least(self):
+        self.assertEqual(self.batch(["K-1:plan:2:#1", "K-1:plan:2:#2"], at_least=40)["ids"], ["PT-41", "PT-42"])
+
+    def test_batch_refusal_for_youtrack_prefix_creates_no_registry(self):
+        with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+            fh.write("## Plan pracy agentów (Tide)\n\n2. `tracker: youtrack`, `tracker-project: LOG`, "
+                     "`ticket-prefix: LOG`.\n")
+        with self.assertRaises(reservations.ReservationError) as caught:
+            self.batch(["K-1:plan:2:#1"])
+        self.assertIn(reservations.REFUSE_YOUTRACK, str(caught.exception))
+        self.assertFalse(os.path.exists(self.registry))
+        with self.assertRaises(reservations.ReservationError):
+            self.batch(["K-1:plan:2:#1"], prefix="LOG", local_fallback=True)
+        self.assertFalse(os.path.exists(self.registry))
+        # Ta sama odmowa przy istniejącym rejestrze: plik bez zmian.
+        got = self.batch(["K-1:plan:2:#1"], local_fallback=True)
+        self.assertNotEqual(got["prefix"], "LOG")
+        with open(self.registry, "rb") as fh:
+            before = fh.read()
+        with self.assertRaises(reservations.ReservationError):
+            self.batch(["K-1:plan:2:#2"], prefix="LOG")
+        with open(self.registry, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_batch_over_the_limit_is_refused_without_any_write(self):
+        stored = self.batch(["K-1:plan:2:#1", "K-1:plan:2:#2"])["ids"]
+        with open(self.registry, "rb") as fh:
+            before = fh.read()
+        keys = [f"K-1:plan:3:#{n}" for n in range(1, 52)]
+        with self.assertRaises(reservations.ReservationError) as caught:
+            self.batch(keys)
+        self.assertIn("51", str(caught.exception))
+        self.assertIn(f"limit {reservations.MAX_COUNT}", str(caught.exception))
+        with open(self.registry, "rb") as fh:
+            self.assertEqual(fh.read(), before, "rejestr bez zmian")
+        # Zapisane już żądania nie wliczają się do limitu: 2 stare + 50 nowych przechodzi.
+        got = self.batch(["K-1:plan:2:#1", "K-1:plan:2:#2", *keys[:50]])
+        self.assertEqual(got["ids"][:2], stored)
+        self.assertEqual(got["ids"][2:], [f"PT-{n}" for n in range(24, 74)])
+
+    def test_batch_reads_repository_plans_once(self):
+        reader = RepoPlans(ttl=0)
+        calls = []
+        original = reader.read
+        reader.read = lambda roots: (calls.append(roots), original(roots))[1]
+        self.batch(["K-1:plan:2:#1"], repo_plans=reader)        # bez rejestru: odczyt przed utworzeniem pliku
+        self.assertEqual(len(calls), 1)
+        self.batch([f"K-1:plan:3:#{n}" for n in range(1, 19)], repo_plans=reader)  # rejestr jest: pod blokadą
+        self.assertEqual(len(calls), 2)
+
+    def test_batch_rejects_bad_requests_without_writing(self):
+        for requests in ([], [{"request_key": "", "title": "a"}], [{"request_key": "K 1", "title": "a"}],
+                         [{"request_key": "K-1:a", "title": "a"}, {"request_key": "K-1:a", "title": "b"}]):
+            with self.subTest(requests=requests):
+                with self.assertRaises(reservations.ReservationError):
+                    reservations.reserve_many(self.repo, requests, path=self.registry)
+        self.assertFalse(os.path.exists(self.registry))
+
+    def test_batch_and_parallel_single_reservations_get_disjoint_numbers(self):
+        procs = [subprocess.Popen(["/usr/bin/python3", os.path.join(REPO, "tools", "next_id.py"), self.repo,
+                                   "--title", f"Zadanie {i}"], env=self.env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) for i in range(6)]
+        batches = []
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            for got in pool.map(lambda c: self.batch([f"K-{c}:plan:1:#{n}" for n in range(1, 10)]), (1, 2)):
+                batches.extend(got["numbers"])
+        singles = []
+        for proc in procs:
+            out, err = proc.communicate(timeout=60)
+            self.assertEqual(proc.returncode, 0, err)
+            singles.append(int(out.strip().split("-")[1]))
+        numbers = batches + singles
+        self.assertEqual(len(set(numbers)), len(numbers), "numery rozłączne")
+        self.assertEqual(sorted(numbers), list(range(22, 22 + 24)))
+        self.assertEqual(len(self.registry_entries()), 24)
 
     def test_plan_number_reserved_for_another_title(self):
         reservations = [{"prefix": "PT", "number": 22, "title": "Docker w tablicy"},

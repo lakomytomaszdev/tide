@@ -104,6 +104,108 @@ function detail(w) {
     return w.detached ? "odłączony HEAD " + w.head : ""
 }
 
+// Stan względem zdalnej i głównej (PT-352): „↑3 ↓2 · origin/master” albo „tylko lokalnie”.
+function arrows(ahead, behind) {
+    return "↑" + ahead + " ↓" + behind
+}
+
+function upstreamLabel(w) {
+    if (!w || !w.branch) return ""
+    if (!w.upstream) return "tylko lokalnie"
+    if (w.upstreamAhead === null || w.upstreamAhead === undefined) return w.upstream + " (brak odniesienia)"
+    return arrows(w.upstreamAhead, w.upstreamBehind) + " · " + w.upstream
+}
+
+// „↑5 ↓1 względem master”; pusty dla samej gałęzi głównej i gdy nie ma głównej.
+function mainLabel(w) {
+    if (!w || !w.branch || !w.mainBranch || w.branch === w.mainBranch) return ""
+    if (w.mainAhead === null || w.mainAhead === undefined) return ""
+    return arrows(w.mainAhead, w.mainBehind) + " względem " + w.mainBranch
+}
+
+function syncLabel(w) {
+    return [upstreamLabel(w), mainLabel(w)].filter(function (s) { return s !== "" }).join(" · ")
+}
+
+function agoText(seconds) {
+    if (seconds < 60) return "przed chwilą"
+    var minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return minutes + " min temu"
+    var hours = Math.floor(minutes / 60)
+    if (hours < 48) return hours + " h temu"
+    return Math.floor(hours / 24) + " dni temu"
+}
+
+// Repozytorium: lista zdalnych i czas ostatniego fetch („origin · pobrano 2 h temu”).
+function repoLine(w, nowTs) {
+    if (!w) return ""
+    if (!w.remotes || w.remotes.length === 0) return "bez zdalnego"
+    var fetched = w.lastFetch ? Date.parse(w.lastFetch) / 1000 : NaN
+    return w.remotes.join(", ") + " · "
+           + (isNaN(fetched) ? "nigdy nie pobrano" : "pobrano " + agoText(Math.max(0, nowTs - fetched)))
+}
+
+// Repozytoria do paska „Pobierz” (PT-358): po jednym wierszu na repozytorium z bieżącego filtra,
+// alfabetycznie po nazwie; canFetch tylko dla repozytorium ze zdalnym.
+function repoRows(items, repo, chips) {
+    var seen = {}
+    var rows = []
+    items.forEach(function (w) {
+        if (seen[w.repoPath] || !inRepo(w, repo, chips)) return
+        seen[w.repoPath] = true
+        // Główny katalog repozytorium (PT-353: „Zaciągnij” gałęzi głównej przy pasku — sam główny katalog
+        // nie ma wiersza na liście).
+        var main = items.filter(function (x) { return x.repoPath === w.repoPath && x.isMain })[0] || null
+        rows.push({ repoPath: w.repoPath, repo: w.repo, remotes: w.remotes || [], lastFetch: w.lastFetch || "",
+                    canFetch: !!w.remotes && w.remotes.length > 0, sample: w, main: main })
+    })
+    return rows.sort(function (a, b) { return a.repo.toLowerCase().localeCompare(b.repo.toLowerCase()) })
+}
+
+function fetchButtonText(busy) {
+    return busy ? "Pobieram…" : "Pobierz"
+}
+
+// Wynik Fetch() przy repozytorium: jedno zdanie z usługi albo komunikat o braku odpowiedzi.
+function fetchNote(result) {
+    if (!result || typeof result.message !== "string" || result.message === "")
+        return { ok: false, text: "Nie udało się pobrać: brak odpowiedzi usługi" }
+    return { ok: result.ok === true, text: result.ok === true ? result.message : "Nie udało się pobrać — " + result.message }
+}
+
+// „Zaciągnij” (PT-353): przycisk przy worktree, którego gałąź ma upstream (także główny katalog — w pasku
+// repozytoriów). Usługa sprawdza stan na nowo pod blokadą; tu tylko wyłączamy przycisk z powodem z danych listy.
+function canOfferPull(w) {
+    return !!w && !w.missing && !!w.branch && !!w.upstream
+}
+
+// Powód wyłączenia „Zaciągnij” z danych listy ({code, text}, kody jak w usłudze) albo null, gdy wolno.
+function pullBlocker(w) {
+    if (!w || w.missing) return { code: "bad-request", text: "katalogu nie ma" }
+    if (w.hasCard) return { code: "agent", text: "trwa krok karty" }
+    if (w.hasAgent) return { code: "agent", text: "pracuje agent" }
+    if (w.flowBranch) return { code: "card-step", text: "tą gałęzią zarządza Tide" }
+    if (!w.branch || !w.upstream || w.upstreamBehind === null || w.upstreamBehind === undefined)
+        return { code: "no-upstream", text: "brak upstreamu" }
+    if (w.dirty !== 0) return { code: "dirty", text: "zmiany w katalogu" }
+    if ((w.upstreamAhead || 0) > 0 && w.upstreamBehind > 0)
+        return { code: "diverged", text: "rozjechana z " + w.upstream + " — scal albo zrób rebase sam" }
+    if (w.upstreamBehind === 0) return { code: "up-to-date", text: "gałąź aktualna" }
+    return null
+}
+
+function pullButtonText(busy, w) {
+    if (busy) return "Zaciągam…"
+    return w && w.upstreamBehind > 0 ? "Zaciągnij ↓" + w.upstreamBehind : "Zaciągnij"
+}
+
+// Wynik PullFastForward(): jedno zdanie z usługi albo komunikat o braku odpowiedzi.
+function pullNote(result) {
+    if (!result || typeof result.message !== "string" || result.message === "")
+        return { ok: false, text: "Nie udało się zaciągnąć: brak odpowiedzi usługi" }
+    return { ok: result.ok === true, text: result.ok === true ? result.message : "Nie zaciągnięto — " + result.message }
+}
+
 function toolLabel(tool) {
     return tool === "codex" ? "Codex" : tool === "claude" ? "Claude" : "—"
 }
@@ -288,4 +390,27 @@ function resultText(results, titles) {
         freed: removed.reduce(function (s, r) { return s + (r.freed || 0) }, 0),
         details: lines
     }
+}
+
+// Zmiany worktree w widoku diffa (K-36, PT-360). „Zmiany w katalogu” ma worktree z niezacommitowaną pracą
+// (`dirty` ≠ 0; −1 to stan nieznany, więc też — widok pokaże, co git powie), „Zmiany względem głównej” — worktree
+// z gałęzią inną niż lokalna główna projektu. Brakujący katalog nie ma żadnej z akcji.
+function canShowChanges(w) {
+    return !!w && !w.missing && w.dirty !== 0 && w.dirty !== undefined && w.dirty !== null
+}
+
+function canShowBranchChanges(w) {
+    return !!w && !w.missing && !!w.branch && !!w.mainBranch && w.branch !== w.mainBranch && !!w.repoPath
+}
+
+// Żądanie `Git.Diff` dla widoku diffa albo null, gdy akcja nie dotyczy worktree. `worktree` czyta niezacommitowaną
+// pracę katalogu (usługa sprawdza `path` na liście Worktrees), `range` — gałąź worktree od lokalnej głównej projektu.
+function diffRequest(w, kind) {
+    if (kind === "worktree") return canShowChanges(w) ? {source: "worktree", path: w.path} : null
+    if (kind === "range") {
+        return canShowBranchChanges(w)
+            ? {source: "range", repo: w.repoPath, from: "refs/heads/" + w.mainBranch, to: "refs/heads/" + w.branch}
+            : null
+    }
+    return null
 }

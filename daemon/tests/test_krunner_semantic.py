@@ -97,6 +97,18 @@ def config(data=None):
     return lambda: models_config.from_dict(data or {})
 
 
+def read_lines(path):
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh]
+
+
+def stored(path):
+    """Pozycje pliku indeksu po odtworzeniu dziennika: (model, {id: (skrót, wektor)})."""
+    store = semantic.Store(path)
+    assert store.load() == "", path
+    return store.model, {k: (v["hash"], list(v["vec"])) for k, v in store.items.items()}
+
+
 class DocumentTest(unittest.TestCase):
     def test_document_has_only_metadata_and_tickets(self):
         e = entry("a", "Kafelek Docker w docku", prompt="widżet docker z listą kontenerów", branch="feat/pt-10_docker.tile")
@@ -139,32 +151,76 @@ class StoreTest(unittest.TestCase):
         store.save()
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(self.path)).st_mode), 0o700)
-        with open(self.path, encoding="utf-8") as fh:
-            raw = json.load(fh)
-        self.assertEqual(set(raw["items"]["claude:a"]), {"hash", "ts", "vec"}, "bez tekstu dokumentu")
+        records = read_lines(self.path)
+        self.assertEqual(records[0], {"version": 2, "model": "bge-m3:latest", "dims": 3, "updated": NOW})
+        self.assertEqual(set(records[1]), {"id", "hash", "ts", "vec"}, "bez tekstu dokumentu")
         again = semantic.Store(self.path)
         self.assertEqual(again.load(), "")
         self.assertEqual((again.model, again.dims, again.updated), ("bge-m3:latest", 3, NOW))
         for got, want in zip(again.items["claude:a"]["vec"], (1 / 3, 2 / 3, 2 / 3)):
             self.assertAlmostEqual(got, want, places=3)  # float16
 
-    def test_broken_or_foreign_file_starts_empty(self):
+    def test_broken_old_or_foreign_file_starts_empty(self):
         os.makedirs(os.path.dirname(self.path))
-        for text, problem in (("{", "nieczytelny"), ('{"version": 99}', "innej wersji"),
-                              ('{"version": 1, "model": 1, "dims": 3, "items": {}}', "nieczytelny")):
-            with open(self.path, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            store = semantic.Store(self.path)
-            self.assertIn(problem, store.load())
-            self.assertEqual(store.items, {})
+        old = json.dumps({"version": 1, "model": "m", "dims": 2, "updated": 0,
+                          "items": {"ok": {"hash": "h", "ts": 1, "vec": semantic.pack([0.6, 0.8])}}})
+        head = '{"version":2,"model":"m","dims":2,"updated":0}\n'
+        for text, problem in (("{", "nieczytelny"), ('{"version": 99}\n', "innej wersji"),
+                              (old, "innej wersji"), (old + "\n", "innej wersji"), ("", "nieczytelny"),
+                              ('{"version":2,"model":1,"dims":3}\n', "nieczytelny"),
+                              (head + "nie json\n", "nieczytelny"),
+                              (head + '{"id":"a","hash":"h","ts":1,"vec":"' + semantic.pack([0.6, 0.8]) + '"}', "urwany"),
+                              (head + '{"coś":1}\n', "nieczytelny")):
+            with self.subTest(text=text[:40]):
+                with open(self.path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                store = semantic.Store(self.path)
+                self.assertIn(problem, store.load())
+                self.assertEqual(store.items, {})
+                self.assertTrue(store.unsaved(), "następny zapis przepisze plik w całości")
         with open(self.path, "w", encoding="utf-8") as fh:  # zła pozycja — pominięta, reszta zostaje
-            json.dump({"version": 1, "model": "m", "dims": 2, "updated": 0, "items": {
-                "ok": {"hash": "h", "ts": 1, "vec": semantic.pack([0.6, 0.8])},
-                "short": {"hash": "h", "ts": 1, "vec": semantic.pack([0.6])}, "bad": {"hash": "h", "ts": 1, "vec": "%%"}}},
-                fh)
+            fh.write(head + "".join(json.dumps(r) + "\n" for r in (
+                {"id": "ok", "hash": "h", "ts": 1, "vec": semantic.pack([0.6, 0.8])},
+                {"id": "short", "hash": "h", "ts": 1, "vec": semantic.pack([0.6])},
+                {"id": "bad", "hash": "h", "ts": 1, "vec": "%%"})))
         store = semantic.Store(self.path)
         self.assertEqual(store.load(), "")
         self.assertEqual(list(store.items), ["ok"])
+
+    def test_journal_replays_puts_touches_and_deletes(self):
+        store = semantic.Store(self.path)
+        store.model, store.dims = "m", 2
+        store.put("a", "h1", 1.0, semantic.normalize([1.0, 0.0]))
+        store.put("b", "h2", 2.0, semantic.normalize([0.0, 1.0]))
+        store.flush()
+        self.assertEqual(store.counters["fullWrites"], 1, "nowy plik — pełny zapis")
+        store.put("a", "h3", 3.0, semantic.normalize([1.0, 1.0]))
+        store.touch("b", 5.0)
+        store.drop("c")      # nieznana — nic
+        store.flush()
+        store.drop("b")
+        store.updated = 7.0
+        store.flush()
+        self.assertEqual((store.counters["fullWrites"], store.counters["appends"]), (1, 2))
+        again = semantic.Store(self.path)
+        self.assertEqual(again.load(), "")
+        self.assertEqual(sorted(again.items), ["a"])
+        self.assertEqual((again.items["a"]["hash"], again.items["a"]["ts"], again.updated), ("h3", 3.0, 7.0))
+        self.assertFalse(again.unsaved(), "plik zgodny z pamięcią — nic do zapisu")
+
+    def test_journal_is_compacted_when_it_grows(self):
+        store = semantic.Store(self.path)
+        store.model, store.dims = "m", 2
+        store.put("a", "h", 1.0, semantic.normalize([1.0, 0.0]))
+        store.flush()
+        for n in range(semantic.COMPACT_SLACK + 5):
+            store.touch("a", 10.0 + n)
+            store.flush()
+        self.assertEqual(store.counters["fullWrites"], 2, "dziennik przepisany raz po przekroczeniu progu")
+        self.assertLessEqual(len(read_lines(self.path)), semantic.COMPACT_SLACK + 3)
+        again = semantic.Store(self.path)
+        again.load()
+        self.assertEqual(again.items["a"]["ts"], 10.0 + semantic.COMPACT_SLACK + 4)
 
 
 class IndexingTest(unittest.TestCase):
@@ -231,8 +287,7 @@ class IndexingTest(unittest.TestCase):
         with mock.patch.object(semantic, "MAX_ITEMS", 1):
             s.sync()
         self.assertEqual(list(s.store.items), ["claude:docker"], "najświeższa zostaje")
-        with open(self.path, encoding="utf-8") as fh:
-            self.assertEqual(list(json.load(fh)["items"]), ["claude:docker"])
+        self.assertEqual(list(stored(self.path)[1]), ["claude:docker"])
 
     def test_model_change_rebuilds_index(self):
         s = self.search()
@@ -243,8 +298,7 @@ class IndexingTest(unittest.TestCase):
         s.sync()
         self.assertEqual(len(self.embed.texts()), 3, "inny model — wszystko od nowa")
         self.assertEqual(s.state()["model"], "nomic-embed-text:latest")
-        with open(self.path, encoding="utf-8") as fh:
-            self.assertEqual(json.load(fh)["model"], "nomic-embed-text:latest")
+        self.assertEqual(stored(self.path)[0], "nomic-embed-text:latest")
 
     def test_dimension_change_resets_and_rebuilds(self):
         s = self.search()
@@ -350,6 +404,119 @@ class IndexingTest(unittest.TestCase):
         s.sync()
         self.assertEqual(len(self.embed.texts()), 3)
         self.assertEqual(s.state()["state"], "ready")
+
+
+TOPICS = ("Kontenery i porty dockera", "Formularz logowania", "Raport poranny", "Ponawianie wysyłania",
+          "Motyw SDDM", "Indeks sesji", "Sonda procesów", "Tablica kart")
+
+
+class IncrementalTest(unittest.TestCase):
+    """K-98 #5 (PT-346): przebieg bez zmian nic nie przelicza ani nie zapisuje; zmiana jednej sesji (zestaw ≥ 200
+    sesji) liczy jeden dokument i dopisuje jeden wpis; wynik przyrostowy = pełne przeliczenie. Liczniki, nie czas."""
+
+    SESSIONS = 220
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-search-incr-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "search", "sessions.json")
+        self.index = FakeIndex([entry(f"s{n:03d}", f"{TOPICS[n % len(TOPICS)]} {n}", prompt=f"zadanie {n}",
+                                      age=0.1 + n * 0.1) for n in range(self.SESSIONS)])
+        self.tickets = {"claude:s000": ["PT-1 Kafelek dockera"]}
+        self.embed = FakeEmbed()
+
+    def search(self, path=None, index=None):
+        return semantic.SemanticSearch(index or self.index, path or self.path, config=config(), embed=self.embed,
+                                       clock=lambda: NOW, home="/home/ktos", debounce=0,
+                                       tickets=lambda: self.tickets)
+
+    def snapshot(self, s):
+        s.counters.update(documents=0, digests=0)
+        return dict(s.store.counters), os.stat(self.path).st_mtime_ns, os.path.getsize(self.path)
+
+    def test_pass_without_changes_builds_and_writes_nothing(self):
+        s = self.search()
+        s.sync()
+        self.assertEqual(s.counters["documents"], self.SESSIONS, "pierwszy przebieg buduje każdy dokument")
+        writes, mtime, size = self.snapshot(s)
+        self.embed.calls.clear()
+        for _ in range(3):
+            s.sync()
+        self.assertEqual((s.counters["documents"], s.counters["digests"]), (0, 0), "żaden tekst ani skrót")
+        self.assertEqual(s.store.counters, writes, "żaden zapis pliku")
+        self.assertEqual((os.stat(self.path).st_mtime_ns, os.path.getsize(self.path)), (mtime, size))
+        self.assertEqual(self.embed.calls, [])
+        self.assertEqual(s.state()["state"], "ready")
+
+    def test_one_changed_session_rebuilds_one_document_and_appends_one_entry(self):
+        s = self.search()
+        s.sync()
+        before, _mtime, size = self.snapshot(s)
+        header = len(json.dumps(read_lines(self.path)[0], separators=(",", ":"))) + 1
+        entry_size = max(len(json.dumps(r, separators=(",", ":"))) + 1 for r in read_lines(self.path)[1:])
+        self.embed.calls.clear()
+        self.index.items[7] = entry("s007", "Nowy tytuł o logowaniu", prompt="zadanie 7", age=0.8)
+        s.sync()
+        self.assertEqual((s.counters["documents"], s.counters["digests"]), (1, 1), "tylko dokument zmienionej sesji")
+        self.assertEqual(self.embed.texts(), ["Nowy tytuł o logowaniu\nzadanie 7\nplasma-tide · master"])
+        after = s.store.counters
+        self.assertEqual(after["fullWrites"], before["fullWrites"], "bez przepisywania całego pliku")
+        self.assertEqual(after["writtenItems"] - before["writtenItems"], 1, "zapisany jeden wpis")
+        self.assertLessEqual(after["writtenBytes"] - before["writtenBytes"], entry_size + header)
+        self.assertLessEqual(os.path.getsize(self.path) - size, entry_size + header)
+        # Zmiana ticketów koordynatora to też zmiana jednego dokumentu.
+        self.snapshot(s)
+        self.tickets = {"claude:s000": ["PT-1 Kafelek dockera", "PT-2 Porty"]}
+        s.sync()
+        self.assertEqual(s.counters["documents"], 1)
+
+    def test_incremental_updates_equal_full_recompute(self):
+        s = self.search()
+        s.sync()
+        self.index.items[3] = entry("s003", "Raport tygodniowy i notki", prompt="zadanie 3", age=0.4)   # zmiana
+        self.index.items.append(entry("new", "Kontener z bazą i portem 5432", age=0.05))                 # dodanie
+        del self.index.items[10]                                                                        # usunięcie
+        self.index.items[20] = dict(self.index.items[20], lastActivity=NOW - 0.01 * DAY)                # sam czas
+        s.sync()
+        self.tickets = {}
+        s.sync()
+        self.assertEqual(s.store.counters["fullWrites"], 1, "po pierwszym zapisie tylko dopisywanie")
+        full_path = os.path.join(self.tmp, "full", "sessions.json")
+        full = self.search(path=full_path)
+        full.sync()
+        incremental_disk = stored(self.path)
+        self.assertEqual(incremental_disk, stored(full_path), "plik po aktualizacjach = plik pełnego przeliczenia")
+        self.assertEqual({k: v["hash"] for k, v in s.store.items.items()},
+                         {k: h for k, (h, _vec) in incremental_disk[1].items()}, "pamięć = plik (wektory: float16)")
+        reloaded = semantic.Store(self.path)
+        reloaded.load()
+        self.assertEqual({k: v["ts"] for k, v in reloaded.items.items()},
+                         {k: round(v["ts"], 3) for k, v in full.store.items.items()})
+        entries = self.index.entries()
+        for query in ("sesja o dockerze i portach", "logowanie użytkownika", "raport poranny", "wysyłanie plików"):
+            vector = semantic.normalize(concept_vector(query))
+            self.assertEqual([(round(x, 6), e["id"]) for x, e in s.similar(vector, entries)],
+                             [(round(x, 6), e["id"]) for x, e in full.similar(vector, entries)], query)
+
+    def test_old_or_broken_file_gives_one_full_recompute_without_error(self):
+        os.makedirs(os.path.dirname(self.path))
+        old = {"version": 1, "model": "bge-m3:latest", "dims": 6, "updated": NOW,
+               "items": {"claude:s000": {"hash": "x", "ts": NOW, "vec": semantic.pack([1.0] * 6)}}}
+        for text in (json.dumps(old), "śmieci\x00{", '{"version":2,"model":"bge-m3:latest","dims":6}\n{"id":'):
+            with self.subTest(text=text[:20]):
+                with open(self.path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                self.embed.calls.clear()
+                s = self.search()
+                s.sync()
+                self.assertEqual(len(self.embed.texts()), self.SESSIONS, "jedno pełne przeliczenie")
+                state = s.state()
+                self.assertEqual((state["state"], state["error"], state["items"]), ("ready", "", self.SESSIONS))
+                self.assertEqual(read_lines(self.path)[0]["version"], semantic.STORE_VERSION, "plik przepisany")
+                self.embed.calls.clear()
+                again = self.search()
+                again.sync()
+                self.assertEqual(self.embed.calls, [], "następny start czyta nowy plik — bez przeliczania")
 
 
 class RankingAndQueryTest(unittest.TestCase):

@@ -2,7 +2,7 @@
 import json
 
 from .test_card_full_view import STATE_PY
-from .decisionfix import full_d, journal, decisions, scenario_f
+from .decisionfix import full_card, full_d, journal, journal_move, decisions, scenario_f
 from .test_view import ProbeCase
 
 
@@ -49,13 +49,13 @@ out["text"] = obj("baseChangeText").property("text")
             "baseCommit": "b" * 40, "previewId": "token"})
 
     def test_user_field_selects_exact_ref_then_cancel_does_not_send_keep_or_execution(self):
-        data = full_d(self.data)
+        data = full_card(self.data, journal_move([], merged=()))  # karta bez pracy: przycisk startu widoczny
         branch = {"ref": "refs/heads/topic", "name": "topic", "commit": "b" * 40, "selectable": True}
         listing = {"ok": True, "mainRef": "refs/heads/topic", "branches": [branch], "recentBases": []}
         out = self.probe(STATE_PY + "\nlisting = " + repr(listing) + "\npreview = " + repr(PREVIEW) + r'''
 click(card("K-8"))
 backend.branch_replies.extend([listing] * 8)
-click(named("fullBaseChange"))
+click(named("fullStartLineChange"))
 until(lambda: obj("baseChangeSelect").property("enabled"))
 out["selectionLabel"] = obj("baseChangeSelect").property("text")
 before = js("JSON.stringify(page.snapshot.cards)")

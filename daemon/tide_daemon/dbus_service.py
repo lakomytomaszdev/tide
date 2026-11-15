@@ -23,7 +23,23 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - Launchers() -> s           JSON {"terminal": bool, "rider": bool, "window": bool} — które przyciski pokazać,
 - ShowWindow() -> b          otwiera okno Worktrees (False, gdy nie jest zainstalowane),
 - Prune(s repoPath) -> s     `git worktree prune` w repozytorium z worktrees bez katalogu (odpowiedź po zakończeniu),
+- Fetch(s repoPath) -> s     „Pobierz”: `git fetch <zdalny>` ze wszystkich zdalnych repozytorium z listy
+                             (odpowiedź po zakończeniu, limit 120 s): JSON {ok, repoPath, remotes, newCommits,
+                             message} albo {ok: false, reason, message} (docs/tide-daemon.md),
+- PullFastForward(s path) -> s
+                             „Zaciągnij”: `merge --ff-only` do upstreamu w worktree z listy, pod blokadą repozytorium
+                             scalania karty (odpowiedź po zakończeniu): JSON {ok, path, branch, upstream, from, to,
+                             commits, message} albo {ok: false, reason, message} (docs/tide-daemon.md),
 - sygnał Changed()           lista worktrees się zmieniła.
+
+Obiekt /Git, interfejs org.tide.Daemon.Git (odczyty gita jako dane, K-36, git_monitor.py, gitread/):
+- Diff(s request) -> s       diff jako dane (odpowiedź po zakończeniu, git w puli wątków runnera odczytu):
+                             request {"source": "card", "card": "K-N", "targetRef"?}; JSON {ok: true, ...DiffData}
+                             albo {ok: false, error, message} (docs/tide-daemon.md, „Interfejs Git”).
+- BranchMap(s request) -> s  mapa gałęzi kart i ticketów z dzienników kart i Tablicy, bez gita (K-99, PT-387;
+                             odpowiedź po zakończeniu, projekcja w puli wątków runnera odczytu): request {} →
+                             {ok, projects}; {"project": slug, "limit"?} → {ok, project, repo, nodes, edges, total,
+                             truncated, warnings} albo {ok: false, error, message}.
 
 Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
 - Repos() -> s               repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych,
@@ -217,6 +233,8 @@ AGENTS_PATH = "/Agents"
 AGENTS_IFACE = "org.tide.Daemon.Agents"
 WORKTREES_PATH = "/Worktrees"
 WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
+GIT_PATH = "/Git"
+GIT_IFACE = "org.tide.Daemon.Git"
 TASKS_PATH = "/Tasks"
 TASKS_IFACE = "org.tide.Daemon.Tasks"
 IDLE_PATH = "/Idle"
@@ -281,7 +299,26 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
     <arg name="repoPath" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="Fetch">
+    <arg name="repoPath" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="PullFastForward">
+    <arg name="path" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
+</interface>"""
+
+GIT_XML = f"""<interface name="{GIT_IFACE}">
+  <method name="Diff">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="BranchMap">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
 </interface>"""
 
 REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
@@ -675,22 +712,38 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
 class AgentsAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
 
-    def __init__(self, parent: QObject, monitor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection | None = None):
         super().__init__(parent)
         self.monitor = monitor
+        self.bus = bus
         monitor.changed.connect(self.Changed)
 
     @pyqtSlot(result=str)
     def Sessions(self) -> str:
         return self.monitor.sessions_json()
 
-    @pyqtSlot(str, result=bool)
-    def ActivateSession(self, session_id: str) -> bool:
-        return self.monitor.activate(session_id)
+    # Aktywacja potrzebuje sondy procesów nowszej niż wywołanie (PT-345). Sonda biegnie w swoim wątku, a odpowiedź
+    # odchodzi z opóźnieniem, gdy przyjdzie jej wynik — wątek główny w tym czasie obsługuje inne wywołania.
+    @pyqtSlot(str, QDBusMessage, result=bool)
+    def ActivateSession(self, session_id: str, message: QDBusMessage) -> bool:
+        self.monitor.activate_later(session_id, self._delayed(message, "ActivateSession"))
+        return False
 
-    @pyqtSlot(result=bool)
-    def ActivateLongestWaiting(self) -> bool:
-        return self.monitor.activate_longest_waiting()
+    @pyqtSlot(QDBusMessage, result=bool)
+    def ActivateLongestWaiting(self, message: QDBusMessage) -> bool:
+        self.monitor.activate_longest_waiting_later(self._delayed(message, "ActivateLongestWaiting"))
+        return False
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
+        bus = self.bus
+
+        def reply(ok: bool) -> None:
+            if bus is None or not bus.send(request.createReply([bool(ok)])):
+                print(f"tide-daemon: nie udało się odesłać wyniku {name}", flush=True)
+
+        return reply
 
 
 @pyqtClassInfo("D-Bus Interface", WORKTREES_IFACE)
@@ -753,6 +806,49 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         request = QDBusMessage(message)
         self.monitor.prune(repo_path, lambda text: self.bus.send(request.createReply([text])))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Fetch(self, repo_path: str, message: QDBusMessage) -> str:
+        # Sieć potrafi trwać do limitu czasu (120 s) — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.fetch(repo_path, self._delayed(message, "Fetch"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def PullFastForward(self, path: str, message: QDBusMessage) -> str:
+        # Blokada repozytorium i checkout plików w wątku roboczym — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.pull(path, self._delayed(message, "PullFastForward"))
+        return ""
+
+
+@pyqtClassInfo("D-Bus Interface", GIT_IFACE)
+@pyqtClassInfo("D-Bus Introspection", GIT_XML)
+class GitAdaptor(QDBusAbstractAdaptor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
+
+        def reply(text: str) -> None:
+            if not self.bus.send(pending.createReply([text])):
+                print(f"tide-daemon: nie udało się odesłać wyniku Git.{name}", flush=True)
+
+        return reply
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Diff(self, request: str, message: QDBusMessage) -> str:
+        # Git działa w puli wątków runnera odczytu; odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.diff(request, self._delayed(message, "Diff"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def BranchMap(self, request: str, message: QDBusMessage) -> str:
+        # Projekcja dzienników kart w puli wątków runnera odczytu (K-99, PT-387); odpowiedź z opóźnieniem.
+        self.monitor.branch_map(request, self._delayed(message, "BranchMap"))
         return ""
 
 
@@ -1644,7 +1740,7 @@ def _sender_pid(bus: QDBusConnection, message: QDBusMessage) -> int | None:
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None, activity_look=None, monitors=None) -> QObject:
+             docker=None, models=None, activity_look=None, monitors=None, git=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1655,7 +1751,7 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
     if not bus.registerObject(ISSUES_PATH, holder.issues):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {ISSUES_PATH}")
     holder.agents = QObject(holder)
-    holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor)
+    holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor, bus)
     if not bus.registerObject(AGENTS_PATH, holder.agents):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {AGENTS_PATH}")
     if worktrees is not None:
@@ -1663,6 +1759,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.worktrees.adaptor = WorktreesAdaptor(holder.worktrees, worktrees, bus)
         if not bus.registerObject(WORKTREES_PATH, holder.worktrees):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {WORKTREES_PATH}")
+    if git is not None:
+        holder.git = QObject(holder)
+        holder.git.adaptor = GitAdaptor(holder.git, git, bus)
+        if not bus.registerObject(GIT_PATH, holder.git):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {GIT_PATH}")
     if tasks is not None:
         holder.tasks = QObject(holder)
         holder.tasks.adaptor = TasksAdaptor(holder.tasks, tasks, bus)

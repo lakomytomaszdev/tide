@@ -13,16 +13,22 @@ ACCEPTED = "exposure-accepted"
 CONTROL = (REQUEST, ACTION, EXPECTED, ACCEPTED)
 
 
-def service(engine, card_id):
-    _card, project = engine._project(card_id)
-    board = engine.store.load()
+def service(engine, card_id, read=None):
+    """Usługa manifestu z rejestrem repozytoriów Tablicy. Bez `read` — świeży odczyt (zatwierdzenie, wycofanie);
+    z `read` (K-98 #1) — odczyt jednego odświeżenia, wyłącznie dla podglądu w panelu karty."""
+    if read is None:
+        _card, project = engine._project(card_id)
+        board = engine.store.load()
+    else:
+        _card, project = engine._project(card_id, read)
+        board = read.board
     registry = {slug: [p.repo] for slug, p in board.projects.items() if p.repo}
     return ex.ExposureService(project.slug, [project.repo], registry)
 
 
-def _profiles(engine, card_id, st, raw):
+def _profiles(engine, card_id, st, raw, read=None):
     from . import envconsent
-    slug, repo = envconsent._project_state(engine, card_id)
+    slug, repo = envconsent._project_state(engine, card_id, read)
     # Czytamy surowy profil przed walidacją, żeby nowsze pola nie zniknęły
     # przy aktualizacji przez stary schemat. Nie nadpisujemy nieczytelnego profilu.
     def read(path, scope):
@@ -84,9 +90,10 @@ def view(candidate, current=None):
             "manifest": manifest, "approved": bool(current and current["manifest"] == manifest)}
 
 
-def model(engine, card_id, st):
+def model(engine, card_id, st, read=None):
+    """Podgląd zgody projektu do panelu (prezentacja). `approve` nie korzysta z tego wyniku: liczy podgląd świeżo."""
     from . import envconsent
-    slug, _repo = envconsent._project_state(engine, card_id)
+    slug, _repo = envconsent._project_state(engine, card_id, read)
     card = envconsent._card_proposal(engine, card_id, st, slug)
     # To tylko propozycja: historyczny accepted_red nie zaznacza nowej zgody.
     card = {k: v for k, v in card.items() if k != "accepted_red"}
@@ -106,8 +113,8 @@ def model(engine, card_id, st):
            "exposureControls": {"action": ACTION, "expected": EXPECTED, "accepted": ACCEPTED},
            "approvedVersion": current["version"] if current else "", "approved": bool(current), "question": ""}
     try:
-        _project, _card, merged = _profiles(engine, card_id, st, card)
-        out["exposure"] = view(service(engine, card_id).preview(merged, raw[REQUEST]["snapshotIds"]), current)
+        _project, _card, merged = _profiles(engine, card_id, st, card, read)
+        out["exposure"] = view(service(engine, card_id, read).preview(merged, raw[REQUEST]["snapshotIds"]), current)
     except (ex.ExposureError, OSError, bp.ProfileError, yamlmini.YamlError, ValueError) as exc:
         out["notes"] = [str(exc)]
     return out

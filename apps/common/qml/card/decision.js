@@ -14,6 +14,7 @@ var KIND_LABELS = {
     "transfer": "Przekazanie kroku",
     "stopped": "Rozmowa przerwana",
     "review": "Review bez zgody",
+    "merge-check": "Testy po scaleniu",
     "plan-approval": "Plan do zatwierdzenia",
     "plan-revision": "Poprawiony plan",
     "plan-revision-failed": "Poprawka planu odrzucona",
@@ -342,65 +343,72 @@ function groupHead(command, label) {
 }
 
 // --- Prognoza „ruszy od razu / poczeka” (K-97, PT-340) -----------------------------------------------------------
-// Obciążenie liczy strona Tablicy z migawki wszystkich kart. Usługa nie daje pól strukturalnych, tylko napisy
-// wyświetlane — rozpoznawane tu, w jednym miejscu; test okna buduje migawkę prawdziwym kodem usługi (`fold` →
-// `derived`) i łamie się, gdy napis się zmieni (zamiast po cichu fałszować licznik).
-var OUTSIDE_RUNNING_LABEL = "polecenie poza piaskownicą"   // `kindLabel` wpisu `flow.running[]` (fullcard.running_steps)
-var OUTSIDE_QUEUED_PREFIX = "w kolejce: "                    // `statusLabel` ticketu ze zgodą w kolejce (fullcard.ticket_status)
-// Lustro limitów usługi (OUTSIDE_PER_PROJECT, OUTSIDE_TOTAL w tide_daemon.cardflow.engine) — test okna je porównuje.
-var OUTSIDE_PER_PROJECT = 6
-var OUTSIDE_TOTAL = 7
+// (K-39 #4, PT-374) Okno niczego nie rozpoznaje z napisów ani nie trzyma limitów: stan kolejki przychodzi z usługi
+// w polu `queue` migawki (daemon/tide_daemon/cardflow/queueview.py), a klasa polecenia — w `technical.queue` decyzji
+// ("heavy" albo "outside"). Tu jest tylko arytmetyka na liczbach z usługi. Bez pola `queue` (stara usługa) prognozy
+// nie ma, a okno pokazuje samą liczbę ticketów.
 
-// Obciążenie poleceniami poza piaskownicą z migawki kart: {projectRunning, totalRunning, projectQueued, totalQueued}
-// albo null, gdy migawki nie da się rozpoznać (brak listy kart, wpis bez `kindLabel`, ticket bez `statusLabel`).
-function outsideLoad(cards, projectSlug) {
-    if (!Array.isArray(cards)) return null
-    var load = { projectRunning: 0, totalRunning: 0, projectQueued: 0, totalQueued: 0 }
-    for (var i = 0; i < cards.length; i++) {
-        var card = cards[i]
-        var flow = card && card.derived && card.derived.flow
-        if (!flow) continue
-        var mine = !!projectSlug && card.project === projectSlug
-        var running = flow.running
-        if (running !== undefined && !Array.isArray(running)) return null
-        for (var r = 0; running && r < running.length; r++) {
-            var label = running[r] && running[r].kindLabel
-            if (typeof label !== "string" || label === "") return null
-            if (label === OUTSIDE_RUNNING_LABEL) {
-                load.totalRunning++
-                if (mine) load.projectRunning++
-            }
-        }
-        var tickets = card.derived.tickets
-        if (tickets !== undefined && !Array.isArray(tickets)) return null
-        for (var t = 0; tickets && t < tickets.length; t++) {
-            var status = tickets[t] && tickets[t].statusLabel
-            if (typeof status !== "string") return null
-            if (status.indexOf(OUTSIDE_QUEUED_PREFIX) === 0) {
-                load.totalQueued++
-                if (mine) load.projectQueued++
-            }
-        }
-    }
-    return load
+// Kontekst prognozy dla jednej karty: {queue, project} albo null, gdy migawka nie ma rozpoznawalnego `queue`.
+function outsideLoad(queue, projectSlug) {
+    if (!queue || typeof queue !== "object" || !queue.heavy || !queue.outside) return null
+    return { queue: queue, project: projectSlug || "" }
 }
 
-// Ile z `n` zgód ruszy od razu, a ile poczeka: wolne miejsca to mniejsza z reszt limitu projektu i limitu łącznego,
-// po odjęciu trwających i już czekających w kolejce. To szacunek ze stanu migawki, nie kolejność startu.
-function outsideForecast(load, n) {
-    if (!load) return null
-    var free = Math.min(OUTSIDE_PER_PROJECT - load.projectRunning - load.projectQueued,
-                        OUTSIDE_TOTAL - load.totalRunning - load.totalQueued)
+function listSize(list) {
+    return Array.isArray(list) ? list.length : NaN
+}
+
+// Wolne miejsca klasy poleceń: dla "heavy" limit ciężkich poleceń minus trwające i czekające; dla "outside" mniejsza
+// z reszt limitu projektu i limitu łącznego (trwające liczą się razem z ciężkimi, czekają lekkie). NaN — brak liczb.
+function freeSlots(load, kind) {
+    var queue = load.queue
+    if (kind === "heavy")
+        return queue.heavy.limit - listSize(queue.heavy.running) - listSize(queue.heavy.waiting)
+    var out = queue.outside
+    var occupied = out.occupied || {}
+    var projects = occupied.projects || {}
+    var waiting = Array.isArray(out.waiting) ? out.waiting : []
+    var mine = 0
+    for (var i = 0; i < waiting.length; i++) if (waiting[i] && waiting[i].project === load.project) mine++
+    return Math.min(out.perProject - (projects[load.project] || 0) - mine,
+                    out.total - occupied.total - waiting.length)
+}
+
+// Ile z `n` zgód klasy `kind` ruszy od razu, a ile poczeka. null — brak kontekstu, klasy albo liczb z usługi.
+// To szacunek ze stanu migawki, nie kolejność startu.
+function outsideForecast(load, kind, n) {
+    if (!load || (kind !== "heavy" && kind !== "outside")) return null
+    var free = freeSlots(load, kind)
+    if (typeof free !== "number" || isNaN(free)) return null
     var now = Math.max(0, Math.min(n, free))
     return { now: now, wait: n - now }
 }
 
-function forecastText(load, n) {
-    var forecast = outsideForecast(load, n)
+function forecastText(load, kind, n) {
+    var forecast = outsideForecast(load, kind, n)
     if (!forecast) return ""
-    return "Ruszy od razu: " + forecast.now + ", poczeka w kolejce: " + forecast.wait + " (w projekcie biegnie teraz "
-           + load.projectRunning + " z " + OUTSIDE_PER_PROJECT + ", łącznie " + load.totalRunning + " z "
-           + OUTSIDE_TOTAL + ") — według stanu sprzed chwili. To szacunek, nie obietnica kolejności startu."
+    var queue = load.queue
+    var where
+    if (kind === "heavy") {
+        where = " (ciężkich poleceń biegnie teraz " + queue.heavy.running.length + " z " + queue.heavy.limit + ")"
+    } else {
+        var projects = (queue.outside.occupied || {}).projects || {}
+        where = " (w projekcie biegnie teraz " + (projects[load.project] || 0) + " z " + queue.outside.perProject
+                + ", łącznie " + queue.outside.occupied.total + " z " + queue.outside.total + ")"
+    }
+    return "Ruszy od razu: " + forecast.now + ", poczeka w kolejce: " + forecast.wait + where
+           + " — według stanu sprzed chwili. To szacunek, nie obietnica kolejności startu."
+}
+
+// Klasa kolejki grupy: wspólna `technical.queue` wszystkich członków; różne albo brak — "" (bez prognozy).
+function groupQueue(members) {
+    var kind = ""
+    for (var i = 0; i < members.length; i++) {
+        var one = members[i].technical && members[i].technical.queue
+        if (!one || (kind && one !== kind)) return ""
+        kind = one
+    }
+    return kind
 }
 
 function makeGroup(members, load) {
@@ -420,7 +428,7 @@ function makeGroup(members, load) {
              ticket: label, executor: "", step: "", happened: groupHead(command, label), why: firstLine(first.why),
              technical: { command: command }, options: options, freeText: false, reply: null, commands: [],
              findings: [], copyCommands: [], members: members.map(memberRow), sources: members,
-             count: members.length, receiptText: "", forecast: forecastText(load, members.length) }
+             count: members.length, receiptText: "", forecast: forecastText(load, groupQueue(members), members.length) }
 }
 
 // Pozycje okna z listy decyzji usługi: pojedyncze decyzje i grupy zgód (grupa stoi w miejscu swojej pierwszej

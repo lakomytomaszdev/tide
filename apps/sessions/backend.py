@@ -22,9 +22,16 @@ AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 BOARD_PATH, BOARD_IFACE = "/Board", "org.tide.Daemon.Board"
 HERE = os.path.dirname(os.path.abspath(__file__))
 START_TIMEOUT_MS = 10 * 60 * 1000  # EnterStep zatrzymuje krok i zakłada kartę Konsoli — jak w Tablicy
+# Długie wywołania /Board z Sesji. PT-408: ApproveCardPlan (rezerwacja numerów, commit planu) też — bez fałszywego
+# „usługa nie odpowiada” po 15 s.
+LONG_WRITES = ("EnterStep", "TalkToCaretaker", "PreviewCardBaseChange", "ResolveCardStep", "ApproveCardPlan")
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
+# PT-408: brak odpowiedzi na zatwierdzenie nie dowodzi, że nic się nie zapisało — inny komunikat niż „nic nie zapisano”.
+APPROVAL_NO_ANSWER_REPLY = {"ok": False, "error": "no-answer",
+                            "message": "Usługa tide-daemon nie odpowiedziała — zatwierdzanie mogło ruszyć. "
+                                       "Sprawdź stan planu za chwilę."}
 # Zapisy /Board, po których usługa ma nową migawkę kart (lista „Karty w przepływie” odświeża się od razu).
 WRITES = ("ResolveCardReview", "EnterStep", "TalkToCaretaker", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "EditCardPlan", "ReportStepFault", "AddCardStepNote")
 
@@ -87,6 +94,8 @@ class Backend(QObject):
         self._board = "{}"
         self._sessions = "[]"
         self._flow_cards = "[]"
+        self._flow_ready = False         # była już gotowa migawka kart (nie „preparing”)
+        self._flow_loading = False       # pierwsza migawka jeszcze się przygotowuje
         self._detail = "{}"
         self._available = False
         self._selected = select
@@ -140,6 +149,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=flowCardsChanged)
     def flowCardsJson(self) -> str:
         return self._flow_cards
+
+    @pyqtProperty(bool, notify=flowCardsChanged)
+    def flowCardsLoading(self) -> bool:
+        """Usługa po restarcie jeszcze nie opublikowała Tablicy, a poprzedniej migawki kart nie ma."""
+        return self._flow_loading
 
     @pyqtProperty(str, notify=detailChanged)
     def detailJson(self) -> str:
@@ -335,10 +349,22 @@ class Backend(QObject):
         if not ok or not isinstance(value, str):
             return
         try:
-            cards = flow_cards(json.loads(value))
+            snapshot = json.loads(value)
         except ValueError:
-            cards = []
-        self._set("_flow_cards", json.dumps(cards, ensure_ascii=False), self.flowCardsChanged)
+            snapshot = None
+        if isinstance(snapshot, dict) and snapshot.get("readState") == "preparing":
+            # PT-385: `cards: []` to nie pusta Tablica — zostaje poprzednia lista; bez niej — „wczytywanie” do
+            # najbliższego /Board Changed (usługa wysyła go przy pierwszej publikacji → `_board_changed`).
+            if not self._flow_ready and not self._flow_loading:
+                self._flow_loading = True
+                self.flowCardsChanged.emit()
+            return
+        self._flow_ready = True
+        was_loading, self._flow_loading = self._flow_loading, False
+        text = json.dumps(flow_cards(snapshot), ensure_ascii=False)
+        if text != self._flow_cards or was_loading:
+            self._flow_cards = text
+            self.flowCardsChanged.emit()
 
     def _got_coordinators(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):
@@ -377,14 +403,15 @@ class Backend(QObject):
 
         def done(ok: bool, value) -> None:
             if not ok or not isinstance(value, str):
-                self.replied.emit(tag, json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+                self.replied.emit(tag, json.dumps(APPROVAL_NO_ANSWER_REPLY if member == "ApproveCardPlan"
+                                                  else NO_SERVICE_REPLY, ensure_ascii=False))
                 return
             self.replied.emit(tag, value)
             if member in WRITES:
                 self._load_flow_cards()
 
         self._call(BOARD_PATH, BOARD_IFACE, member, args, done,
-                   timeout=START_TIMEOUT_MS if member in ("EnterStep", "TalkToCaretaker", "PreviewCardBaseChange", "ResolveCardStep") else 15_000)
+                   timeout=START_TIMEOUT_MS if member in LONG_WRITES else 15_000)
 
     def _set(self, name: str, value: str, signal) -> None:
         if getattr(self, name) != value:

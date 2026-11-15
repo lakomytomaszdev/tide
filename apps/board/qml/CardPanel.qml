@@ -23,6 +23,7 @@ import "tide" as Tide
 import "board.js" as Logic
 import "cardDocs.js" as Docs
 import "card" as CardUi
+import "git/start.js" as Start
 
 Rectangle {
     id: panel
@@ -36,7 +37,6 @@ Rectangle {
     property string notice: ""
     property bool busy: false
     property var modelsStatus: null
-    property string branchDiff: ""
     property var tagTone: null
     // Formularz.
     property string projectKind: ""
@@ -85,20 +85,23 @@ Rectangle {
     signal planEditRequested(string cardId, var request)
     property var planEditTicket: null
     signal planApproveRequested(string cardId)                      // zatwierdzenie propozycji planu
-    signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
+    // `approvesPlan`: żądanie zatwierdza plan (nie jest podglądem ani wycofaniem zgody projektu) — okno czeka wtedy na odpowiedź.
+    signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan, bool approvesPlan)   // /Board ApproveCardEnvironment
+    property bool approveWaiting: false                             // PT-408: okno czeka na odpowiedź zatwierdzenia planu
+    // Plan zatwierdza się: oczekiwanie okna albo `approving` z migawki (przeładowanie panelu go nie gubi).
+    readonly property bool planApproving: approveWaiting || !!(flowPlan && flowPlan.approving)
+    readonly property string approvalError: flowPlan && flowPlan.approvalError ? String(flowPlan.approvalError) : ""
     property string environmentError: ""
     property var environmentReply: null                             // odmowa usługi: pozycje do ponownego pokazania
     readonly property var flowEnvironment: (flowPlan && flowPlan.environment)
         || (card && card.derived && card.derived.flow && card.derived.flow.environment) || null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
-    signal mergeMainRequested(string cardId)
-    signal previewMergeRequested(string cardId, string target)
-    signal chooseMergeRequested(string cardId)
-    readonly property var mergeBase: card && card.derived && card.derived.flow ? card.derived.flow.base : null
-    readonly property string defaultMergeTarget: mergeBase && mergeBase.status === "known"
-                                                 && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
-                                                 ? mergeBase.baseRef.substring(11) : ""
+    signal baseChangeRequested(string cardId)       // „Zmień gałąź startową…”: pełna karta z podglądem korekty bazy
+    readonly property string cardBranch: card && card.derived && card.derived.flow && card.derived.flow.cardBranch
+                                         ? card.derived.flow.cardBranch : ""
+    signal mergeRequested(string cardId)            // „Scal…”: okno scalania z podglądem dla domyślnego celu
+    readonly property bool merged: Boolean(card && card.derived && card.derived.flow && card.derived.flow.merged)
 
     // PT-316: decyzja dotyczy pytania pokazanego w panelu — ticket i runda idą razem z wyborem (JSON dla usługi).
     function reviewChoice(choice) {
@@ -144,7 +147,6 @@ Rectangle {
     function load() {
         error = ""
         notice = ""
-        branchDiff = ""
         closingFeedback.text = ""
         environmentError = ""
         environmentReply = null
@@ -542,12 +544,24 @@ Rectangle {
                 enabled: !panel.busy
                 onClicked: panel.planEditRequested(panel.card.id, {action: "discard-revision"})
             }
+            Text {
+                objectName: "cardPlanApprovalError"
+                Layout.fillWidth: true
+                visible: panel.approvalError !== "" && !panel.planApproving
+                text: panel.approvalError
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: Tide.Tokens.rose
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+            }
             PillButton {
                 objectName: "cardPlanApprove"
-                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
+                text: panel.planApproving ? "Zatwierdzanie…"
+                      : panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
                       ? "Zatwierdź różnicę" : "Zatwierdź plan i rozpocznij implementację"
                 visible: !!panel.flowPlan && panel.flowPlan.status === "pending" && !panel.flowEnvironment
-                enabled: !panel.busy
+                enabled: !panel.busy && !panel.planApproving
                 onClicked: {
                     panel.busy = true
                     panel.planApproveRequested(panel.card.id)
@@ -560,13 +574,32 @@ Rectangle {
             Layout.fillWidth: true
             environment: panel.descriptionOnly ? null : panel.flowEnvironment
             planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
+            planApproving: panel.planApproving
             busy: panel.busy
             error: panel.environmentError
             reply: panel.environmentReply
-            onApproveRequested: (yaml, onlyPlan) => {
+            onApproveRequested: (yaml, onlyPlan, approvesPlan) => {
                 panel.busy = true
-                panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
+                panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan, approvesPlan)
             }
+        }
+
+        // „Start od: …” (K-99, PT-389): panel tylko sygnalizuje; podgląd korekty bazy otwiera pełna karta (BoardPage).
+        CardUi.CardStartLine {
+            objectName: "cardPanelStartLine"
+            Layout.fillWidth: true
+            visible: panel.editing && !panel.descriptionOnly && !panel.reading && text !== ""
+            derived: panel.card ? panel.card.derived : null
+            onChangeRequested: panel.baseChangeRequested(panel.card.id)
+        }
+
+        // „Zmiany gałęzi” (K-36, #17): dla karty z gałęzią w każdym stanie; widok diffa otwiera BoardPage.
+        PillButton {
+            objectName: "cardBranchDiff"
+            visible: panel.editing && !panel.descriptionOnly && !panel.reading && panel.cardBranch !== ""
+            text: "Zmiany gałęzi"
+            toolTip: "Pokaż zmiany gałęzi karty względem bazy"
+            onClicked: panel.branchDiffRequested(panel.card.id)
         }
 
         ColumnLayout {
@@ -608,49 +641,25 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 7
+                // Jedno „Scal…” dla karty domkniętej i niescalonej (K-99, PT-401); scalonej — tylko napis.
                 PillButton {
-                    objectName: "cardBranchDiff"
-                    text: "Diff gałęzi"
-                    enabled: !panel.busy
-                    onClicked: panel.branchDiffRequested(panel.card.id)
-                }
-                PillButton {
-                    objectName: "cardPreviewMerge"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: "Podgląd scalenia do " + (target || "…")
-                    enabled: !panel.busy && target !== ""
-                    onClicked: panel.previewMergeRequested(panel.card.id, target)
-                }
-                PillButton {
-                    objectName: "cardMergeMain"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: target ? "Scal do " + target : "Scal…"
-                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
-                                                && panel.card.derived.flow.merged)
-                    onClicked: {
-                        if (target) panel.previewMergeRequested(panel.card.id, target)
-                        else panel.chooseMergeRequested(panel.card.id)
-                    }
-                }
-                PillButton {
-                    objectName: "cardMergeChoose"
+                    objectName: "cardMerge"
                     text: "Scal…"
-                    visible: panel.defaultMergeTarget !== ""
-                    onClicked: panel.chooseMergeRequested(panel.card.id)
+                    visible: !panel.merged
+                    enabled: !panel.busy
+                    onClicked: panel.mergeRequested(panel.card.id)
                 }
-            }
-            QQC2.TextArea {
-                objectName: "cardBranchDiffText"
-                Layout.fillWidth: true
-                Layout.preferredHeight: 180
-                visible: panel.branchDiff !== ""
-                readOnly: true
-                text: panel.branchDiff
-                wrapMode: TextEdit.NoWrap
+                Text {
+                    objectName: "cardMerged"
+                    Layout.fillWidth: true
+                    visible: panel.merged
+                    text: Start.mergedLine(panel.card && panel.card.derived ? panel.card.derived.flow : null)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.mint
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
             }
             QQC2.TextArea {
                 id: closingFeedback

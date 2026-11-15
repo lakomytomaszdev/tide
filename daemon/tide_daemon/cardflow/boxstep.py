@@ -514,31 +514,47 @@ def configure_background(engine, placement: Placement, card: str, step: str, par
     preparation.prepare(placement.runner, bg)
 
 
-def recover_network(engine) -> None:
-    """Uzgadnia zwolnienia oraz polityki/K3; obejmuje oba okna awarii startu i końca kroku."""
+def recover_network(engine, history=None) -> None:
+    """Uzgadnia zwolnienia oraz polityki/K3; obejmuje oba okna awarii startu i końca kroku.
+
+    `history` (K-98 #3, `trialhold.HistoryPhase` ticku): historia kart z odczytu fazy, bez osobnego odczytu.
+    Przed pierwszą mutacją dotyczącą karty (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
+    pełny odczyt musi być równy odczytowi fazy; inaczej mutacje tej karty są odmówione bez skutku, a stan sieci
+    nie jest zapamiętany, więc kolejny tick uzgadnia go od nowa."""
+    from . import trialhold
     proxy = proxy_of(engine)
     active, ended = [], []
+    basis, confirmed = {}, {}
+
+    def fresh(card) -> bool:
+        """Świeży pełny odczyt przed mutacją karty (raz na kartę w tym uzgodnieniu)."""
+        if history is None:
+            return True
+        if card not in confirmed:
+            confirmed[card] = history.unchanged(card, basis[card])
+            if not confirmed[card]:
+                print(f"tide-daemon: przepływ karty {card}: historia zmieniła się po odczycie — "
+                      f"uzgodnienie sieci pudełka odmówione", flush=True)
+        return confirmed[card]
+
     for card in engine.journal.cards():
-        from . import trialhold
-        from .processidentity import process_identities
         try:
             # PT-288: wspólny ścisły odczyt i model tożsamości zamiast lokalnej reguły zdarzeń.
             # Nieznana lub niespójna historia karty: bez zwolnień, refguard ani polityk sieci.
-            events = trialhold.read_process_history(engine.journal, card)
+            # K-105 PT-415: stan procesu karty (model tożsamości i fold) z pamięci według wersji dziennika, gdy mutacje
+            # porównuje świeżo faza ticku (`fresh`); bez fazy (odtworzenie zamiaru startu) świeży odczyt bez pamięci.
+            # K-113 PT-466: tak samo filtr prób K-38 — zachowujemy rezerwacje i migawki dawnych prób (odtwarzanie nie
+            # może uruchamiać refguard.finish ani zwalniać WIP po zwykłym done), a zdarzenia bez prób i chronionych
+            # tożsamości oraz stan z nich złożony pochodzą z pamięci według wersji dziennika karty. Ciepły tick bez
+            # zmian dziennika nie ocenia prób ponownie; mutacje niżej i tak wymagają `fresh(card)`.
+            basis[card], events, st = trialhold.network_state(engine.journal, card, history, fresh=history is None)
         except (OSError, ValueError, TypeError, KeyError):
             continue
-        # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
-        # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
-        protected = {name for name, identity in process_identities(events).items()
-                     if identity.held and isinstance(name, str)}
-        events = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
-                  and e.get("key") not in protected]
-        st = fold(events)
         # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
         # oznacza, że nie uruchomiono procesu. Nie dotykamy rezerwacji trwającego zamiaru.
         for event in events:
             if event.get("type") == "box.ports" and event["step"] not in st.steps and (
-                    "step-start", event["step"]) not in st.intents:
+                    "step-start", event["step"]) not in st.intents and fresh(card):
                 release_ports({**event, "boxPortOwner": event["owner"]})
         active.extend((card, s) for s in st.running() if s.get("runner") == RUNNER)
         active.extend((card, {**i, "step": i["key"]}) for i in st.open_intents(include_background=True)
@@ -561,6 +577,9 @@ def recover_network(engine) -> None:
         return
     released = True
     for card, step in ended:
+        if not fresh(card):
+            released = False    # odmowa bez skutku; bez zapamiętania stanu kolejny tick uzgadnia od nowa
+            continue
         try:
             from ..box import refguard
             repo = step.get("repo") or (fold(engine.journal.read(card)).started or {}).get("repo")
@@ -581,6 +600,11 @@ def recover_network(engine) -> None:
             released = False  # Nie zapamiętujemy sukcesu: następny tick ponawia także bez nowych zdarzeń.
             print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {step['step']}: {exc!r}", flush=True)
     if proxy is None:
+        return
+    stale = {card for card, _step in [*active, *ended] if not fresh(card)}
+    if stale:
+        # Polityka pudełka obejmuje kroki wielu kart; bez potwierdzonej historii każdej z nich nie zmieniamy
+        # polityki ani jej nie zdejmujemy — zostaje dotychczasowa, a kolejny tick uzgadnia od nowa.
         return
     groups = {}
     errors = {}

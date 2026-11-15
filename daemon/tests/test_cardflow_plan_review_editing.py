@@ -259,6 +259,86 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(approved["ok"], approved)
         self.assertEqual(len(approved["map"]), 3)
 
+    def pending_revision(self, card, added):
+        """Zatwierdzony plan i gotowa różnica z `added` nowymi wierszami `#3…` (dziennik zapisany wprost)."""
+        from tide_daemon.cardflow.state import fold
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        self.flow.engine.approve_plan(card)
+        j = self.flow.engine.journal
+        st = fold(j.read(card))
+        proposal, mapping = st.plan_proposed, st.plan_approved["map"]
+        kept = [{**r, "workId": mapping[r["workId"]], "blockers": [mapping[b] for b in r["blockers"]]}
+                for r in proposal["rows"]]
+        extra = [{**proposal["rows"][-1], "workId": f"#{n}", "title": f"Nowy {n}", "blockers": []}
+                 for n in range(3, 3 + added)]
+        proposal = {**proposal, "rows": [*kept, *extra]}
+        j.append(card, "plan.proposed", **{k: v for k, v in proposal.items() if k not in ("seq", "ts", "card", "type", "v")},
+                 extra="revision")
+        j.append(card, "plan.revision-ready", pending=True, baseline=[], difference={}, feedback="Dodaj")
+        j.append(card, "plan.reviewed", verdict="APPROVE")
+        return fold(j.read(card)).plan_approved
+
+    def test_revision_with_three_new_tickets_reserves_them_in_one_batch_and_retry_keeps_numbers(self):
+        # K-102 #2: poprawka używa tej samej rezerwacji zbiorczej co zatwierdzenie planu, minimum z zatwierdzonego planu.
+        from tide_daemon.coordination import reservations
+        from tide_daemon.coordination.repoplans import RepoPlans
+        from tide_daemon.cardflow.state import fold
+        card = self.card()
+        before = self.pending_revision(card, 3)
+        top = max(int(r["id"].split("-")[1]) for r in before["rows"])
+        engine = self.flow.engine
+        asked = []
+        original = reservations.reserve_many
+
+        def spy(repo, requests, **kwargs):
+            asked.append(([r["request_key"] for r in requests], kwargs.get("at_least")))
+            return original(repo, requests, **kwargs)
+
+        append = engine.journal.append
+
+        def crash(ident, kind, **data):
+            if kind == "plan.revision-approved":
+                raise OSError("przerwanie po rezerwacji")
+            return append(ident, kind, **data)
+
+        reads = []
+        counting = RepoPlans.read
+        with mock.patch.object(reservations, "reserve_many", side_effect=spy), \
+                mock.patch.object(RepoPlans, "read", autospec=True,
+                                  side_effect=lambda reader, roots: (reads.append(roots), counting(reader, roots))[1]), \
+                mock.patch.object(engine.journal, "append", side_effect=crash):
+            with self.assertRaises(OSError):
+                engine.approve_plan(card)
+        seq = fold(engine.journal.read(card)).plan_proposed["seq"]
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked[0][0], [f"{card}:plan:{seq}:#{n}" for n in (3, 4, 5)])
+        self.assertEqual(asked[0][1], top)
+        self.assertLessEqual(len(reads), 1)
+        first = {r["request_key"]: r["number"] for r in reservations.load(self.repo)}
+        mine = [first[f"{card}:plan:{seq}:#{n}"] for n in (3, 4, 5)]
+        self.assertEqual(mine, [top + 1, top + 2, top + 3])
+        with mock.patch.object(reservations, "reserve_many", side_effect=spy):
+            self.assertTrue(engine.approve_plan(card)["ok"])
+        self.assertEqual(len(asked), 1, "ponowienie nie rezerwuje drugi raz")
+        approved = fold(engine.journal.read(card)).plan_approved["map"]
+        self.assertEqual([approved[f"#{n}"] for n in (3, 4, 5)], [f"PT-{n}" for n in mine])
+
+    def test_revision_with_over_50_new_tickets_fails_cleanly_without_numbers(self):
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.coordination import reservations
+        from tide_daemon.cardflow.state import fold
+        card = self.card()
+        before = self.pending_revision(card, 51)
+        engine = self.flow.engine
+        registry = len(reservations.load(self.repo))
+        with self.assertRaises(FlowError) as error:
+            engine.approve_plan(card)
+        self.assertEqual(error.exception.code, "reserve")
+        self.assertIn("50", str(error.exception))
+        self.assertEqual(len(reservations.load(self.repo)), registry)
+        self.assertEqual(fold(engine.journal.read(card)).plan_approved, before)
+
     def test_ready_revision_can_be_returned_again_from_the_decision_window(self):
         # 04.11, K-46: okno decyzji proponowało „Odeślij z uwagami” przy gotowej poprawce, a usługa odpowiadała
         # „poprawa planu już trwa”.
