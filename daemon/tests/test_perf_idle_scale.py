@@ -475,6 +475,13 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual(held, {5: 3})
         self.assertEqual(sizes[:3], [150_000, 90_000, 200_000])
 
+    def test_held_process_wins_over_finished_like_k38_on_production(self):
+        """Na produkcji jedyna karta z trzymanym procesem jest też zakończona; rola `held` nie może zniknąć."""
+        shape = {"kind": "tide-prod-shape", "cards": [card_shape(finished=True, column="done", held=True, heldSteps=2),
+                                                      card_shape(finished=True, column="done")]}
+        roles, _requests, held, _sizes = scale.shape_plan(shape)
+        self.assertEqual((roles, held), (["held", "done"], {0: 2}))
+
     def test_load_shape_rejects_foreign_and_tiny_files(self):
         path = os.path.join(self.base, "shape.json")
         for data in ({"kind": "other", "cards": SHAPE["cards"]}, {"kind": "tide-prod-shape", "cards": []}):

@@ -347,14 +347,14 @@ def shape_plan(shape):
     roles, requests, held_steps, sizes = [], {}, {}, []
     for index, card in enumerate(shape["cards"]):
         sizes.append(int(card.get("bytes") or 0))
-        if card.get("finished"):
+        if card.get("held"):                       # trzymany proces żyje także na karcie zakończonej (K-38 na produkcji)
+            roles.append("held")
+            held_steps[index] = max(1, int(card.get("heldSteps") or 1))
+        elif card.get("finished"):
             roles.append("archived" if card.get("column") == "archived" else "done")
         elif card.get("paused") and card.get("undecidedOutside"):
             roles.append("paused")
             requests[index] = int(card["undecidedOutside"])
-        elif card.get("held"):
-            roles.append("held")
-            held_steps[index] = max(1, int(card.get("heldSteps") or 1))
         elif card.get("undecidedOutside") or card.get("permission"):
             roles.append("outside")
         elif card.get("question"):
