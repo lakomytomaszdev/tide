@@ -442,6 +442,129 @@ class PopulateTest(unittest.TestCase):
         self.assertTrue(problems and "ścisły odczyt" in problems[0], problems)
 
 
+def card_shape(**fields):
+    base = {"card": "K-1", "bytes": 120_000, "events": 100, "steps": 5, "finished": False, "column": "", "paused": False,
+            "running": False, "held": False, "heldSteps": 0, "approved": False, "undecidedOutside": 0,
+            "permission": 0, "question": 0}
+    return {**base, **fields}
+
+
+SHAPE = {"kind": "tide-prod-shape", "cards": [
+    card_shape(finished=True, column="done", bytes=150_000), card_shape(finished=True, column="archived", bytes=90_000),
+    card_shape(finished=True, column="done", bytes=200_000),
+    card_shape(paused=True, undecidedOutside=2, permission=2, bytes=180_000),
+    card_shape(paused=True, undecidedOutside=1, permission=1, bytes=110_000),
+    card_shape(held=True, heldSteps=3, bytes=130_000), card_shape(approved=True, bytes=100_000),
+    card_shape(undecidedOutside=1, permission=1, bytes=140_000), card_shape(question=1, bytes=95_000),
+    card_shape(paused=True, approved=True, bytes=90_000),                  # wstrzymana bez próśb → plan w spoczynku
+]}
+
+
+class ShapeTest(unittest.TestCase):
+    """Tryb `--shape` (K-125 PT-486): liczba kart, role i rozmiary dzienników z produkcji; dane nadal syntetyczne."""
+
+    def setUp(self):
+        self.base = os.path.realpath(tempfile.mkdtemp(prefix="tide-perf-shape-test-"))
+        self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
+
+    def test_roles_prompts_held_steps_and_sizes_come_from_the_shape(self):
+        roles, requests, held, sizes = scale.shape_plan(SHAPE)
+        self.assertEqual(roles, ["done", "archived", "done", "paused", "paused", "held", "approved", "outside",
+                                 "question", "approved"])
+        self.assertEqual(requests, {3: 2, 4: 1})
+        self.assertEqual(held, {5: 3})
+        self.assertEqual(sizes[:3], [150_000, 90_000, 200_000])
+
+    def test_load_shape_rejects_foreign_and_tiny_files(self):
+        path = os.path.join(self.base, "shape.json")
+        for data in ({"kind": "other", "cards": SHAPE["cards"]}, {"kind": "tide-prod-shape", "cards": []}):
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            with self.assertRaises(ValueError):
+                scale.load_shape(path)
+
+    def test_populate_follows_the_shape_and_passes_every_check(self):
+        with pbr.isolated_env(self.base):
+            service = pbr.Service(self.base, len(SHAPE["cards"]), box_file=False)
+            self.addCleanup(service.close)
+            stats = scale.populate(service, self.base, 0.0, shape=SHAPE)
+            from tide_daemon.cardflow import state
+            from tide_daemon.cardflow.journal import Journal
+            fresh = Journal(service.root)
+            held = state.fold(fresh.read_complete(service.cards[5]))
+            sizes = [os.path.getsize(fresh.mirror_path(card)) for card in service.cards]
+        self.assertEqual(stats["problems"], [])
+        self.assertEqual((stats["pausedDecisions"], stats["heldCards"], stats["approvedCards"]), (3, 1, 2))
+        self.assertEqual(sum(1 for i in held.process_identities.values() if i.held and i.state == "ok"), 3)
+        for index in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9):
+            if index in (8,):                                                     # pytanie: kształt ma mało kroków
+                continue
+            wanted = SHAPE["cards"][index]["bytes"]
+            self.assertGreater(sizes[index], 0.7 * wanted, (index, sizes[index], wanted))
+            self.assertLess(sizes[index], 1.3 * wanted, (index, sizes[index], wanted))
+
+    def test_shape_with_a_different_card_count_is_rejected(self):
+        with pbr.isolated_env(self.base):
+            service = pbr.Service(self.base, 5, box_file=False)
+            self.addCleanup(service.close)
+            with self.assertRaises(ValueError):
+                scale.populate(service, self.base, 0.0, shape=SHAPE)
+
+
+class ProdShapeTest(unittest.TestCase):
+    """`perf_prod_shape.py`: tylko liczby i znaczniki, bez treści dzienników."""
+
+    def setUp(self):
+        self.board = tempfile.mkdtemp(prefix="tide-perf-board-test-")
+        self.addCleanup(shutil.rmtree, self.board, ignore_errors=True)
+
+    def write(self, number, role, **kwargs):
+        log, marks, extra = scale.build_card(f"K-{number}", number, role, "alpha", "/ws/alpha", "/tmp/x", 0, 0, 105,
+                                             **kwargs)
+        events = scale.expand(log, marks, 0, 1.7e9, role)
+        folder = os.path.join(self.board, "flow", f"K-{number}")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "journal.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
+        return events
+
+    def test_collect_reports_roles_as_numbers_and_never_contents(self):
+        from . import perf_prod_shape as prod
+        self.write(1, "paused", requests=3)
+        self.write(2, "held", held_steps=2)
+        self.write(3, "approved")
+        self.write(4, "done")
+        self.write(5, "outside")
+        os.makedirs(os.path.join(self.board, "flow", "K-6"))                # karta bez dziennika jest pomijana
+        shape = prod.collect(self.board)
+        by = {c["card"]: c for c in shape["cards"]}
+        self.assertEqual([c["card"] for c in shape["cards"]], ["K-1", "K-2", "K-3", "K-4", "K-5"])
+        self.assertTrue(by["K-1"]["paused"])
+        self.assertEqual((by["K-1"]["undecidedOutside"], by["K-1"]["permission"]), (3, 3))
+        self.assertEqual((by["K-2"]["held"], by["K-2"]["heldSteps"]), (True, 2))
+        self.assertTrue(by["K-3"]["approved"] and not by["K-3"]["finished"])
+        self.assertEqual((by["K-4"]["finished"], by["K-4"]["column"]), (True, "done"))
+        self.assertEqual(by["K-5"]["permission"], 1)
+        self.assertTrue(all(c["bytes"] > 0 and c["events"] > 0 and not c["running"] for c in shape["cards"]))
+        text = json.dumps(shape, ensure_ascii=False)
+        for secret in ("make test-changed", "run-integration", "Ticket PT-", "/ws/alpha", "kontener"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(shape["totals"]["cards"], 5)
+        self.assertEqual(shape["totals"]["undecidedOutside"], 4)             # 3 w K-1 i 1 w K-5
+
+    def test_shape_file_round_trips_through_the_generator_plan(self):
+        from . import perf_prod_shape as prod
+        self.write(1, "paused", requests=2)
+        self.write(2, "done")
+        self.write(3, "done")
+        self.write(4, "held", held_steps=3)
+        out = os.path.join(self.board, "shape.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(prod.main(["--board", self.board, "--out", out]), 0)
+        roles, requests, held, _sizes = scale.shape_plan(scale.load_shape(out))
+        self.assertEqual((roles, requests, held), (["paused", "done", "done", "held"], {0: 2}, {3: 3}))
+
+
 class DefaultModeTest(unittest.TestCase):
     def test_default_parameters_keep_the_pt346_mode(self):
         args = perf.build_parser().parse_args(["--out", "x.json", "--box", "on"])

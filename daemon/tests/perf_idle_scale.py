@@ -50,6 +50,10 @@ HELD_TICKET = "PT-186"                 # ticket chronionej próby K-38 (`trialpo
 HANGING_COMMAND = OUTSIDE_COMMANDS[2]  # skrypt powłoki w worktree: `outside_risky` — zgoda zawsze od człowieka
 # Atrapa `systemctl` (`perf_idle_cpu.isolated_env`) uznaje za aktywną jednostkę o tym fragmencie nazwy kroku.
 HELD_UNIT_FRAGMENT = "-" + HELD_TICKET.lower() + "-"
+# Wszystkie tickety chronionych prób K-38 (`trialpolicy.LEGACY | EXCLUDED`): karta z trzymanym procesem może mieć ich
+# kilka (tryb `--shape`: liczba trzymanych kroków z produkcji); pierwszy to `HELD_TICKET`.
+HELD_TICKETS = (HELD_TICKET, "PT-173", "PT-176", "PT-177", "PT-184", "PT-185", "PT-191")
+HELD_UNIT_FRAGMENTS = tuple("-" + t.lower() + "-" for t in HELD_TICKETS)
 PLAN_COMMIT_ROLES = ("held", "approved")   # karty z wynikami `card-branch` i `plan-commit` w dzienniku
 
 
@@ -163,7 +167,10 @@ def profile_check(result):
         return {"name": name, "value": value, "ok": None if value is None else bool(ok(value)), "limit": limit}
     low, high = OUTSIDE_TICK_SHARE
     return [
-        item("tick", (split.get("share") or {}).get("tick"), lambda v: v >= TICK_MIN_SHARE, f"≥ {TICK_MIN_SHARE}"),
+        # Próbki pracy bez bezczynnych ramek puli i pętli zdarzeń (`perf_idle_cpu.IDLE_FRAMES`); stare wyniki bez `work`
+        # liczą się względem wszystkich próbek poza czekaniem.
+        item("tick", (split.get("work") or {}).get("tickShare", (split.get("share") or {}).get("tick")),
+             lambda v: v >= TICK_MIN_SHARE, f"≥ {TICK_MIN_SHARE}"),
         item("outside", (components.get("outside") or {}).get("shareOfTick"), lambda v: low <= v <= high,
              f"{low}–{high}"),
         item("plan", (components.get("plan") or {}).get("shareOfTick"), lambda v: v >= PLAN_MIN_TICK_SHARE,
@@ -320,6 +327,45 @@ def assign_roles(count):
     return roles
 
 
+def load_shape(path):
+    """Kształt Tablicy produkcji z `perf_prod_shape.py` (same liczby); sprawdza minimum, którego używa generator."""
+    with open(path, encoding="utf-8") as fh:
+        shape = json.load(fh)
+    cards = shape.get("cards") or []
+    if shape.get("kind") != "tide-prod-shape" or len(cards) < MIN_CARDS:
+        raise ValueError(f"plik kształtu {path} nie jest wynikiem perf_prod_shape.py albo ma za mało kart")
+    return shape
+
+
+def shape_plan(shape):
+    """Role i rozmiary kart z kształtu produkcji: (role, prośby wstrzymanych, trzymane kroki, rozmiary dzienników w B).
+
+    Karta zakończona → `done`/`archived`; wstrzymana z prośbami outside bez decyzji → `paused` (liczba próśb z produkcji);
+    z trzymanym procesem → `held` (liczba trzymanych kroków); niezakończona z prośbą outside → `outside`; z pytaniem →
+    `question`; z zatwierdzonym planem → `approved`; pozostałe → `plan` (dziennik z Tablicy reproduktora, bez rozmiaru).
+    Rozmiary: bajty dziennika karty na produkcji (jedna kopia)."""
+    roles, requests, held_steps, sizes = [], {}, {}, []
+    for index, card in enumerate(shape["cards"]):
+        sizes.append(int(card.get("bytes") or 0))
+        if card.get("finished"):
+            roles.append("archived" if card.get("column") == "archived" else "done")
+        elif card.get("paused") and card.get("undecidedOutside"):
+            roles.append("paused")
+            requests[index] = int(card["undecidedOutside"])
+        elif card.get("held"):
+            roles.append("held")
+            held_steps[index] = max(1, int(card.get("heldSteps") or 1))
+        elif card.get("undecidedOutside") or card.get("permission"):
+            roles.append("outside")
+        elif card.get("question"):
+            roles.append("question")
+        elif card.get("approved"):
+            roles.append("approved")
+        else:
+            roles.append("plan")
+    return roles, requests, held_steps, sizes
+
+
 def paused_requests(roles):
     """Indeks karty wstrzymanej → liczba jej próśb outside bez decyzji (`PAUSED_REQUESTS` po kolei)."""
     return {index: PAUSED_REQUESTS[n] for n, index in enumerate(i for i, role in enumerate(roles) if role == "paused")}
@@ -441,31 +487,36 @@ def _tickets(number, count):
     return [f"PT-{1000 + number * 10 + i}" for i in range(1, count + 1)]
 
 
-def _held_flow(log, card, project, repo, base, ticket, rng, marks):
-    """Chroniona próba K-38: krok zakończony (bez kroku w toku), przekazanie i inwentaryzacja jak po pierwszym ticku —
-    jednostka kroku jest dla atrapy `systemctl` aktywna (`HELD_UNIT_FRAGMENT`), proces trzymany żyje."""
+def _held_flow(log, card, project, repo, base, tickets, rng, marks):
+    """Chronione próby K-38 (po jednej na ticket z `tickets`): kroki zakończone (bez kroku w toku), przekazanie
+    i inwentaryzacja jak po pierwszym ticku — jednostki kroków są dla atrapy `systemctl` aktywne
+    (`HELD_UNIT_FRAGMENTS`), procesy trzymane żyją; tick odczytuje stan każdej jednostki."""
     from tide_daemon import trialpolicy
-    step = f"{card.lower()}-{ticket.lower()}-ticket-1"
-    ident = _identity(card, project, base, step, "ticket", ticket)
-    _start(log, ident, step, project, repo)
-    marks.append((step, ticket, len(log.events)))
-    _finish(log, step, ticket, notes=_text(rng, 12), exit=0)
-    log.add("k38.handoff", step=step, ticket=ticket, version=1, instruction=trialpolicy.MESSAGE, preserved=True,
-            excluded=ticket in trialpolicy.EXCLUDED)
-    item = {"step": step, "ticket": ticket, "state": "active", "unit": ident["unit"], "worktree": ident["worktree"],
-            "stepDir": ident["stepDir"], "branch": ident["branch"], "wip": {}, "kind": "step"}
-    log.add("k38.inventory", version=1, items=[item],
+    items = []
+    for ticket in tickets:
+        step = f"{card.lower()}-{ticket.lower()}-ticket-1"
+        ident = _identity(card, project, base, step, "ticket", ticket)
+        _start(log, ident, step, project, repo)
+        marks.append((step, ticket, len(log.events)))
+        _finish(log, step, ticket, notes=_text(rng, 12), exit=0)
+        log.add("k38.handoff", step=step, ticket=ticket, version=1, instruction=trialpolicy.MESSAGE, preserved=True,
+                excluded=ticket in trialpolicy.EXCLUDED)
+        items.append({"step": step, "ticket": ticket, "state": "active", "unit": ident["unit"],
+                      "worktree": ident["worktree"], "stepDir": ident["stepDir"], "branch": ident["branch"],
+                      "wip": {}, "kind": "step"})
+    log.add("k38.inventory", version=1, items=items,
             instruction="Zachowano procesy i WIP. Nie cofnięto wcześniejszych skutków.")
 
 
-def build_card(card, number, role, project, repo, base, target_bytes, now, seed, requests=0):
+def build_card(card, number, role, project, repo, base, target_bytes, now, seed, requests=0, held_steps=1):
     """Zdarzenia jednej karty (lista słowników z `seq`, `ts`, `card`, `type`) i liczba zdarzeń wypełniających.
 
-    `requests` — rola `paused`: liczba próśb outside bez decyzji (po jednym tickecie na prośbę)."""
+    `requests` — rola `paused`: liczba próśb outside bez decyzji (po jednym tickecie na prośbę);
+    `held_steps` — rola `held`: liczba trzymanych kroków (1–`len(HELD_TICKETS)`)."""
     rng = random.Random(f"{seed}-{number}")
     log = _Log(card, rng)
     if role == "held":
-        tickets = [HELD_TICKET]
+        tickets = list(HELD_TICKETS[:max(1, min(held_steps, len(HELD_TICKETS)))])
     elif role == "paused":
         tickets = _tickets(number, max(1, requests))
     else:
@@ -477,7 +528,7 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed,
     if role == "held":
         # Bez nazwanego powodu czekania (`guard_reason`) karta stałaby się „zatrzymana” i opiekun zapisywałby zdarzenia
         # co tick; bloker z innej karty to nazwany powód („blokery ticketów”).
-        blockers = {HELD_TICKET: [waiting]}
+        blockers = {t: [waiting] for t in tickets}
     log.add("card.started", project=project, repo=repo, entry="plan", executor="Sonnet", program="claude",
             provider="anthropic", model="sonnet", check="make test", column="todo", prefix="PT", mode="full",
             baseRef="refs/heads/master", baseBranch="master", baseCommit="0123abc")
@@ -506,7 +557,7 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed,
     pending = {"outside": "outside", "question": "question"}.get(role, "")
     finished_card = role in ("done", "archived")
     if role == "held":
-        _held_flow(log, card, project, repo, base, tickets[0], rng, marks)
+        _held_flow(log, card, project, repo, base, tickets, rng, marks)
     elif role == "paused":
         for ticket in tickets:                 # każda prośba to osobny ticket: krok `denied` + `outside`, bez decyzji
             _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done=False, last="outside",
@@ -735,16 +786,26 @@ def _approved_problems(card, st):
     return problems
 
 
-def populate(service, base, journal_mb, seed=105, now=None):
+def populate(service, base, journal_mb, seed=105, now=None, shape=None):
     """Zastępuje dzienniki kart `service.cards` dziennikami o skali produkcji; zwraca opis danych (JSON).
 
     Karty zakończone dostają kolumnę `done`/`archived` w pliku karty, aktywne zostają w `todo`. Dzienniki są
-    zapisywane w kopii usługi i w Tablicy (ten sam tekst), sprawdzane ścisłym odczytem i commitowane w Tablicy."""
+    zapisywane w kopii usługi i w Tablicy (ten sam tekst), sprawdzane ścisłym odczytem i commitowane w Tablicy.
+
+    `shape` (K-125 PT-486; wynik `perf_prod_shape.load_shape`): liczba kart (`service.cards` musi mieć tyle samo), role
+    (w tym liczba próśb wstrzymanych i trzymanych kroków) i rozmiar dziennika każdej karty pochodzą z produkcji
+    (`shape_plan`), a `journal_mb` jest ignorowane. Dane pozostają syntetyczne — z produkcji są tylko liczby."""
     from tide_daemon.cardflow.journal import Journal
     now = now or time.time()
     cards, store, journal = list(service.cards), service.store, service.engine.journal
-    roles = assign_roles(len(cards))
-    requests = paused_requests(roles)
+    held_steps, sizes = {}, None
+    if shape is not None:
+        roles, requests, held_steps, sizes = shape_plan(shape)
+        if len(roles) != len(cards):
+            raise ValueError(f"kształt ma {len(roles)} kart, Tablica reproduktora {len(cards)}")
+    else:
+        roles = assign_roles(len(cards))
+        requests = paused_requests(roles)
     weights = [random.Random(f"{seed}-w-{i}").uniform(0.6, 1.4) for i in range(len(cards))]
     generated = [i for i, role in enumerate(roles) if role != "plan"]
     kept = sum(os.path.getsize(journal.mirror_path(cards[i])) * 2 for i, role in enumerate(roles) if role == "plan")
@@ -757,9 +818,9 @@ def populate(service, base, journal_mb, seed=105, now=None):
         card, role = cards[index], roles[index]
         project = PROJECTS[index % len(PROJECTS)]
         repo = os.path.join(base, "ws", project)
-        target = int(budget * weights[index] / total_weight / 2)         # bajty jednej kopii
+        target = sizes[index] if sizes is not None else int(budget * weights[index] / total_weight / 2)  # B jednej kopii
         log, marks, extra = build_card(card, index + 1, role, project, repo, base, target, now, seed,
-                                       requests=requests.get(index, 0))
+                                       requests=requests.get(index, 0), held_steps=held_steps.get(index, 1))
         events = expand(log, marks, extra, now, role)
         text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
         _write_text(journal.mirror_path(card), text)

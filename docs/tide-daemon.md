@@ -922,7 +922,17 @@ Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tes
   próbnika) pozostaje bez zmian. Kryteria rzędu produkcji „przed” (`perf_idle_scale.profile_check`): `tick` ≥ 40 %
   próbek pracy, `outside` 30–50 %, `plan` i `inventory` ≥ 5 % próbek ticku, atrapa `systemctl` co najmniej raz na tick.
   Raport „przed” składa `perf_k125_report.py` z wyników kolejki do
-  `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`.
+  `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`. Próbki **pracy** (`work`) nie liczą bezczynnych ramek
+  własnych puli wątków i pętli zdarzeń (`thread.py:_worker`, `app.py:main`); udział `tick` w kryteriach jest liczony
+  względem nich (`share` względem wszystkich próbek poza czekaniem zostaje w wyniku).
+- **Kształt produkcji (`--shape`).** `perf_prod_shape.py` czyta **tylko do odczytu** dzienniki kart Tablicy
+  (`~/DevWorkspace/tide-board/flow/K-*/journal.jsonl`) i zapisuje do `build/prod-shape.json` wyłącznie liczby i znaczniki
+  każdej karty (rozmiar, liczba zdarzeń i kroków, zakończona/wstrzymana/trzymany proces i liczba trzymanych kroków/
+  zatwierdzony plan/prośby outside bez decyzji, policzone `state.fold` usługi) — bez treści, tytułów i poleceń; plik nie
+  trafia do repozytorium. `perf_k105_queue.py build-data --shape build/prod-shape.json` (i `perf_idle_cpu.py --shape`)
+  generuje dane syntetyczne o tej samej liczbie kart, rozmiarach dzienników i rolach (`shape_plan`: liczba próśb
+  wstrzymanych kart i trzymanych kroków z produkcji, do 7 chronionych ticketów K-38). Atrapa `systemctl` uznaje za
+  aktywne jednostki wszystkich ticketów prób K-38.
 
 ### Reproduktor: skrypt kolejki koordynatora
 

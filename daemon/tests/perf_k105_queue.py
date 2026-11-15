@@ -129,11 +129,18 @@ def dir_bytes(path):
 
 
 def build_data(cards=DEFAULT_CARDS, journal_mb=DEFAULT_JOURNAL_MB, data_dir=DATA_DIR, src=REPO, tests_dir=HERE,
-               prepare=None, clock=time.monotonic, out=print, box_file=True):
+               prepare=None, clock=time.monotonic, out=print, box_file=True, shape=None):
     """Buduje dane raz; zgodny manifest → brak pracy. Zwraca (zbudowano, manifest). `box_file` False — tylko test
-    dymny w piaskownicy bez przestrzeni nazw (jak w `perf_board_refresh.Service`); `measure` i tak nadpisuje `box.enabled`."""
+    dymny w piaskownicy bez przestrzeni nazw (jak w `perf_board_refresh.Service`); `measure` i tak nadpisuje `box.enabled`.
+
+    `shape` (K-125 PT-486): plik kształtu produkcji (`perf_prod_shape.py`) — liczba kart, role i rozmiary dzienników
+    z produkcji (dane nadal syntetyczne); `cards` i `journal_mb` są wtedy ignorowane, a manifest trzyma skrót pliku."""
     prepare = prepare or perf.prepare_board
     params = {"cards": cards, "journalMb": journal_mb, "seed": 105}
+    if shape:
+        with open(shape, "rb") as fh:
+            params = {"shape": hashlib.sha256(fh.read()).hexdigest(), "seed": 105}
+        cards = len(read_json(shape)["cards"])
     generator = generator_hash(tests_dir)
     manifest_path = os.path.join(data_dir, "manifest.json")
     existing = read_json(manifest_path)
@@ -147,7 +154,7 @@ def build_data(cards=DEFAULT_CARDS, journal_mb=DEFAULT_JOURNAL_MB, data_dir=DATA
     with open(os.path.join(base, "gitconfig"), "w", encoding="utf-8") as fh:
         fh.write("[user]\n\tname = Perf\n\temail = perf@example.invalid\n[init]\n\tdefaultBranch = master\n")
     started = clock()
-    stats = prepare(base, src, box_file, cards, journal_mb)
+    stats = prepare(base, src, box_file, cards, journal_mb, **({"shape": os.path.realpath(shape)} if shape else {}))
     build_s = round(clock() - started, 1)
     manifest = {"params": params, "generatorSha256": generator, "generatorFiles": list(GENERATOR_FILES),
                 "repoHead": perf.git_sha(src), "basePath": base, "buildSeconds": build_s,
@@ -320,7 +327,9 @@ def build_parser():
     bd = sub.add_parser("build-data", help="zbuduj dane raz do build/k105-data/")
     bd.add_argument("--cards", type=int, default=DEFAULT_CARDS)
     bd.add_argument("--journal-mb", type=float, default=DEFAULT_JOURNAL_MB)
-    ms = sub.add_parser("measure", help="jedna konfiguracja, jedna seria 10 okien")
+    bd.add_argument("--shape", default=None,
+                    help="kształt produkcji z `perf_prod_shape.py` (liczba kart, role, rozmiary dzienników)")
+    ms =sub.add_parser("measure", help="jedna konfiguracja, jedna seria 10 okien")
     ms.add_argument("side", choices=("before", "after"))
     ms.add_argument("box", choices=("false", "true"))
     ms.add_argument("--base-sha", default="", help="przypięty SHA bazy karty (strona before)")
@@ -337,7 +346,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == "build-data":
-        build_data(args.cards, args.journal_mb)
+        build_data(args.cards, args.journal_mb, shape=args.shape)
         return 0
     return measure_command(args)
 

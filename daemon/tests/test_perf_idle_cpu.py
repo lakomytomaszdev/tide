@@ -62,6 +62,17 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(split["share"]["tick"], 0.15)
         self.assertEqual(sorted(split["samples"]), ["index", "probe", "rest", "tick"])
 
+    def test_work_samples_exclude_idle_pool_and_event_loop_frames(self):
+        """K-125: bezczynne wątki puli i pętla zdarzeń nie wchodzą do próbek pracy; `share` zostaje bez zmian."""
+        text = ("Próbek poza ramkami rozpoznanymi jako czekanie: 23208\n\n## Funkcje — czas własny (próbki)\n"
+                "  16475  thread.py:_worker\n   5785  app.py:main\n    482  <frozen posixpath>:_joinrealpath\n\n"
+                "## Funkcje — czas łączny (próbki)\n    915  engine.py:tick\n    417  engine.py:_consent_recheck\n")
+        split = perf.parse_profile(text)
+        self.assertEqual(split["work"], {"idleFrames": ["thread.py:_worker", "app.py:main"], "idleSamples": 22260,
+                                         "samples": 948, "tickShare": round(915 / 948, 4)})
+        self.assertEqual(split["share"]["tick"], round(915 / 23208, 4))
+        self.assertEqual(perf.parse_profile(REPORT)["work"]["samples"], 1000)      # bez bezczynnych ramek: bez zmian
+
     def test_cpu_window_is_not_changed_by_the_profile_categories(self):
         """Miara CPU (okno bez próbnika) nie zależy od kategorii profilu: `cpu_window` nie zna ich w ogóle."""
         import inspect
@@ -94,6 +105,13 @@ class FakeSystemctlTest(unittest.TestCase):
         for args in (("freeze", held), ("thaw", held), ("stop", held), ("show", held)):
             run = self.run_fake(*args)
             self.assertEqual((run.returncode, run.stdout), (0, ""), args)
+
+    def test_every_held_trial_ticket_has_an_active_unit(self):
+        """Karta z kilkoma trzymanymi krokami (tryb `--shape`): wszystkie tickety prób K-38 są `active`."""
+        for ticket in scale.HELD_TICKETS:
+            run = self.run_fake("is-active", "--quiet", f"tide-step-k-7-{ticket.lower()}-ticket-1.scope")
+            self.assertEqual((run.returncode, run.stdout.strip()), (0, "active"), ticket)
+        self.assertEqual(len(set(scale.HELD_TICKETS)), 7)
 
     def test_other_units_are_inactive(self):
         run = self.run_fake("is-active", "tide-step-k-5-pt-1011-ticket-1.scope")

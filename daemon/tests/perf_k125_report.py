@@ -78,7 +78,7 @@ def box_block(document):
             "windowsOverLimit": evaluation.get("windowsOverLimit"), "verdict": evaluation.get("verdict"),
             "cpuWindows": (result.get("cpuWindows") or {}).get("windows"),
             "profile": {"busySamples": split.get("busySamples"), "samples": split.get("samples"),
-                        "share": split.get("share"), "components": split.get("components"),
+                        "share": split.get("share"), "work": split.get("work"), "components": split.get("components"),
                         "frames": split.get("frames"), "topFrames": top_frames(profile.get("report"))},
             "tick": result.get("tick"), "fakeSystemctl": result.get("fakeSystemctl"),
             "windowMarks": result.get("windowMarks"), "snapshot": result.get("snapshot"),
