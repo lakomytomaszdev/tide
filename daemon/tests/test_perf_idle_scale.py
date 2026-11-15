@@ -389,7 +389,7 @@ class PopulateTest(unittest.TestCase):
                 for counter in seen.values():
                     counter.clear()
                 service.engine.tick()
-            paused ={service.cards[i]: n for i, n in requests.items()}
+            paused = {service.cards[i]: n for i, n in requests.items()}
             outside = [service.cards[i] for i, r in enumerate(roles) if r == "outside"]
             held = service.cards[roles.index("held")]
             approved = service.cards[roles.index("approved")]
@@ -418,12 +418,15 @@ class PopulateTest(unittest.TestCase):
                         service.engine.tick()
                     events = service.engine.journal.read(held)
                     after = len(events)
-                self.assertGreaterEqual(perf.systemctl_calls(self.base) - calls, 3, "co najmniej raz na tick")
+                self.assertGreaterEqual(perf.systemctl_calls(self.base) - calls, 3 * scale.PROD_HELD_STEPS,
+                                        "atrapa pytana o każdą jednostkę trzymanego procesu w każdym ticku")
             self.assertEqual(before, after, f"stan `active` jest zgodny z zapisaną inwentaryzacją: {events[before:]}")
             st = state.fold(service.engine.journal.read_complete(held))
             self.assertEqual(st.running(), [])
             inventory = [e for e in service.engine.journal.read(held) if e["type"] == "k38.inventory"]
-            self.assertEqual([i["state"] for i in inventory[-1]["items"]], ["active"])
+            self.assertEqual([i["state"] for i in inventory[-1]["items"]], ["active"] * scale.PROD_HELD_STEPS)
+            held_ids = [n for n, i in st.process_identities.items() if i.held and i.state == "ok"]
+            self.assertEqual(len(held_ids), scale.PROD_HELD_STEPS)
 
     def test_broken_journal_is_reported_by_the_strict_check(self):
         with pbr.isolated_env(self.base):

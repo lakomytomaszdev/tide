@@ -329,7 +329,7 @@ def build_parser():
     bd.add_argument("--journal-mb", type=float, default=DEFAULT_JOURNAL_MB)
     bd.add_argument("--shape", default=None,
                     help="kształt produkcji z `perf_prod_shape.py` (liczba kart, role, rozmiary dzienników)")
-    ms =sub.add_parser("measure", help="jedna konfiguracja, jedna seria 10 okien")
+    ms = sub.add_parser("measure", help="jedna konfiguracja, jedna seria 10 okien")
     ms.add_argument("side", choices=("before", "after"))
     ms.add_argument("box", choices=("false", "true"))
     ms.add_argument("--base-sha", default="", help="przypięty SHA bazy karty (strona before)")

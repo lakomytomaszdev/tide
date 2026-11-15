@@ -46,7 +46,8 @@ MIN_CARDS = 4
 # Wstrzymane karty z prośbami outside bez decyzji: 7 próśb w 4 kartach (jak K-104, K-107, K-44, K-100).
 PAUSED_REQUESTS = (3, 2, 1, 1)
 FULL_PAUSED_CARDS = 12                 # od tylu kart są wszystkie cztery wstrzymane; mniej kart — jedna wstrzymana
-HELD_TICKET = "PT-186"                 # ticket chronionej próby K-38 (`trialpolicy.EXCLUDED`) — tożsamość procesu `held`
+PROD_HELD_STEPS = 135                  # kroki chronionych prób w jedynej karcie z trzymanym procesem na produkcji (kształt)
+HELD_TICKET = "PT-186"               # ticket chronionej próby K-38 (`trialpolicy.EXCLUDED`) — tożsamość procesu `held`
 HANGING_COMMAND = OUTSIDE_COMMANDS[2]  # skrypt powłoki w worktree: `outside_risky` — zgoda zawsze od człowieka
 # Atrapa `systemctl` (`perf_idle_cpu.isolated_env`) uznaje za aktywną jednostkę o tym fragmencie nazwy kroku.
 HELD_UNIT_FRAGMENT = "-" + HELD_TICKET.lower() + "-"
@@ -487,15 +488,21 @@ def _tickets(number, count):
     return [f"PT-{1000 + number * 10 + i}" for i in range(1, count + 1)]
 
 
-def _held_flow(log, card, project, repo, base, tickets, rng, marks):
-    """Chronione próby K-38 (po jednej na ticket z `tickets`): kroki zakończone (bez kroku w toku), przekazanie
-    i inwentaryzacja jak po pierwszym ticku — jednostki kroków są dla atrapy `systemctl` aktywne
-    (`HELD_UNIT_FRAGMENTS`), procesy trzymane żyją; tick odczytuje stan każdej jednostki."""
+def _held_flow(log, card, project, repo, base, tickets, rng, marks, steps=0):
+    """Chronione próby K-38: kroki zakończone (bez kroku w toku), przekazanie i inwentaryzacja jak po pierwszym ticku —
+    jednostki kroków są dla atrapy `systemctl` aktywne (`HELD_UNIT_FRAGMENTS`), procesy trzymane żyją; tick odczytuje
+    stan każdej jednostki.
+
+    Pierwsze `len(tickets)` kroków to po jednym kroku autora na ticket z `tickets`; gdy `steps` jest większe (na produkcji
+    jedyna karta z trzymanym procesem ma 135 kroków chronionych prób: poprawki i kolejne podejścia), dalsze kroki
+    `fix` wracają do tych samych ticketów po kolei — każdy to osobna jednostka, którą inwentaryzacja pyta o stan."""
     from tide_daemon import trialpolicy
     items = []
-    for ticket in tickets:
-        step = f"{card.lower()}-{ticket.lower()}-ticket-1"
-        ident = _identity(card, project, base, step, "ticket", ticket)
+    for n in range(max(steps, len(tickets))):
+        ticket, round_no = tickets[n % len(tickets)], n // len(tickets)
+        kind, suffix = ("ticket", "ticket-1") if round_no == 0 else ("fix", f"fix-{round_no}")
+        step = f"{card.lower()}-{ticket.lower()}-{suffix}"
+        ident = _identity(card, project, base, step, kind, ticket)
         _start(log, ident, step, project, repo)
         marks.append((step, ticket, len(log.events)))
         _finish(log, step, ticket, notes=_text(rng, 12), exit=0)
@@ -512,7 +519,8 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed,
     """Zdarzenia jednej karty (lista słowników z `seq`, `ts`, `card`, `type`) i liczba zdarzeń wypełniających.
 
     `requests` — rola `paused`: liczba próśb outside bez decyzji (po jednym tickecie na prośbę);
-    `held_steps` — rola `held`: liczba trzymanych kroków (1–`len(HELD_TICKETS)`)."""
+    `held_steps` — rola `held`: liczba trzymanych kroków (co najmniej jeden na ticket chronionej próby; więcej — kroki
+    `fix` tych samych ticketów)."""
     rng = random.Random(f"{seed}-{number}")
     log = _Log(card, rng)
     if role == "held":
@@ -557,7 +565,7 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed,
     pending = {"outside": "outside", "question": "question"}.get(role, "")
     finished_card = role in ("done", "archived")
     if role == "held":
-        _held_flow(log, card, project, repo, base, tickets, rng, marks)
+        _held_flow(log, card, project, repo, base, tickets, rng, marks, steps=held_steps)
     elif role == "paused":
         for ticket in tickets:                 # każda prośba to osobny ticket: krok `denied` + `outside`, bez decyzji
             _ticket_flow(log, card, project, repo, base, ticket, rng, marks, outside_done=False, last="outside",
@@ -836,6 +844,9 @@ def populate(service, base, journal_mb, seed=105, now=None, shape=None):
     now = now or time.time()
     cards, store, journal = list(service.cards), service.store, service.engine.journal
     held_steps, sizes = {}, None
+    # Skala produkcji (od `FULL_PAUSED_CARDS` kart) ma kartę z trzymanym procesem o produkcyjnej liczbie kroków: tick
+    # pyta atrapę `systemctl` o każdą jednostkę (na produkcji `trialhold.inventory` to ~17 % ticku); mała skala — jeden.
+    default_held = PROD_HELD_STEPS if len(cards) >= FULL_PAUSED_CARDS else 1
     if shape is not None:
         roles, requests, held_steps, sizes = shape_plan(shape)
         if len(roles) != len(cards):
@@ -857,7 +868,8 @@ def populate(service, base, journal_mb, seed=105, now=None, shape=None):
         repo = os.path.join(base, "ws", project)
         target = sizes[index] if sizes is not None else int(budget * weights[index] / total_weight / 2)  # B jednej kopii
         log, marks, extra = build_card(card, index + 1, role, project, repo, base, target, now, seed,
-                                       requests=requests.get(index, 0), held_steps=held_steps.get(index, 1))
+                                       requests=requests.get(index, 0),
+                                       held_steps=held_steps.get(index, default_held))
         events = expand(log, marks, extra, now, role)
         text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
         _write_text(journal.mirror_path(card), text)

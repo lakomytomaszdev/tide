@@ -905,7 +905,9 @@ Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tes
 - **Stany produkcji (K-125, PT-486).** Dane skali (`perf_idle_scale.assign_roles`/`build_card`/`populate`) mają poza
   kartami zakończonymi i aktywnymi także: 4 karty **wstrzymane** z 7 prośbami outside bez decyzji (3, 2, 1, 1 — krok
   `denied` + `outside`, polecenie to skrypt powłoki w worktree, więc zgoda zawsze od człowieka), kartę **z trzymanym
-  procesem K-38** (ticket chronionej próby, krok zakończony, jednostka dla atrapy `systemctl` aktywna) oraz kartę
+  procesem K-38** (chronione tickety, kroki zakończone, jednostki dla atrapy `systemctl` aktywne; od 12 kart
+  `PROD_HELD_STEPS` = 135 kroków jak na produkcji — kroki `fix` wracają do 7 chronionych ticketów, więc tick pyta atrapę
+  o każdą jednostkę) oraz kartę
   **z zatwierdzonym planem w spoczynku** (wyniki `card-branch` i `plan-commit`, tickety czekają na bloker z innej
   karty). Wszystkie są niezakończone, więc co tick przechodzą pełny przebieg karty i uruchamiają `_consent_recheck`,
   `_plan_next` i `trialhold.inventory`. `populate` sprawdza każdą rolę (`check_roles`: `permission`, `paused`, `held`,
