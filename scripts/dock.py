@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
-from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
+from scripts.panels import evaluate, load, outputs_disabled, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kafelki, które wyszły z docka, ale mogą w nim jeszcze stać po starej instalacji: instalacja zdejmuje je
@@ -78,6 +78,8 @@ def install() -> None:
 
 
 def uninstall() -> None:
+    if outputs_disabled():
+        return
     installed = load(INSTALLED)
     if not installed:
         print("Dock Tide nie był instalowany.")
@@ -94,6 +96,8 @@ def show() -> None:
 def install_in_activity() -> None:
     """Instalacja i od razu panele z opisu bieżącej aktywności, pod blokadą nałożeń wyglądu (decyzja 80):
     w aktywności Stream dock pracy nie zostaje w stanie pracy nad konsolą — silnik chowa go z powrotem."""
+    if outputs_disabled():
+        return
     from scripts import activity_look
     activity_look.apply_current(["panels"], before=install)
 

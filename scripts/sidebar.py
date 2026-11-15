@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from kwin.shortcuts import conflicts  # noqa: E402
 from scripts.appearance import DATA, PALETTE, STATE, xdg  # noqa: E402
-from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
+from scripts.panels import evaluate, load, outputs_disabled, persist_thickness, save, screens, script, settle  # noqa: E402
 
 INSTALLED = STATE / "tide" / "sidebar-installed.json"
 SHORTCUTS = xdg("XDG_CONFIG_HOME", ".config") / "kglobalshortcutsrc"
@@ -122,6 +122,8 @@ def install() -> None:
 
 
 def uninstall() -> None:
+    if outputs_disabled():
+        return
     installed = load(INSTALLED)
     result = evaluate(script("sidebar-uninstall", {**screens(), "header": HEADER}))
     unregister(installed.get("header"))
@@ -140,6 +142,8 @@ def show() -> None:
 def install_in_activity() -> None:
     """Instalacja i od razu panele z opisu bieżącej aktywności, pod blokadą nałożeń wyglądu (decyzja 80):
     w aktywności Stream pasek boczny pracy nie zostaje w stanie pracy nad konsolą — silnik chowa go z powrotem."""
+    if outputs_disabled():
+        return
     from scripts import activity_look
     activity_look.apply_current(["panels"], before=install)
 

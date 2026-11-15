@@ -21,6 +21,22 @@ def available() -> bool:
     return Path(QML).exists()
 
 
+def kscreen_json(disabled: tuple[str, ...] = (), disconnected: tuple[str, ...] = ()) -> dict:
+    """Wynik `kscreen-doctor -j` dla DP-2 i HDMI-A-1: domyślnie oba podłączone i włączone. `disabled` — podłączone,
+    ale wyłączone; `disconnected` — niepodłączone (kscreen-doctor zgłasza wtedy też `enabled: false`)."""
+    return {"outputs": [{"name": name, "connected": name not in disconnected,
+                         "enabled": name not in disabled and name not in disconnected}
+                        for name in ("DP-2", "HDMI-A-1")]}
+
+
+def link_kscreen_doctor(bin_dir: Path) -> None:
+    """Atrapa `kscreen-doctor` w PATH testu instalatora (czyta $TIDE_FAKE_DIR/kscreen.json, patrz
+    fake_kscreen_doctor.py). Skrypt owijamy, bo plik atrapy nie musi mieć bitu wykonywalnego."""
+    wrapper = bin_dir / "kscreen-doctor"
+    wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{HERE / "fake_kscreen_doctor.py"}" "$@"\n')
+    wrapper.chmod(0o755)
+
+
 def widget(wid: int, type_: str, config: dict | None = None) -> dict:
     return {"id": wid, "type": type_, "config": config or {}, "removed": False}
 

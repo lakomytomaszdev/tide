@@ -37,6 +37,7 @@ class SidebarInstallTest(unittest.TestCase):
         bin_dir = base / "bin"
         bin_dir.mkdir()
         (bin_dir / "qdbus6").symlink_to(ROOT / "scripts/tests/fake_qdbus6.py")
+        fake.link_kscreen_doctor(bin_dir)  # nie prawdziwy kscreen-doctor, który widzi wyłączony DP-2
         (bin_dir / "dbus-send").write_text(f'#!/bin/sh\necho "dbus-send $*" >> "{self.fake_dir}/dbus.log"\n')
         (bin_dir / "dbus-send").chmod(0o755)
         self.env = {

@@ -24,6 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts import activity_panels  # noqa: E402
 from scripts.appearance import DATA, PALETTE, STATE, run  # noqa: E402
 from theme.logo.generate import svg as logo_svg  # noqa: E402
 
@@ -59,6 +60,17 @@ def script(name: str, params: dict) -> str:
     common = (JS_DIR / "common.js").read_text()
     body = (JS_DIR / f"{name}.js").read_text()
     return f"// tide:{name}\nvar P = {json.dumps(params, ensure_ascii=False)};\n{common}\n{body}"
+
+
+def outputs_disabled() -> bool:
+    """Strażnik instalatorów: przy wyłączonym wyjściu z układu Tide nie ruszamy paneli (ani skryptem, ani zapisem
+    stanu). Odczyt z kscreen-doctor, bez plasmashella; błąd odczytu tylko się zgłasza."""
+    disabled, failure = activity_panels.guard(lambda argv: run(*argv))
+    if failure:
+        print(f"Uwaga: {failure}.")
+    if disabled:
+        print(f"Panele pominięte: wyłączone wyjście {', '.join(disabled)} (włącz monitor i uruchom ponownie).")
+    return bool(disabled)
 
 
 def evaluate(js: str) -> dict:
@@ -151,6 +163,8 @@ def appmenu_module(enable: bool) -> bool:
 
 
 def install() -> None:
+    if outputs_disabled():
+        return
     palette = json.loads(PALETTE.read_text())
     for path, content in icons(palette).items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +198,8 @@ def install() -> None:
 
 
 def uninstall() -> None:
+    if outputs_disabled():
+        return
     previous, installed = load(PREVIOUS), load(INSTALLED)
     for panel in previous.get("panels", []):
         for widget in panel["widgets"]:
