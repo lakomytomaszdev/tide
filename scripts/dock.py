@@ -86,7 +86,8 @@ def uninstall() -> None:
     if not installed:
         print("Dock Tide nie był instalowany.")
         return
-    evaluate(script("dock-uninstall", {**screens(), **installed, "widgets": DOCK_WIDGETS + DOCK_RETIRED}))
+    result = evaluate(script("dock-uninstall", {**screens(), **installed, "widgets": DOCK_WIDGETS + DOCK_RETIRED}))
+    orphans_note(result)
     INSTALLED.unlink(missing_ok=True)
     print("Dock Tide odinstalowany, przywrócono poprzedni układ dolnego panelu.")
 

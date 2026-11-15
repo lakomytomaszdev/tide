@@ -160,6 +160,28 @@ class InstallersWithDisabledOutputTest(unittest.TestCase):
                     self.assertEqual(done.returncode, 0, done.stderr)
                     self.assertNotIn("bez widoku", done.stdout)
 
+    def test_uninstall_prints_a_note_with_the_orphans_from_the_script_result(self):
+        """PT-498: odinstalowanie czyta `orphans` z wyniku skryptu, wypisuje notkę i kończy się kodem 0."""
+        for script in ("panels.py", "sidebar.py", "dock.py"):
+            self.assertEqual(self.installer(script, "install").returncode, 0)
+        (self.fake_dir / "orphans.json").write_text(json.dumps([103]))
+        for script in ("panels.py", "sidebar.py", "dock.py"):
+            with self.subTest(script=script):
+                done = self.installer(script, "uninstall")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(done.stdout.count("Panele bez widoku pominięte: 103"), 1, done.stdout)
+
+    def test_uninstall_prints_no_note_for_an_empty_list_or_a_result_without_the_key(self):
+        for override in ([], None):
+            for script in ("panels.py", "sidebar.py", "dock.py"):
+                (self.fake_dir / "orphans.json").unlink(missing_ok=True)
+                self.assertEqual(self.installer(script, "install").returncode, 0)
+                (self.fake_dir / "orphans.json").write_text(json.dumps(override))
+                with self.subTest(script=script, orphans=override):
+                    done = self.installer(script, "uninstall")
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertNotIn("bez widoku", done.stdout)
+
     def test_unreadable_kscreen_gives_a_note_and_the_usual_work(self):
         (self.fake_dir / "kscreen.fail").write_text("")
         done = self.installer("panels.py", "install")

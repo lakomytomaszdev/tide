@@ -4,7 +4,9 @@
 // Widżety, które przetrwały instalację, zostają (z przywróconymi kluczami, które zmieniliśmy),
 // brakujące są tworzone na nowo z zapisaną konfiguracją.
 
-var tideOut = {removed: [], main: null, mainOrder: []};
+// Panel bez widoku (tidePanelHasView) trafia do `orphans`: jego właściwości widoku nie są czytane ani
+// przywracane, ale panele Tide do usunięcia znikają także wtedy.
+var tideOut = {removed: [], main: null, mainOrder: [], orphans: tideOrphanIds()};
 
 var tideAll = panels();
 for (var tideI = 0; tideI < tideAll.length; ++tideI) {
@@ -61,7 +63,7 @@ if (tideBar && P.mainCreated) {
     // Panel powstał przy instalacji (wcześniej go nie było) — usuwamy go w całości.
     tideOut.removed.push(tideBar.id);
     tideBar.remove();
-} else if (tideBar && tidePrevious) {
+} else if (tideBar && tidePrevious && tidePanelHasView(tideBar)) {
     var tideWanted = {};
     for (var tideK = 0; tideK < tidePrevious.widgets.length; ++tideK) {
         tideWanted[tidePrevious.widgets[tideK].id] = tidePrevious.widgets[tideK].type;

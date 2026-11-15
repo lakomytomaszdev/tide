@@ -2,11 +2,14 @@
 // Zapis AppletOrder trafia do konfiguracji panelu, a ustawienie indeksu pierwszego widżetu
 // wywołuje reorderApplets() panelu z tą samą listą, więc zmiana jest widoczna od razu.
 
+// Panel bez widoku (tidePanelHasView) jest pomijany w całości i trafia do `orphans`: nie ustawiamy mu
+// grubości ani kolejności.
 var tideReport = [];
+var tideOrphans = tideOrphanIds();
 for (var tideI = 0; tideI < P.panels.length; ++tideI) {
     var tideItem = P.panels[tideI];
     var tidePanel = panelById(tideItem.id);
-    if (!tidePanel || !tideItem.order.length) {
+    if (!tidePanel || !tideItem.order.length || !tidePanelHasView(tidePanel)) {
         continue;
     }
     if (tideItem.height) {
@@ -26,4 +29,4 @@ for (var tideI = 0; tideI < P.panels.length; ++tideI) {
     }
     tideReport.push({id: tideItem.id, order: tideTypes});
 }
-tideResult({panels: tideReport});
+tideResult({panels: tideReport, orphans: tideOrphans});

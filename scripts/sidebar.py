@@ -131,6 +131,7 @@ def uninstall() -> None:
         return
     installed = load(INSTALLED)
     result = evaluate(script("sidebar-uninstall", {**screens(), "header": HEADER}))
+    orphans_note(result)
     unregister(installed.get("header"))
     INSTALLED.unlink(missing_ok=True)
     if result["removed"]:

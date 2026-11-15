@@ -224,6 +224,7 @@ def uninstall() -> None:
               "mainCreated": installed.get("mainCreated", False),
               "changedKeys": CHANGED_KEYS, "defaults": DEFAULTS}
     result = evaluate(script("uninstall", params))
+    orphans_note(result)
     if result.get("main"):
         settle()
         evaluate(script("order", {**screens(), "panels": [{"id": result["main"], "order": result["mainOrder"]}]}))
