@@ -2894,6 +2894,24 @@ inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
 Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
 
+**Pamięć stanu jednostek K-38 i commit planu w spoczynku (K-125 PT-488).** Inwentaryzacja K-38 w obserwacji (bez
+`fresh`) bierze stan jednostki trzymanego procesu (`stepstop.unit_state` — proces `systemctl`, albo `step_state`
+runnera pudełka przez `FlowEngine._unit_state`) z pamięci silnika `unitstate.UnitStates` (`FlowEngine.unit_states`),
+najwyżej `unitstate.TTL` = 30 s od odczytu, według zegara monotonicznego (wstrzykiwanego w testach). Pamiętane są tylko
+zwrócone `active` i `inactive`; `unknown` (błąd `systemctl`/`incus exec`, brak magistrali, timeout) i wyjątek z odczytu
+nigdy nie są pamięcią i usuwają wcześniejszy wpis, więc następny tick czyta ponownie. `fresh=True` (inwentaryzacja
+powtarzana przed zapisem `k38.inventory`/`k38.handoff`, diagnostyka K-38) czyta każdą jednostkę świeżo i odświeża
+pamięć — zapis zawsze wynika ze świeżego odczytu. Reguła `inactive` → `unknown` (brak chronionego dowodu hosta) działa
+bez zmian na stanie surowym. Ochrona zasobów pudełka (`box/lifecycle.active_steps`) i `_poll` pamięci nie używają;
+`public_inventory` stanu jednostek nie czyta. Moduł `unitstate` nie importuje silnika (ADR-6).
+W `_plan_next` Tablica pochodzi z kontekstu odczytu ticku (`_tick_board_read`: tylko na wątku ticku; poza tickiem —
+domknięcie, D-Bus — świeży odczyt jak dotąd). `_planning_branch` zwraca zapisany udany wynik `card-branch` tej gałęzi
+przed `git rev-parse`, a `_plan_commit` kończy się bez wczytania Tablicy (`_plan_on_board`) i bez `_plan_files`, gdy
+dziennik ma udany `plan-commit` dla bieżącego klucza (`seq` planu : `plan_change_seq`) — w obu przypadkach to wynik,
+który `_act` i tak by zwrócił (`_recorded_ok`; przy decyzji o bazie albo wyniku nieudanym droga jest jak dawniej, więc
+nieudany commit jest ponawiany co tick). Start ticketu (limit, wykonawcy, gałąź ticketu, `_launch`) czyta Tablicę
+świeżo, raz na przebieg, jak przed zmianą.
+
 **Pamięć filtra prób uzgadniania sieci (K-113 PT-466).** `boxstep.recover_network` bierze z
 `trialhold.network_state` wynik filtra prób K-38 karty: zdarzenia bez wstrzymanych prób (`trialhold.held`) i bez
 chronionych tożsamości oraz stan z nich złożony (nowy `fold` tylko, gdy coś pominięto). Wynik jest pamiętany w osobnej

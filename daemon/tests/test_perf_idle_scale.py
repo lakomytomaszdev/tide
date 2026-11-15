@@ -404,12 +404,16 @@ class PopulateTest(unittest.TestCase):
         self.assertGreaterEqual(seen["inventory"][held], 1)
 
     def test_held_card_with_an_active_unit_is_not_running_and_reads_the_unit_every_tick(self):
-        """Atrapa `systemctl` w PATH (`isolated_env` reproduktora): `active`, a karta nadal nie ma kroku w toku."""
-        from tide_daemon.cardflow import state
+        """Atrapa `systemctl` w PATH (`isolated_env` reproduktora): `active`, a karta nadal nie ma kroku w toku.
+        K-125 #3 (PT-488): stan `active` pochodzi z pamięci najwyżej 30 s — ticki w tym czasie nie pytają atrapy,
+        po upływie 30 s (zegar wstrzyknięty) kolejny tick pyta o każdą jednostkę ponownie."""
+        from tide_daemon.cardflow import state, unitstate
         with pbr.isolated_env(self.base):
             service, _stats, _fresh = self.populated()
             roles = scale.assign_roles(len(service.cards))
             held = service.cards[roles.index("held")]
+            now = [1000.0]
+            service.engine.unit_states = unitstate.UnitStates(clock=lambda: now[0])
             fake = perf.isolated_env(self.base)
             with mock.patch.dict(os.environ, {"PATH": fake["PATH"],
                                               "TIDE_FAKE_SYSTEMCTL_LOG": fake["TIDE_FAKE_SYSTEMCTL_LOG"]}):
@@ -418,11 +422,16 @@ class PopulateTest(unittest.TestCase):
                     calls = perf.systemctl_calls(self.base)
                     before = len(service.engine.journal.read(held))
                     for _ in range(3):
+                        now[0] += 5
                         service.engine.tick()
+                    remembered = perf.systemctl_calls(self.base) - calls
+                    now[0] += unitstate.TTL
+                    service.engine.tick()
                     events = service.engine.journal.read(held)
                     after = len(events)
-                self.assertGreaterEqual(perf.systemctl_calls(self.base) - calls, 3 * scale.PROD_HELD_STEPS,
-                                        "atrapa pytana o każdą jednostkę trzymanego procesu w każdym ticku")
+                self.assertEqual(remembered, 0, "ticki w ciągu 30 s biorą stan `active` z pamięci")
+                self.assertGreaterEqual(perf.systemctl_calls(self.base) - calls, scale.PROD_HELD_STEPS,
+                                        "po 30 s atrapa pytana o każdą jednostkę trzymanego procesu")
             self.assertEqual(before, after, f"stan `active` jest zgodny z zapisaną inwentaryzacją: {events[before:]}")
             st = state.fold(service.engine.journal.read_complete(held))
             self.assertEqual(st.running(), [])
