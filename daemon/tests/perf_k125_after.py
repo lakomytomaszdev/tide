@@ -12,7 +12,10 @@ werdykty karty:
 - `recommendation`: reguła z karty — `pass` → „#5 i #6 odrzucić”; `fail` i `outside` ≥ 10 % próbek ticku w którymś
   trybie → „#5 potrzebny”; `fail` z kosztem gdzie indziej → pytanie z podziałem próbek (bez zmian kodu).
 
-    /usr/bin/python3 daemon/tests/perf_k125_after.py [--dir build/k105-measure] [--before docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json] [--out docs/agents/masterplan/2026-11-15/pomiar-k125-po.json]
+    /usr/bin/python3 daemon/tests/perf_k125_after.py --before <pomiar-k125-przed.json> [--dir build/k105-measure] [--out <pomiar-k125-po.json>]
+
+Pliki „przed” i „po” leżą w `docs/agents/masterplan/2026-11-15/`; ścieżki podaje wywołujący (skan zależności testów
+nie widzi wtedy odczytu pliku koordynacji w kodzie narzędzia).
 
 Kod wyjścia: 0 — oba tryby ważne (`pass` albo `fail`; to wynik pomiaru, nie błąd); 1 — brak ważnego wyniku któregoś
 trybu.
@@ -141,8 +144,7 @@ def build(documents, before_report):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dir", default=queue.MEASURE_DIR)
-    parser.add_argument("--before", default=os.path.join(queue.REPO, "docs", "agents", "masterplan", "2026-11-15",
-                                                          "pomiar-k125-przed.json"))
+    parser.add_argument("--before", required=True, help="plik „przed” z `perf_k125_report.py` (PT-486)")
     parser.add_argument("--out", default="")
     args = parser.parse_args(argv)
     documents = {key: queue.read_json(queue.result_path("after", key == "true", args.dir))
