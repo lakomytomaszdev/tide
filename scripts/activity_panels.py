@@ -238,7 +238,9 @@ def work_plan(state: dict, saved: dict) -> tuple[list[str], dict]:
             out.append("pasek boczny pracy do przywrócenia: " + ", ".join(f"{k} {v}" for k, v in restore.items()))
         if sidebar_thin(sidebar) and not any(key in restore for key in ("maximumLength", "minimumLength")):
             out.append("pasek boczny pracy pozostał zwężony — ponownie zainstaluj Tide")
-    if saved and not out:
+    waiting = any(p.get("orphan") and p.get("role") == "sidebar" and saved.get("sidebar", p["id"]) == p["id"]
+                  for p in state.get("panels", []))
+    if saved and not out and not waiting:  # pasek bez widoku: zapis czeka na jego widok, nie jest nieaktualny
         out.append("nieaktualny zapis paska bocznego sprzed Stream — do usunięcia")
     return out, restore
 
