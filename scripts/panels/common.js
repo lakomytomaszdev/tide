@@ -7,6 +7,14 @@ function tideScreen(connector, fallback) {
     return (typeof screen === "number" && screen >= 0 && screen < screenCount) ? screen : fallback;
 }
 
+// Panel ma widok tylko na istniejącym ekranie. Panel z zapamiętanym ekranem spoza screenCount
+// (np. lastScreen=1 przy wyłączonym DP-2) jest „bez widoku”: jego właściwości widoku wolno czytać
+// i zapisywać dopiero po sprawdzeniu tej funkcji — inaczej plasmashell się wywraca.
+// Kopia pod tą samą nazwą jest w stream-read.js, który nie dołącza common.js.
+function tidePanelHasView(panel) {
+    return panel.screen >= 0 && panel.screen < screenCount;
+}
+
 // Główny ekran i ekran boczny. Bez drugiego monitora side = -1.
 function tideScreens() {
     var main = tideScreen(P.mainOutput, 0);

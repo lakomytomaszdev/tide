@@ -44,14 +44,23 @@ var tideDump = {screens: tideScreens(), panels: []};
 var tideAll = panels();
 for (var tideI = 0; tideI < tideAll.length; ++tideI) {
     var tidePanel = tideAll[tideI];
-    var tideEntry = {
-        id: tidePanel.id, screen: tidePanel.screen, location: tidePanel.location,
-        height: tidePanel.height, floating: tidePanel.floating, alignment: tidePanel.alignment,
-        lengthMode: tidePanel.lengthMode, hiding: tidePanel.hiding, opacity: tidePanel.opacity,
-        offset: tidePanel.offset, minimumLength: tidePanel.minimumLength,
-        maximumLength: tidePanel.maximumLength, sideBar: tideIsSideBar(tidePanel),
-        config: tideConfig(tidePanel), widgets: []
-    };
+    var tideEntry = {id: tidePanel.id, screen: tidePanel.screen, location: tidePanel.location};
+    if (tidePanelHasView(tidePanel)) {
+        tideEntry.height = tidePanel.height;
+        tideEntry.floating = tidePanel.floating;
+        tideEntry.alignment = tidePanel.alignment;
+        tideEntry.lengthMode = tidePanel.lengthMode;
+        tideEntry.hiding = tidePanel.hiding;
+        tideEntry.opacity = tidePanel.opacity;
+        tideEntry.offset = tidePanel.offset;
+        tideEntry.minimumLength = tidePanel.minimumLength;
+        tideEntry.maximumLength = tidePanel.maximumLength;
+    } else {
+        tideEntry.orphan = true;
+    }
+    tideEntry.sideBar = tideIsSideBar(tidePanel);
+    tideEntry.config = tideConfig(tidePanel);
+    tideEntry.widgets = [];
     var tideWidgets = tideSorted(tidePanel);
     for (var tideJ = 0; tideJ < tideWidgets.length; ++tideJ) {
         var tideWidget = tideWidgets[tideJ];

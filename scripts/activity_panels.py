@@ -109,7 +109,8 @@ def expected_dock(layout: dict) -> list[str]:
 
 
 def by_role(state: dict, role: str) -> list[dict]:
-    return [p for p in state.get("panels", []) if p.get("role") == role]
+    """Panele o danej roli. Panel bez widoku (`orphan`) nie ma ustawień widoku, więc nie bierze udziału w porównaniach."""
+    return [p for p in state.get("panels", []) if p.get("role") == role and not p.get("orphan")]
 
 
 def stream_differences(state: dict, layout: dict, desktop: bool, saved: dict | None = None) -> list[str]:
@@ -229,7 +230,8 @@ def describe(state: dict) -> str:
     parts = []
     for panel in state.get("panels", []):
         role = f" {panel['role']}" if panel.get("role") else ""
-        parts.append(f"{panel['id']}{role} ({panel['location']}, ekran {panel['screen']}, {panel['hiding']})")
+        shown = "bez widoku" if panel.get("orphan") else panel["hiding"]
+        parts.append(f"{panel['id']}{role} ({panel['location']}, ekran {panel['screen']}, {shown})")
     return "; ".join(parts) or "brak paneli"
 
 

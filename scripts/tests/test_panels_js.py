@@ -405,3 +405,141 @@ class SidebarScriptTest(unittest.TestCase):
         out, state = fake.run(state, panels.script("uninstall", params))
         self.assertEqual(result(out)["removed"], [top["side"]])
         self.assertEqual(len(self.sidebars(state)), 1)
+
+
+ORPHANS = (103, 118)
+PANELS_DIR = Path(__file__).resolve().parents[1] / "panels"
+# Skrypty, które jeszcze nie mają strażnika panelu bez widoku (PT-492). PT-496 skreśla stąd sidebar.js,
+# install.js i dock.js, PT-498 — order.js, uninstall.js, dock-uninstall.js i sidebar-uninstall.js, PT-497 —
+# stream.js, stream-leave.js i stream-console.js, a ostatni usuwa listę całkiem. Nowy skrypt spoza listy
+# i bez strażnika od razu oblewa test zbiorczy.
+UNGUARDED = {"sidebar.js", "sidebar-uninstall.js", "install.js", "dock.js", "dock-uninstall.js", "order.js",
+             "uninstall.js", "stream.js", "stream-leave.js", "stream-console.js"}
+
+
+def directory_scripts(directory=PANELS_DIR):
+    """Skrypty paneli z katalogu (bez common.js): lista nie jest zapisana w kodzie testu."""
+    return sorted(p.name for p in directory.glob("*.js") if p.name != "common.js")
+
+
+def guarded_scripts(directory=PANELS_DIR, unguarded=UNGUARDED):
+    return [name for name in directory_scripts(directory) if name not in unguarded]
+
+
+def unguarded_missing(directory=PANELS_DIR, unguarded=UNGUARDED):
+    return sorted(name for name in unguarded if not (directory / name).is_file())
+
+
+def run_read(name, state):
+    """Skrypt na atrapie tak, jak go woła kod: stream-read.js bez common.js (jak w silniku), reszta z common.js."""
+    from scripts import activity_panels
+    if name == "stream-read.js":
+        js = activity_panels.read_script(True)
+    else:
+        js = panels.script(name.removesuffix(".js"), panels.screens())
+    return fake.run(state, js)
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class FakePlasmashellTest(unittest.TestCase):
+    """Atrapa musi naprawdę rzucać wyjątek dla panelu bez widoku, a nie tylko go logować."""
+
+    PROBE = """
+        var tideProbe = {};
+        var tidePanel = panelById(103);
+        ["hiding", "height", "minimumLength", "maximumLength", "alignment", "lengthMode", "floating", "offset",
+         "opacity"].forEach(function (name) {
+            try { tidePanel[name]; tideProbe["get " + name] = "ok"; } catch (e) { tideProbe["get " + name] = "throws"; }
+            try { tidePanel[name] = 1; tideProbe["set " + name] = "ok"; } catch (e) { tideProbe["set " + name] = "throws"; }
+        });
+        try { screenGeometry(1); tideProbe.geometry = "ok"; } catch (e) { tideProbe.geometry = "throws"; }
+        tideProbe.screenCount = screenCount;
+        tideProbe.location = tidePanel.location;
+        print("TIDE_JSON:" + JSON.stringify(tideProbe));
+    """
+
+    def test_reading_hiding_of_a_panel_without_view_throws(self):
+        with self.assertRaisesRegex(RuntimeError, r"panel bez widoku:\s*hiding panelu 103"):
+            fake.run(fake.desktop_like_15_11(), "var x = panelById(103).hiding;")
+
+    def test_screen_geometry_of_a_missing_screen_throws(self):
+        with self.assertRaisesRegex(RuntimeError, "screenGeometry"):
+            fake.run(fake.desktop_like_15_11(), "screenGeometry(1);")
+
+    def test_all_nine_view_properties_throw_for_getter_and_setter(self):
+        out, state = fake.run(fake.desktop_like_15_11(), self.PROBE)
+        probe = result(out)
+        self.assertEqual(probe.pop("screenCount"), 1)
+        self.assertEqual(probe.pop("location"), "top", "położenie jest kontenera, nie widoku")
+        self.assertEqual(probe.pop("geometry"), "throws")
+        self.assertEqual(len(probe), 18)
+        self.assertEqual(set(probe.values()), {"throws"})
+        self.assertEqual(len(find(state, 103)["log"]), 18, "każda próba zostawia ślad, a nic się nie zapisało")
+
+    def test_panels_with_a_view_still_work_and_the_state_helper_matches_15_11(self):
+        state = fake.desktop_like_15_11()
+        self.assertEqual(state["screens"], ["HDMI-A-1"])
+        self.assertEqual({p["id"]: p["screen"] for p in state["panels"]}, {73: 0, 90: 0, 103: 1, 118: 1})
+        out, _ = fake.run(state, 'print("TIDE_JSON:" + JSON.stringify([panelById(73).hiding, screenGeometry(0).width]));')
+        self.assertEqual(result(out), ["none", 1920])
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class PanelsWithoutViewSweepTest(unittest.TestCase):
+    """Test zbiorczy: każdy skrypt paneli z katalogu, który ma już strażnika, na stanie „jak 15.11”."""
+
+    def test_guarded_scripts_come_from_the_directory_and_include_the_read_scripts(self):
+        self.assertTrue({"stream-read.js", "dump.js"} <= set(guarded_scripts()))
+
+    def test_every_guarded_script_finishes_without_touching_view_properties_of_orphans(self):
+        for name in guarded_scripts():
+            with self.subTest(script=name):
+                out, state = run_read(name, fake.desktop_like_15_11())
+                self.assertIn(MARKER, out)
+                for pid in ORPHANS:
+                    self.assertEqual(find(state, pid)["log"], [], f"{name}: panel {pid}")
+
+    def test_every_name_on_the_exception_list_exists_in_the_directory(self):
+        self.assertEqual(unguarded_missing(), [], "lista wyjątków ukrywa nazwę, której nie ma w scripts/panels/")
+
+    def test_a_stale_name_on_the_exception_list_is_caught(self):
+        self.assertEqual(unguarded_missing(unguarded=UNGUARDED | {"nie-ma-takiego.js"}), ["nie-ma-takiego.js"])
+
+    def test_a_new_script_without_a_guard_enters_the_sweep(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in directory_scripts() + ["nowy.js"]:
+                (directory / name).write_text("")
+            self.assertIn("nowy.js", guarded_scripts(directory))
+            self.assertNotIn("order.js", guarded_scripts(directory))
+            # Skreślenie skryptu z listy wyjątków (jak robią to kolejne tickety) wciąga go do przeglądu.
+            self.assertIn("order.js", guarded_scripts(directory, UNGUARDED - {"order.js"}))
+
+    def test_stream_read_marks_orphans_and_keeps_view_keys_of_the_rest(self):
+        out, _ = run_read("stream-read.js", fake.desktop_like_15_11())
+        by_id = {p["id"]: p for p in result(out)["panels"]}
+        for pid in ORPHANS:
+            self.assertEqual(set(by_id[pid]), {"id", "screen", "location", "role", "widgets", "orphan"})
+            self.assertTrue(by_id[pid]["orphan"])
+        self.assertEqual(set(by_id[73]), {"id", "screen", "location", "role", "widgets", "hiding", "height",
+                                          "minimumLength", "maximumLength"})
+
+    def test_dump_marks_orphans_and_keeps_view_keys_of_the_rest(self):
+        out, _ = run_read("dump.js", fake.desktop_like_15_11())
+        by_id = {p["id"]: p for p in result(out)["panels"]}
+        for pid in ORPHANS:
+            self.assertEqual(set(by_id[pid]), {"id", "screen", "location", "orphan", "sideBar", "config", "widgets"})
+            self.assertTrue(by_id[pid]["orphan"])
+            self.assertTrue(by_id[pid]["widgets"])
+        self.assertEqual(set(by_id[73]), {"id", "screen", "location", "height", "floating", "alignment", "lengthMode",
+                                          "hiding", "opacity", "offset", "minimumLength", "maximumLength",
+                                          "sideBar", "config", "widgets"})
+
+    def test_panels_with_a_view_read_the_same_on_two_screens_as_before(self):
+        for name in ("stream-read.js", "dump.js"):
+            out, _ = run_read(name, fake.desktop_with_tide_panels())
+            by_id = {p["id"]: p for p in result(out)["panels"]}
+            self.assertEqual(by_id[118]["hiding"], "dodgewindows")
+            self.assertEqual(by_id[118]["maximumLength"], 1042)
+            self.assertTrue(all("orphan" not in p for p in by_id.values()))
