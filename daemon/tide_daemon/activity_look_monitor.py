@@ -108,7 +108,14 @@ class ShellWatcher(QObject):
         self._watcher = QDBusServiceWatcher(SHELL, bus, flags, self)
         self._watcher.serviceRegistered.connect(lambda _name: callback(True))
         self._watcher.serviceUnregistered.connect(lambda _name: callback(False))
-        return bool(bus.interface().isServiceRegistered(SHELL).value())
+        iface = bus.interface()  # None na niepołączonej szynie
+        reply = iface.isServiceRegistered(SHELL) if iface is not None else None
+        if reply is None or not reply.isValid():
+            # Błąd albo brak szyny: nie przerywamy startu usługi, czekamy na sygnał rejestracji.
+            print("tide-daemon: wygląd aktywności: nie da się sprawdzić org.kde.plasmashell na szynie; "
+                  "czekam na jego rejestrację", flush=True)
+            return False
+        return bool(reply.value())
 
     def stop(self) -> None:
         if self._watcher is not None:
@@ -256,8 +263,7 @@ class ActivityLookMonitor(QObject):
     def _lift_breaker(self) -> None:
         self.breaker = None
         self._failures = 0
-        if self._running:
-            return  # dziennik należy wtedy do silnika, a jego pełne apply i tak przepisuje go bez klucza
+        # Wyłącznik jest włączony tylko, gdy silnik nie biegnie, więc dziennik nie należy teraz do silnika.
         data = read_journal(self.journal)
         if data.pop("breaker", None) is not None:
             self._save_journal(data)
