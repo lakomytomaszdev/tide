@@ -353,8 +353,10 @@ class PopulateTest(unittest.TestCase):
         self.assertTrue(any("plan-commit" in p for p in scale._approved_problems("K-9", state.fold(cut))))
 
     def test_every_tick_walks_the_production_roads_of_the_profile(self):
-        """Nowe role naprawdę uruchamiają w ticku `_consent_recheck` (prośby wstrzymanych i aktywnej), `_plan_next`
-        (plan w spoczynku, trzymany proces) i `trialhold.inventory` — to ramki kategorii `outside`/`plan`/`inventory`."""
+        """Nowe role naprawdę uruchamiają w ticku `_consent_recheck` (prośba aktywnej karty), `_plan_next`
+        (plan w spoczynku, trzymany proces) i `trialhold.inventory` — to ramki kategorii `outside`/`plan`/`inventory`.
+        K-125 #2 (PT-487): prośby wstrzymanych kart nie są już oceniane w ticku (pauza przed `_consent_recheck`);
+        reproduktor nadal je zakłada (7 próśb w `paused_requests`), a ich nieobecność w ocenie jest wynikiem „po”."""
         import collections
         from tide_daemon.cardflow import consent, engine as engine_mod, trialhold
         with pbr.isolated_env(self.base):
@@ -393,8 +395,9 @@ class PopulateTest(unittest.TestCase):
             outside = [service.cards[i] for i, r in enumerate(roles) if r == "outside"]
             held = service.cards[roles.index("held")]
             approved = service.cards[roles.index("approved")]
-        self.assertEqual(dict(seen["recheck"]), {**paused, **{c: 1 for c in outside}})
-        self.assertEqual(sum(seen["recheck"].values()), 7 + len(outside))
+        self.assertEqual(sum(paused.values()), 7)
+        self.assertEqual(dict(seen["recheck"]), {c: 1 for c in outside})
+        self.assertFalse(set(seen["recheck"]) & set(paused), "wstrzymana karta oceniła prośbę w ticku")
         self.assertEqual(seen["automatic"], seen["recheck"], "każda prośba przechodzi sprawdzenie zgody")
         self.assertGreaterEqual(seen["plan"][approved], 1)
         self.assertGreaterEqual(seen["plan"][held], 1)

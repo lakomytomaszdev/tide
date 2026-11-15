@@ -4063,9 +4063,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
-            elif result == "denied":
+            elif result == "denied" and not st.paused:
+                # K-125 PT-487: pauza ze stanu ticku w pamięci, przed oceną prośby — wstrzymana karta nie czyta
+                # Tablicy z powodu prośby i nie pisze w dzienniku; ocena rusza w pierwszym ticku po wznowieniu.
+                # Panel rozstrzyga prośbę nadal (`resolve_step` sprawdza reguły świeżo).
                 self._consent_recheck(card, step, done)
-            else:
+            elif result == "question":
                 self._env_question(card, step, done)
             return
         if result == "stopped" and done.get("reason") == "interactive-closed":

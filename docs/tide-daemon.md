@@ -3355,7 +3355,11 @@ poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to p
 automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
 sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
 według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`
-`denied-before` albo `paused`. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
+`denied-before` albo `paused`. Od K-125 PT-487 tick nie ocenia ponownie prośby kroku ticketu ani planowania
+we wstrzymanej karcie: pauza jest sprawdzana na stanie ticku przed oceną, bez odczytu Tablicy i bez zapisu
+(także bez `outside.auto-skipped` z `paused`), a ocena rusza w pierwszym ticku po wznowieniu. `paused` zapisuje
+już tylko wynik kroku, który przychodzi we wstrzymanej karcie, oraz próba testów po scaleniu. Prośba pozostaje
+rozstrzygalna w panelu. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
 kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` z `reason: denied-before`).
 `ResolveCardStep` z `deny` na kroku z automatyczną zgodą przed `outside.started` zapisuje
 `outside.decision-invalidated` (`reason: denied`) i odmowę, a proces nie startuje; po starcie zwraca
