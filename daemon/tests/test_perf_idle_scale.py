@@ -510,6 +510,29 @@ class ShapeTest(unittest.TestCase):
             self.assertGreater(sizes[index], 0.7 * wanted, (index, sizes[index], wanted))
             self.assertLess(sizes[index], 1.3 * wanted, (index, sizes[index], wanted))
 
+    def test_file_system_shape_is_reproduced_and_the_checks_still_pass(self):
+        """`fs` z kształtu: katalogi i pliki `flow/<karta>/steps` oraz rozmiar `cards/<karta>.md` jak na produkcji."""
+        cards = [{**c, "card": f"K-{i + 1}"} for i, c in enumerate(SHAPE["cards"])]
+        fs = {"flow": {c["card"]: {"files": 7 + i, "dirs": 3, "bytes": 0} for i, c in enumerate(cards)},
+              "cardFiles": {c["card"]: 5_000 + 100 * i for i, c in enumerate(cards)}}
+        shape = {**SHAPE, "cards": cards, "fs": fs}
+        with pbr.isolated_env(self.base):
+            service = pbr.Service(self.base, len(cards), box_file=False)
+            self.addCleanup(service.close)
+            stats = scale.populate(service, self.base, 0.0, shape=shape)
+            root, names = service.root, list(service.cards)
+            counts = []
+            for name in names:
+                steps = os.path.join(root, "flow", name, "steps")
+                tree = [(top, files) for top, _dirs, files in os.walk(steps)]
+                counts.append((sum(len(f) for _t, f in tree), len(os.listdir(steps))))
+            sizes = [os.path.getsize(os.path.join(root, "cards", name + ".md")) for name in names]
+        self.assertEqual(stats["problems"], [])
+        self.assertEqual(counts, [(7 + i, 3) for i in range(len(cards))])
+        self.assertEqual(stats["fsShape"]["files"], sum(7 + i for i in range(len(cards))))
+        for i, size in enumerate(sizes):
+            self.assertGreaterEqual(size, 5_000 + 100 * i)
+
     def test_shape_with_a_different_card_count_is_rejected(self):
         with pbr.isolated_env(self.base):
             service = pbr.Service(self.base, 5, box_file=False)

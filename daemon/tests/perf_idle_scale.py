@@ -786,6 +786,43 @@ def _approved_problems(card, st):
     return problems
 
 
+FS_FILE_BYTES = 48          # rozmiar syntetycznego pliku w drzewie `flow/<karta>/` (produkcja: pliki wejścia/wyniku kroków)
+
+
+def apply_fs_shape(root, cards, shape):
+    """Kształt systemu plików Tablicy z produkcji (`perf_prod_shape.fs_shape`; same liczby), dane syntetyczne.
+
+    Dla każdej karty: w `flow/<karta>/steps/` powstaje tyle katalogów i małych plików, ile ma karta produkcji (poza
+    dziennikiem), a plik `cards/<karta>.md` rośnie do produkcyjnego rozmiaru (dopisany tekst po treści karty).
+    Zwraca liczby faktycznie utworzone: {"files", "dirs", "cardBytes"}. Bez `shape["fs"]` niczego nie robi."""
+    fs = shape.get("fs") or {}
+    flow, sizes = fs.get("flow") or {}, fs.get("cardFiles") or {}
+    made = {"files": 0, "dirs": 0, "cardBytes": 0}
+    for card, prod in zip(cards, (c["card"] for c in shape["cards"])):
+        want = flow.get(prod) or {}
+        base = os.path.join(root, "flow", card, "steps")
+        dirs = [os.path.join(base, f"s{n:04d}") for n in range(int(want.get("dirs") or 0))]
+        for path in dirs:
+            os.makedirs(path, exist_ok=True)
+        made["dirs"] += len(dirs)
+        if dirs:
+            for n in range(int(want.get("files") or 0)):
+                with open(os.path.join(dirs[n % len(dirs)], f"f{n:05d}.txt"), "w", encoding="utf-8") as fh:
+                    fh.write("x" * FS_FILE_BYTES)
+                made["files"] += 1
+        path = os.path.join(root, "cards", card + ".md")
+        target = int(sizes.get(prod) or 0)
+        if target and os.path.isfile(path):
+            size = os.path.getsize(path)
+            if size < target:
+                filler = "\n<!-- " + "synthetic filler text for production sized card files. " * 4 + "-->\n"
+                text = (filler * (((target - size) // len(filler)) + 1))[:target - size]
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(text)
+            made["cardBytes"] += os.path.getsize(path)
+    return made
+
+
 def populate(service, base, journal_mb, seed=105, now=None, shape=None):
     """Zastępuje dzienniki kart `service.cards` dziennikami o skali produkcji; zwraca opis danych (JSON).
 
@@ -825,6 +862,7 @@ def populate(service, base, journal_mb, seed=105, now=None, shape=None):
         text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events)
         _write_text(journal.mirror_path(card), text)
         _write_text(journal.path(card), text)
+    fs_stats = apply_fs_shape(service.root, cards, shape) if shape is not None and shape.get("fs") else None
     fresh = Journal(service.root)
     problems, events = verify(fresh, cards)
     stats = {"roles": {role: roles.count(role) for role in sorted(set(roles))}, "events": events, "problems": problems}
@@ -833,6 +871,8 @@ def populate(service, base, journal_mb, seed=105, now=None, shape=None):
     problems.extend(role_problems)
     if problems:
         raise RuntimeError("dzienniki skali nie przechodzą kontroli: " + "; ".join(problems[:5]))
+    if fs_stats:
+        stats["fsShape"] = fs_stats
     subprocess.run(["git", "-C", service.root, "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", service.root, "-c", "commit.gpgsign=false", "commit", "-q", "-m",
                     "journals: production scale"], check=True, capture_output=True)
