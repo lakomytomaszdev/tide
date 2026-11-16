@@ -121,6 +121,47 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Terminal (Konsola, #26):** karty jak pigułki kafelków (Geist, tło `card`, promień `tile`, ramka w kolorze tekstu o kryciu `opacity.outline`, aktywna z obwódką teal na tle teal ~0,11); karta agenta „● projekt · gałąź” z paskiem stanu pod tytułem (teal pracuje, brzoskwinia „czeka”, „○” skończył bez koloru). Pole terminala z kryciem `opacity.panel` i rozmyciem, Geist Mono `terminal.fontPt`, margines `terminal.marginPx`, bez paska przewijania i menu, w prawym dolnym rogu trzy fale z kryciem `terminal.watermark.opacity`. Prompt: chipy z tłem pastelu przesuniętym o 84% w stronę tła okna i tekstem w pastelu (projekt na `card`, gałąź lawenda, worktree sky, zmiany masło, agent w kolorze stanu), godzina po prawej, „›” teal (róż po błędzie). Pasek statusu Claude Code tym samym językiem, limity w kolorach poziomu jak w widżecie Limity AI.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
 
+## Standard widoków okna Tide (K-128)
+
+Wspólny zestaw komponentów okna Tide z makiety S-9 (`docs/agents/k-128/makieta/index.html`). Komponenty są
+w `widgets/lib` (`Tide.*`), a kolory, promienie i czcionki — z palety.
+
+### Tekst
+
+Każdy dłuższy tekst (opis karty, „Uwaga” i „Powód kroku” w decyzji, komentarze agenta i usługi) pokazuje
+**`Tide.Prose`**: `TextEdit` tylko do odczytu z RichText, z zaznaczaniem myszą. Kopiowanie (Ctrl+C) daje czysty tekst
+bez znaczników. Akapit ma najwyżej ok. 80 znaków szerokości (`measure`), interlinię 1,6 i 8 px odstępu pod spodem.
+`collapsedLines` zwija dłuższy tekst do podanej liczby linii z „więcej”/„mniej”. HTML liczy się tylko przy zmianie
+tekstu, trybu, renderera albo tła (`renders`), więc długie listy nie renderują go przy każdym przebudowaniu.
+
+HTML robi **`prose.js`** (`render(text, {markdown, colors})`, kolory z `colors(Tokens, tło)`):
+
+- **Bloki:** akapity (pusta linia rozdziela, pojedynczy koniec linii zostaje złamaniem), listy `-`/`*`/`1.`, cytaty `>`
+  (lawenda ~0,06 z wcięciem), kod w trzech backtickach (tekst ~0,04, Geist Mono). Zdanie, które po dwukropku ma
+  co najmniej trzy człony rozdzielone `; `, staje się listą; dwa człony zostają akapitem.
+- **Wyróżnienia w linii:** `` `polecenie` `` — masło na maśle ~0,09 (`code.cmd`); ścieżka w backtickach albo bez nich
+  (`apps/board/qml/CardPanel.qml`, `~/.docker/config.json`, `docs/x/`, `plik.qml`) — sky na sky ~0,10 (`code.p`);
+  adres i domena (`https://…`, `cdn.jsdelivr.net`) — lawenda (`code.url`); klawisze (`Ctrl+Enter`, `Esc`, `F5`) —
+  `kbd` na tekście ~0,07, każdy klawisz osobno; numer karty `K-128` — sky, Geist Mono, 600 (`.cref`); numer ticketu
+  `PT-501`, `RECI-38` — sky, Geist Mono (`.tref`). Tła wyróżnień są mieszane z tłem tekstu; każda para ma kontrast
+  co najmniej 4,5:1 na tłach `view`, `window`, `card`, `titlebar` i `panel` (test `widgets/tests/test_prose.py`).
+- **Tryb Markdown** (`markdown: true`): dodatkowo nagłówki `#`–`######` (bez dosłownych krzyżyków), **pogrubienie**,
+  *kursywa*, linia `---` i linki `[tekst](https://…)` jako tekst z adresem w lawendzie obok. Gdy gospodarz ma własny
+  renderer Markdown (`renderer`, np. `backend.renderMarkdown` na Tablicy), `Tide.Prose` używa jego; bez niego
+  (Sesje) — `prose.js` w trybie Markdown.
+
+**Tekst agenta nigdy nie wstrzykuje HTML ani linków.** `prose.js` najpierw escapuje cały tekst (`&`, `<`, `>`, `"`, `'`),
+a dopiero potem dokłada znaczniki ze stałymi atrybutami (`class`, `style` z palety); dopasowany tekst nigdy nie
+trafia do atrybutu. Wynik nie ma `href` ani `<img>` — także link Markdown (`[x](javascript:…)` zostaje samym tekstem,
+`[x](http://…)` — tekstem z adresem), więc nic nie jest klikalne i widok nie robi żądań sieciowych. Schemat
+`tide-card:` jest zarezerwowany dla podglądu karty po numerze (`Tide.CardRef`, etap A2) i dziś nie powstaje.
+RichText występuje tylko w `Tide.Prose` i w `MarkdownBlock.qml` Tablicy (HTML z `backend.renderMarkdown`); jedyny
+wyjątek sprzed standardu — raport w oknie Sprawy (`IssuesView.qml`, `backend.renderReport` z obrazami sprawy) —
+przechodzi na `Tide.Prose` w przeglądzie pozostałych tekstów (etap A2). Pilnuje tego test statyczny.
+
+Pierwszy odbiorca: pole „dlaczego” decyzji karty (`DecisionForm.qml`, linie „Uwaga:” i „Powód kroku:”) w oknie
+decyzji i w „Twój ruch” pełnej karty.
+
 ## Ikony
 
 Ikony aplikacji są okrągłe (baza: McMojave-circle-dark). Nakładka „Tide” dziedziczy po bazie i dokłada tylko różnice: aliasy (Toolbox JetBrains, błędne `code`), kafelki z oryginalnych ikon (okrągłe zostają, pełne grafiki wycięte w koło, przezroczyste kształty na tle w swoim kolorze), foldery w tealu, glify w pastelach dla aplikacji bez ikony. `tide-icons audit` pokazuje pokrycie, `tide-icons sync` uzupełnia nakładkę.

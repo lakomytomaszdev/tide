@@ -209,18 +209,12 @@ ColumnLayout {
         font.weight: Font.DemiBold
         wrapMode: Text.Wrap
     }
-    TextEdit {
-        readOnly: true
-        selectByMouse: true
-        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
+    // „Dlaczego” z liniami „Uwaga:” i „Powód kroku:” (tekst agenta i usługi): standard tekstu K-128 — escapowany
+    // tekst z wyróżnieniami ścieżek, poleceń, adresów, klawiszy i numerów kart, bez linków (Tide.Prose, prose.js).
+    Tide.Prose {
         objectName: "decisionWhy"
         Layout.fillWidth: true
         text: form.decision ? form.decision.why : ""
-        textFormat: Text.PlainText
-        color: Tide.Tokens.textSecondary
-        font.family: Tide.Theme.uiFamily
-        font.pointSize: Tide.Tokens.fontSizePt * 1.05
-        wrapMode: Text.Wrap
     }
     Rectangle {
         objectName: "decisionCommand"
