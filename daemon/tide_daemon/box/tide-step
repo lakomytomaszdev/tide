@@ -18,7 +18,9 @@
 # Bez TIDE_STEP i bez czyszczenia środowiska (etap 1: `isolation: none`, środowisko podaje jednostka). Polecenie
 # dostaje stdin z /dev/null i dopisuje wyjście do pliku wyniku. Kod wyjścia trafia atomowo (plik `.tmp` i `mv`)
 # do pliku exit-code; SIGTERM (zatrzymanie jednostki, przekroczony RuntimeMaxSec) zapisuje od razu `zatrzymane`,
-# przekazuje sygnał poleceniu i czeka na jego koniec — wynik nie zależy od klienta `systemd-run --wait`.
+# przekazuje sygnał poleceniu i czeka na jego koniec — wynik nie zależy od klienta `systemd-run --wait`. Wczesny
+# zapis chroni wynik przed SIGKILL po TimeoutStopSec; `zatrzymane` jest wynikiem końcowym dopiero po końcu jednostki
+# (HostRunner.command_result).
 set -u
 umask 077
 
@@ -48,10 +50,11 @@ if [ "${1:-}" = --command ]; then
         code=$?
         kill -0 "$child" 2>/dev/null || break
     done
+    # Od razu po końcu polecenia: późny SIGTERM nie zamienia już normalnego końca w `zatrzymane`.
+    recorded=1
     if [ -n "$stopped" ]; then
         exit 143
     fi
-    recorded=1
     record "$code"
     exit "$code"
 fi

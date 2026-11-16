@@ -3,7 +3,8 @@ w usłudze, nie kopia argv) uruchamia przejściową usługę `tide-cmd-<attempt>
 
 Przypadki z kartki:
   a) zwykłe zakończenie — kod z pliku `exit-code` (i środowisko oraz `${…}` przechodzą do polecenia nietknięte),
-  b) `systemctl --user stop` jednostki — `exit-code` zapisany, wynik `zatrzymane`,
+  b) `systemctl --user stop` jednostki — `exit-code` zapisany, wynik `zatrzymane`; polecenie przeczekujące SIGTERM
+     (`b-term`) — wynik dopiero po końcu jednostki, nie przy samym zapisie `zatrzymane`,
   c) przekroczenie `RuntimeMaxSec` (krótki limit) — wynik rozstrzygnięty (`zatrzymane`),
   d) zabicie klienta `systemd-run --wait` w trakcie (SIGTERM jak przy restarcie usługi i SIGKILL) — jednostka
      biegnie dalej, wynik z pliku po jej końcu,
@@ -125,6 +126,30 @@ class RealSystemdCommandTest(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stderr)
         self.assertEqual(self.exit_text(handle), runner_mod.STOPPED)
         self.assertEqual(value, runner_mod.STOPPED)
+
+    def test_b_stopped_waits_for_processes_ignoring_term(self):
+        # Review PT-479 r1, MAJOR 1: polecenie przeczekuje SIGTERM 3 s. `exit-code` ma `zatrzymane` od razu, ale
+        # wynik końcowy dopiero po końcu jednostki (deactivating → brak), jak PT-315 na dawnej drodze.
+        handle = self.start('trap "sleep 3; exit 0" TERM; while :; do sleep 0.1; done')
+        self.assertTrue(self.wait_state(handle, "active"))
+        stop = subprocess.run(["systemctl", "--user", "stop", "--no-block", handle.unit + ".service"],
+                              capture_output=True, timeout=60)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        end = time.monotonic() + 10
+        while time.monotonic() < end and self.exit_text(handle) != runner_mod.STOPPED:
+            time.sleep(0.05)
+        alive = self.runner.command_state(handle.unit)
+        during = self.result(handle)
+        value = self.wait_result(handle)
+        elapsed = time.monotonic() - self.started
+        client = handle.proc.wait(timeout=30)
+        self.report("b-term", handle, value, client)
+        print(f"PT479 b-term: exit-code=zatrzymane przy jednostce {alive}, wynik w trakcie={during!r}, "
+              f"rozstrzygnięte po {elapsed:.1f} s", file=sys.stderr, flush=True)
+        self.assertEqual(alive, "active")
+        self.assertIsNone(during)
+        self.assertEqual(value, runner_mod.STOPPED)
+        self.assertGreaterEqual(elapsed, 2.5)
 
     def test_c_runtime_max_sec_resolves(self):
         handle = self.start("sleep 300", timeout=2)

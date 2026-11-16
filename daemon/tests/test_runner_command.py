@@ -167,6 +167,19 @@ class ExitFileTest(Case):
             with self.subTest(state=state), self.states(state):
                 self.assertIsNone(runner.command_result("tide-cmd-a", missing, age=9, grace=5, state_timeout=1))
 
+    def test_stopped_file_is_final_only_after_unit_end(self):
+        # Review PT-479 r1, MAJOR 1: opakowanie zapisuje `zatrzymane` od razu przy SIGTERM, a polecenie ignorujące
+        # TERM żyje do TimeoutStopSec — kolejka i krok czekają na koniec jednostki (jak PT-315).
+        path = self.write("zatrzymane\n")
+        runner = HostRunner()
+        for state in ((0, "active\n"), (3, "deactivating\n"), (1, ""), (3, "")):
+            with self.subTest(state=state), self.states(state):
+                self.assertIsNone(runner.command_result("tide-cmd-a", path, age=0, grace=5, state_timeout=1))
+        for state in ((3, "inactive\n"), (3, "failed\n"), (4, "")):
+            with self.subTest(state=state), self.states(state):
+                self.assertEqual(runner.command_result("tide-cmd-a", path, age=0, grace=5, state_timeout=1),
+                                 runner_mod.STOPPED)
+
     def test_unit_state_is_read_for_the_service_unit(self):
         seen = []
 

@@ -40,6 +40,7 @@ class CommandsState:
     held: dict = field(default_factory=dict)     # krok → (zajęte, limit) albo zdanie o ciszy: ciężkie wstrzymane
     seeded: bool = False                         # kolejka odtworzona z dzienników po restarcie
     logged: dict = field(default_factory=dict)   # krok → ostatni powód czekania wypisany w dzienniku usługi
+    fenced: set = field(default_factory=set)     # jednostki `tide-cmd-*`, którym zaporę zatrzymania już wysłano
 
 
 class StateAlias:
@@ -304,14 +305,19 @@ def outside_collect(ports,state: CommandsState, card: str, name: str, started: d
         # (liczba albo `zatrzymane`); kod klienta `systemd-run --wait` nie jest wynikiem.
         code = ports.unit_result(started)
         if code is None:
-            if ports.wall_clock() - _epoch(started.get("ts")) >= timeout + stop_margin:
-                # Zapora za RuntimeMaxSec (np. jednostka zawieszona w zatrzymaniu): zatrzymanie bez wyniku —
-                # wynik i tak przyjdzie z pliku opakowania albo z braku jednostki w kolejnym ticku.
+            if (ports.wall_clock() - _epoch(started.get("ts")) >= timeout + stop_margin
+                    and started["unit"] not in state.fenced):
+                # Zapora za RuntimeMaxSec (np. jednostka zawieszona w zatrzymaniu): zatrzymanie bez wyniku, raz
+                # i po świeżym odczycie (K-105 PT-415) — wynik i tak przyjdzie z pliku opakowania po końcu jednostki.
+                if confirm is not None and not confirm():
+                    return None
+                state.fenced.add(started["unit"])
                 ports.unit_stop(started["unit"])
             return None
         if confirm is not None and not confirm():
             return None
         tail = read_tail(started.get("log") or "", tail_size)
+        state.fenced.discard(started["unit"])
         state.active.pop(name, None)
         ports.outside_heavy_state().pop(name, None)
         ports.outside_quiet_state().pop(name, None)

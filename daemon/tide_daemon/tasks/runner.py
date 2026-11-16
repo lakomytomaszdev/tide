@@ -127,7 +127,8 @@ class Runner(Protocol):
     def command_result(self, unit: str, exit_file: str, *, age: float, grace: float,
                        state_timeout: float) -> int | str | None:
         """Wynik polecenia (liczba albo `zatrzymane`) wyłącznie z pliku `exit-code`; None — polecenie trwa albo
-        stan jednostki nieznany. Jednostka bez procesów i bez pliku po `grace` sekundach od startu (`age`) —
+        stan jednostki nieznany. `zatrzymane` z pliku jest wynikiem dopiero po końcu jednostki (procesy polecenia
+        mogą jeszcze żyć po SIGTERM). Jednostka bez procesów i bez pliku po `grace` sekundach od startu (`age`) —
         `zatrzymane`."""
 
     def stop_command(self, unit: str) -> None:
@@ -216,6 +217,11 @@ class HostRunner:
     def command_result(self, unit: str, exit_file: str, *, age: float, grace: float,
                        state_timeout: float) -> int | str | None:
         code = read_command_exit(exit_file)
+        if code == STOPPED:
+            # Opakowanie zapisuje `zatrzymane` od razu przy SIGTERM, a procesy polecenia mogą jeszcze żyć do
+            # `TimeoutStopSec` (jak PT-315): wynik końcowy dopiero, gdy jednostki już nie ma — dotąd czekanie, żeby
+            # nie zwolnić kolejki ani nie wznowić kroku obok wciąż piszącego polecenia. `unknown` też znaczy czekanie.
+            return STOPPED if self.command_state(unit, timeout=state_timeout) == "gone" else None
         if code is not None:
             return code
         if age < grace:

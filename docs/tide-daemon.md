@@ -3367,11 +3367,15 @@ bez zmiennych menedżera usług (`INVOCATION_ID`, `NOTIFY_SOCKET`…). Etap 1: `
 
 Opakowanie zapisuje `exit-code` atomowo (`.tmp` i `mv`): kod polecenia przy zwykłym końcu, a przy SIGTERM
 (zatrzymanie jednostki, przekroczony `RuntimeMaxSec`) od razu `zatrzymane`; potem przekazuje sygnał poleceniu i czeka
-na jego koniec. Wynik pochodzi wyłącznie z tego pliku (`HostRunner.command_result`: liczba albo `zatrzymane`,
-`OUTSIDE_STOPPED`); klient `systemd-run --wait` jest tylko obserwatorem — jego kod wyjścia i śmierć (np. restart
-usługi Tide) nie są wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTSIDE_STOP_GRACE` od
-startu → `zatrzymane`; nieznany stan systemctl → czekanie. Zapora: `COMMAND_STOP_MARGIN` s po limicie bez wyniku
-silnik zatrzymuje jednostkę (`systemctl --user stop --no-block`), wynik i tak przychodzi z pliku.
+na jego koniec (wczesny zapis chroni wynik przed SIGKILL po `TimeoutStopSec`). `zatrzymane` z pliku jest wynikiem
+końcowym dopiero, gdy jednostki już nie ma (`gone`): dopóki procesy polecenia żyją (`active`/`deactivating`) albo stan
+jest nieznany, silnik czeka — nie zwalnia miejsca w kolejce i nie wznawia kroku (jak PT-315 na dawnej drodze).
+Wynik pochodzi wyłącznie z tego pliku (`HostRunner.command_result`: liczba albo `zatrzymane`, `OUTSIDE_STOPPED`);
+klient `systemd-run --wait` jest tylko obserwatorem — jego kod wyjścia i śmierć (np. restart usługi Tide) nie są
+wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTSIDE_STOP_GRACE` od startu →
+`zatrzymane`; nieznany stan systemctl → czekanie. Zapora: `COMMAND_STOP_MARGIN` s po limicie bez wyniku silnik raz,
+po świeżym odczycie dziennika, zatrzymuje jednostkę (`systemctl --user stop --no-block`); wynik i tak przychodzi
+z pliku.
 
 Zapis: `command.started` po uzyskaniu uchwytu (jak dawniej `outside.started` po `Popen`, pod tą samą blokadą dziennika;
 trwały zamiar przed startem to PT-485) i `command.finished`, oba z `attempt`, `executor: host-isolated`,
