@@ -68,6 +68,12 @@
     "size": 12,
     "opacity": 0.3
   },
+  "scrollbar": {
+    "track": 0.04,
+    "thumb": 0.3,
+    "thumbActive": 0.75,
+    "width": 10
+  },
   "lockscreen": {
     "clockPx": 96,
     "clockWeight": 600,

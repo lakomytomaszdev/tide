@@ -34,6 +34,11 @@ LIMITY_KEY = "X-Tide-LimityConfig"
 LIMITY_DEFAULT_PORT = 41817  # domyślny port QuotaApp (scripts/install.sh w tamtym repo)
 
 
+def with_alpha(color: str, alpha: float) -> str:
+    """Kolor #rrggbb z kryciem 0–1 jako #aarrggbb (zapis kolorów QML)."""
+    return "#%02x%s" % (round(alpha * 255), color.lstrip("#"))
+
+
 def palette_qml(palette: dict, singleton: bool = True) -> str:
     """Płaski obiekt QML z palety: backgroundCard, textMuted, teal, working, radiusCard, opacityPopup…
 
@@ -70,6 +75,15 @@ def palette_qml(palette: dict, singleton: bool = True) -> str:
     props.append(("string", "fontUi", fonts.get("ui", "")))
     props.append(("string", "fontMono", fonts.get("mono", "")))
     props.append(("real", "fontSizePt", fonts.get("uiSizePt", 10)))
+    # Pasek przewijania Tide.ScrollBar (K-128): tor i uchwyt to kolor tekstu z krycia z palety, uchwyt najechany
+    # albo przeciągany to akcent; szerokość w px. Osobny blok na końcu, żeby nie przestawiać istniejących tokenów.
+    scrollbar = palette.get("scrollbar")
+    if scrollbar:
+        text_primary = palette.get("text", {}).get("primary", "#ffffff")
+        props.append(("color", "scrollbarTrack", with_alpha(text_primary, scrollbar["track"])))
+        props.append(("color", "scrollbarThumb", with_alpha(text_primary, scrollbar["thumb"])))
+        props.append(("color", "scrollbarThumbActive", with_alpha(palette["accent"], scrollbar["thumbActive"])))
+        props.append(("int", "scrollbarWidth", scrollbar["width"]))
 
     lines = [
         "// Wygenerowane z palety (widgets/stage.py) — nie edytować ręcznie.",

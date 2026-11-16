@@ -29,3 +29,4 @@ ActivityLook 1.0 ActivityLook.qml
 ScenesCard 1.0 ScenesCard.qml
 StreamConsole 1.0 StreamConsole.qml
 ChatView 1.0 ChatView.qml
+ScrollBar 1.0 ScrollBar.qml
