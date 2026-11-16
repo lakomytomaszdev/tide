@@ -7922,6 +7922,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_history(card, step, command=requested_command)
             # Rezerwacja budżetu z bieżącej decyzji kolejki (`outside_ready`: klasa policzona przed przyjęciem).
             heavy, exclusive = self._outside_class(card, step, requested_command)
+            try:
+                # Miejsce projektu w rezerwacji jest informacją (zajętość liczy `outside_busy` z karty); błąd
+                # odczytu Tablicy nie blokuje startu, jak przed PT-485 (wtedy pole puste).
+                place = self._project(card)[1].slug
+            except Exception:
+                place = ""
             fields = {"step": name, "ticket": step.get("ticket") or "", "command": command, "unit": files.unit,
                       "log": files.log, "exitFile": files.exit_file, "worktree": worktree, "head": head,
                       "rerunOf": rerun_of, "attempt": attempt, "executor": runner_mod.EXECUTOR,
@@ -7929,7 +7935,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # Jeden zapis zamiaru przed `run_command` (jedyna droga startu jednostki polecenia kroku). Miejsce
             # i kolejka ciężkich są zajęte od tej chwili do `command.finished` (także `reason: not-started`).
             self.journal.append(card, "command.intent", **fields, heavy=bool(heavy), exclusive=bool(exclusive),
-                                project=self._project(card)[1].slug)
+                                project=place)
             if self._outside_active is None:
                 self._outside_active = {}
             self._outside_active[name] = (card, files.unit)

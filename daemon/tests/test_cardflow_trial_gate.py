@@ -598,6 +598,10 @@ class EngineGateTest(unittest.TestCase):
         spawn.assert_called_once()
         # K-109 PT-479: prośba kroku startuje przez Runner.run_command i zapisuje przebieg `command.*`.
         self.assertEqual(self.journal.read("K-60")[-1]["type"], "command.started")
+        # K-109 PT-485: zamiar przed startem, także gdy Tablica nie podaje projektu (pole miejsca puste).
+        intent = self.journal.read("K-60")[-2]
+        self.assertEqual((intent["type"], intent["attempt"], intent["project"]),
+                         ("command.intent", self.journal.read("K-60")[-1]["attempt"], ""))
 
 
 class PublicGateTest(unittest.TestCase):
