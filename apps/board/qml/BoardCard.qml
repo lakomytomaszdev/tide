@@ -412,8 +412,8 @@ Rectangle {
             // Po starcie karta czeka w Do zrobienia, aż koordynator ruszy (PT-5) — wtedy „ponownie” (przycisk tonowany).
             readonly property bool relaunch: (root.c.launched || "") !== ""
             text: relaunch ? "Uruchom ponownie…" : "Uruchom agenta…"
-            variant: relaunch ? "normal" : "primary"
-            tone: relaunch ? Tide.Tokens.accent : "transparent"
+            // Akcja powtarzana na każdym kafelku, więc nie `primary` (najwyżej jeden główny przycisk w widoku).
+            tone: Tide.Tokens.accent
             onClicked: root.launchRequested()
         }
         Tide.Button {
