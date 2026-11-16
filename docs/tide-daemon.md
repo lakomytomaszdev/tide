@@ -6637,6 +6637,9 @@ Polecona akcja zależy od werdyktu: brak uwag → „Zatwierdź plan”; blocker
 uwagi do poprawy”; nieznany werdykt → żadna nie jest polecona. Zatwierdzenie mimo uwag działa zawsze, a jego
 skutek jest opisany („Mimo N blokujących uwag … uwagi nie zostaną poprawione”). `EditCardPlan` z `action: return`
 przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do planującego trafia tylko to.
+Po automatycznej poprawce (`REQUEST_CHANGES` i `corrected`) decyzja ma `findingsApplied: true`: uwagi dotyczą
+wersji sprzed poprawki i są już naniesione, więc żadna nie ma `selected`, polecone jest zatwierdzenie, a odesłanie
+nie niesie uwag (K-130). Bez poprawki `findingsApplied` jest `false`.
 
 `EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony

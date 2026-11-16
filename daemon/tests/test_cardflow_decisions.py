@@ -13,6 +13,7 @@ DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happen
                  "freeText", "reply", "fault", "technical", "findings"}
 PERMISSION_KEYS = {"commands", "otherTitle", "otherHint"}       # PT-124: tylko przy zgodzie na polecenie
 QUESTION_KEYS = {"copyCommands"}                                # 04.11: polecenia z pytania do skopiowania
+PLAN_APPROVAL_KEYS = {"findingsApplied"}                        # K-130: uwagi naniesione automatyczną poprawką
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
 # Pola `derived.flow` z czasów przed oknem decyzji; usunął je PT-135.
@@ -60,7 +61,7 @@ def plan_events(**reviewed):
 class ContractTest(unittest.TestCase):
     def assert_contract(self, decision):
         extra = PERMISSION_KEYS if decision["kind"] == "permission" else QUESTION_KEYS if decision["kind"] == "question" \
-            else set()
+            else PLAN_APPROVAL_KEYS if decision["kind"] == "plan-approval" else set()
         self.assertEqual(set(decision), DECISION_KEYS | extra)
         self.assertIn(decision["kind"], KINDS)
         self.assertTrue(decision["happened"].strip())
@@ -599,6 +600,33 @@ class CorrectedPlanReviewTest(unittest.TestCase):
         self.assertEqual(recommended, ["approve"])
         returned = next(o for o in decision["options"] if o["id"] == "return")
         self.assertEqual(returned["params"]["findings"], [])
+
+    def test_findings_of_a_revised_plan_are_applied_not_preselected(self):
+        # 16.11, K-129/K-130: po poprawce okno pokazywało uwagi sprzed poprawki zaznaczone „do poprawy”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        findings = [{"severity": "blocker", "text": "graf blokerów"}, {"severity": "major", "text": "brak testu"},
+                    {"severity": "nit", "text": "literówka"}]
+        events = plan_events(verdict="REQUEST_CHANGES", reviewer="Sonnet", findings=findings, corrected=True)
+        [decision] = build_decisions(fold(events.items))
+        ContractTest().assert_contract(decision)
+        self.assertEqual([f["selected"] for f in decision["findings"]], [False, False, False])
+        self.assertIs(decision["findingsApplied"], True)
+        returned = next(o for o in decision["options"] if o["id"] == "return")
+        self.assertEqual(returned["params"]["findings"], [])
+
+    def test_findings_of_an_unrevised_plan_preselect_blockers_and_majors(self):
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        findings = [{"severity": "blocker", "text": "graf blokerów"}, {"severity": "major", "text": "brak testu"},
+                    {"severity": "nit", "text": "literówka"}]
+        events = plan_events(verdict="REQUEST_CHANGES", reviewer="Sonnet", findings=findings)
+        [decision] = build_decisions(fold(events.items))
+        ContractTest().assert_contract(decision)
+        self.assertEqual([f["selected"] for f in decision["findings"]], [True, True, False])
+        self.assertIs(decision["findingsApplied"], False)
+        returned = next(o for o in decision["options"] if o["id"] == "return")
+        self.assertEqual([f["text"] for f in returned["params"]["findings"]], ["graf blokerów", "brak testu"])
 
 
 class PlanWorkInProgressTest(unittest.TestCase):
