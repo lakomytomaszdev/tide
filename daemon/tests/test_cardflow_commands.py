@@ -22,6 +22,11 @@ OUTSIDE_METHODS = (
     "_outside_recheck", "_outside_recheck_rules", "_outside_busy", "_outside_heavy_state", "_outside_quiet_state",
     "_outside_heavy_of", "_outside_quiet_of", "_outside_class", "_outside_describe", "_outside_behind",
     "_outside_log", "_outside_exit", "_outside_still_allowed", "_outside_launch")
+# K-109 PT-484: 12 metod próby testów po scaleniu — logika w commands.py, w silniku wrappery.
+MERGE_CHECK_METHODS = (
+    "_merge_checks", "_merge_check_waiting", "_merge_check_step", "_merge_check_history", "_merge_check_run",
+    "_merge_check_finish", "_merge_check_still_allowed", "_merge_check_head", "_merge_check_start",
+    "_merge_check_repo", "_merge_check_targets", "_merge_check_contract")
 
 
 def ports(**given):
@@ -85,6 +90,113 @@ class ModuleBoundaryTest(unittest.TestCase):
         bare = Owner()      # silnik zbudowany przez __new__ (testy): pusty stan przy pierwszym dostępie
         self.assertEqual(bare._outside_waiting, {})
         self.assertIsInstance(bare.__dict__["_commands_state"], commands.CommandsState)
+
+    def test_engine_keeps_only_thin_wrappers_for_all_merge_check_methods(self):
+        engine = ast.parse((CARDFLOW / "engine.py").read_text(encoding="utf-8"))
+        flow = next(n for n in engine.body if isinstance(n, ast.ClassDef) and n.name == "FlowEngine")
+        methods = {n.name: n for n in flow.body if isinstance(n, ast.FunctionDef)
+                   and (n.name.startswith("_merge_check_") or n.name == "_merge_checks")}
+        self.assertEqual(sorted(methods), sorted(MERGE_CHECK_METHODS))
+        defined = {n.name for n in self.tree.body if isinstance(n, ast.FunctionDef)}
+        for name, method in methods.items():
+            body = [s for s in method.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
+            self.assertEqual(len(body), 1, f"{name}: wrapper ma jedną instrukcję")
+            call = body[0].value
+            self.assertIsInstance(call, ast.Call, name)
+            self.assertEqual(ast.unparse(call.func), "commands." + name.lstrip("_"), name)
+            self.assertIn(name.lstrip("_"), defined)
+
+    def test_fast_forward_memory_is_a_field_of_the_same_state_object(self):
+        class Owner:
+            _merge_check_ff = commands.StateAlias("merge_ff")
+        owner = Owner()
+        owner._commands_state = state = commands.CommandsState()
+        owner._merge_check_ff.add(("K-1", "PT-1", 5))
+        self.assertIs(owner._merge_check_ff, state.merge_ff)
+        self.assertEqual(state.merge_ff, {("K-1", "PT-1", 5)})
+
+
+class FakeJournal:
+    """Dziennik w pamięci: stan karty (SimpleNamespace), zapisane zdarzenia i blokada."""
+    def __init__(self, st):
+        import threading
+        self.st, self.appended, self.lock = st, [], threading.RLock()
+
+    def state(self, card):
+        return self.st
+
+    def append(self, card, kind, **fields):
+        event = {"type": kind, **fields}
+        self.appended.append(event)
+        return event
+
+
+class MergeCheckTest(unittest.TestCase):
+    """Funkcje próby testów po scaleniu działają na podanych wejściach (dziennik, git, Tablica, stan), bez silnika."""
+
+    def test_fast_forward_merge_is_remembered_in_the_given_state_and_not_asked_again(self):
+        st = types.SimpleNamespace(started={}, merge_check_armed=1, merge_check_merges=set(), merge_checks={},
+                                   results={("merge", "PT-1"): {"ok": True, "seq": 5}})
+        journal, asked = FakeJournal(st), []
+
+        def request(card, state, ticket, merged):
+            asked.append(ticket)
+            return None     # „fast-forward”: bez próby
+        state = commands.CommandsState()
+        p = ports(journal=journal, request_check=request)
+        self.assertEqual(commands.merge_checks(p, state, "K-1"), [])
+        self.assertEqual(commands.merge_checks(p, state, "K-1"), [])
+        self.assertEqual(asked, ["PT-1"], "drugi tick nie pyta gita o to samo scalenie")
+        self.assertEqual(state.merge_ff, {("K-1", "PT-1", 5)})
+        self.assertEqual(journal.appended, [])
+
+    def test_finish_records_the_result_once_and_only_for_the_current_check(self):
+        st = types.SimpleNamespace(merge_checks={"PT-1": {"requested": {"check": "PT-1:2"}, "finished": None}})
+        journal = FakeJournal(st)
+        p = ports(journal=journal)
+        commands.merge_check_finish(p, "K-1", {"ticket": "PT-1"}, {"check": "PT-1:1"}, 0, "/log")
+        self.assertEqual(journal.appended, [], "inna (starsza) próba nie zapisuje wyniku")
+        commands.merge_check_finish(p, "K-1", {"ticket": "PT-1"}, {"check": "PT-1:2"}, 1, "/log")
+        self.assertEqual(journal.appended, [{"type": "merge.check-finished", "ticket": "PT-1", "check": "PT-1:2",
+                                             "exit": 1, "log": "/log"}])
+
+    def test_still_allowed_drops_a_refused_check_from_the_given_queue(self):
+        st = types.SimpleNamespace(merge_checks={"PT-1": {"requested": {"check": "PT-1:1"}, "finished": None}},
+                                   step_decisions={"merge-check-PT-1-1": {"choice": "deny"}}, outside_launched=set(),
+                                   paused=False, card_finished=None)
+        state = commands.CommandsState(waiting={"merge-check-PT-1-1": ("K-1", "p", 0.0, 0.0, True)})
+        step = {"step": "merge-check-PT-1-1", "ticket": "PT-1", "check": "PT-1:1", "command": "make test"}
+        self.assertFalse(commands.merge_check_still_allowed(ports(journal=FakeJournal(st)), state, "K-1", step))
+        self.assertEqual(state.waiting, {})
+
+    def test_head_uses_the_given_git_and_plan_commit_rule(self):
+        calls = []
+
+        class Git:
+            def run(self, *args):
+                calls.append(args)
+                return types.SimpleNamespace(ok=True, out="b" * 40 + "\n")
+        st = types.SimpleNamespace(steps={})
+        step = {"worktree": "/wt", "after": "a" * 40, "ticket": "PT-1"}
+        only = []
+        p = ports(journal=FakeJournal(st), git=Git(), merge_check_repo=lambda card, s, ticket: "/repo",
+                  plan_commits_only=lambda repo, s, start, before: only.append((repo, start, before)) or True)
+        self.assertEqual(commands.merge_check_head(p, "K-1", step), "b" * 40)
+        self.assertEqual(calls, [("/wt", "rev-parse", "HEAD")])
+        self.assertEqual(only, [("/repo", "a" * 40, "b" * 40)])
+
+    def test_repo_falls_back_to_the_card_repo_port(self):
+        st = types.SimpleNamespace(steps={"s1": {"ticket": "PT-2", "repo": "/other"}})
+        p = ports(card_repo=lambda card: "/card")
+        self.assertEqual(commands.merge_check_repo(p, "K-1", st, "PT-2"), "/other")
+        self.assertEqual(commands.merge_check_repo(p, "K-1", st, "PT-1"), "/card")
+
+    def test_contract_uncertainty_gives_no_command(self):
+        project = types.SimpleNamespace(slug="p", tests={"changed": "make test-changed BASE={base}"}, tests_error="")
+        p = ports(project=lambda card: (None, project), store=None)
+        self.assertEqual(commands.merge_check_contract(p, "K-1"), "", "Tablica bez zatwierdzeń — brak polecenia")
+        project.tests = None
+        self.assertEqual(commands.merge_check_contract(p, "K-1"), "")
 
 
 class QueueTest(unittest.TestCase):
