@@ -460,6 +460,8 @@ FocusScope {
                 onClicked: win.targetOpen = !win.targetOpen
             }
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: pickerScroll
                 objectName: "mergeWindowPickerScroll"
                 Layout.fillWidth: true
@@ -491,6 +493,8 @@ FocusScope {
 
             // --- minimalny podgląd (przewijany) ---
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: scroll
                 objectName: "mergeWindowScroll"
                 Layout.fillWidth: true

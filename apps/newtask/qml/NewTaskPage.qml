@@ -317,7 +317,7 @@ Rectangle {
                                 clip: true
                                 model: page.shownRepos
                                 boundsBehavior: Flickable.StopAtBounds
-                                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                                 delegate: Rectangle {
                                     id: row
                                     required property var modelData
@@ -605,7 +605,7 @@ Rectangle {
                 contentHeight: promptEdit.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 function ensureVisible(r) {
                     if (contentY >= r.y) contentY = r.y
                     else if (contentY + height <= r.y + r.height) contentY = r.y + r.height - height

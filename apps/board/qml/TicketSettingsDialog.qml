@@ -26,6 +26,7 @@
 // niedozwolone są wyszarzone z powodem.
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card/assignment.js" as Assignment
 
@@ -385,6 +386,7 @@ Rectangle {
                 contentHeight: dialog.running ? runningGroups.implicitHeight : groups.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                 // Ticket nieruszony (PT-334): trzy grupy, jeden zapis.
                 RowLayout {

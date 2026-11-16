@@ -299,7 +299,7 @@ Rectangle {
                 contentWidth: width
                 contentHeight: projectsColumn.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                 ColumnLayout {
                     id: projectsColumn
@@ -832,7 +832,7 @@ Rectangle {
                 contentWidth: width
                 contentHeight: tagsColumn.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                 ColumnLayout {
                     id: tagsColumn

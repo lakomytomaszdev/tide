@@ -124,7 +124,7 @@ Rectangle {
             spacing: 4
             model: panel.rows
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
             delegate: Rectangle {
                 id: row
                 required property var modelData

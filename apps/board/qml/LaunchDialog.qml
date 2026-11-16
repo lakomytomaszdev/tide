@@ -339,7 +339,7 @@ Rectangle {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: bodyFlick.interactive ? QQC2.ScrollBar.AsNeeded : QQC2.ScrollBar.AlwaysOff }
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: bodyColumn
@@ -491,7 +491,7 @@ Rectangle {
                                 contentWidth: width
                                 contentHeight: taskEdit.implicitHeight
                                 boundsBehavior: Flickable.StopAtBounds
-                                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                                 TextEdit {
                                     id: taskEdit
                                     readOnly: dialog.issueMode

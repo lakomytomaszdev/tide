@@ -191,6 +191,7 @@ Rectangle {
 
             Flickable {
                 id: sideFlick
+                objectName: "coordinatorFlick"
                 anchors.fill: parent
                 anchors.margins: 14
                 anchors.topMargin: 18
@@ -198,11 +199,11 @@ Rectangle {
                 contentWidth: width
                 contentHeight: side.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar { objectName: "coordinatorScrollBar" }
 
                 ColumnLayout {
                     id: side
-                    width: sideFlick.width
+                    width: sideFlick.width - Tide.Tokens.scrollbarWidth - 4   // miejsce na pasek (jak scrollbar-gutter makiety)
                     spacing: 8
 
                     Text {

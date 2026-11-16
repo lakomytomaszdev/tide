@@ -40,7 +40,7 @@ Item {
         contentWidth: width
         contentHeight: content.implicitHeight + 8
         boundsBehavior: Flickable.StopAtBounds
-        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
         ColumnLayout {
             id: content

@@ -430,7 +430,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: groupsColumn.implicitHeight + 8
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                     ColumnLayout {
                         id: groupsColumn
@@ -689,7 +689,7 @@ Rectangle {
                     clip: true
                     contentHeight: pruneColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     Column {
                         id: pruneColumn
                         width: pruneFlick.width - 12

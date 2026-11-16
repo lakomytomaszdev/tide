@@ -181,6 +181,8 @@ Rectangle {
         // Uwagi review bywają długie (K-33: 23 punkty) — mają własne przewijanie i limit wysokości, żeby lista
         // ticketów i „Zatwierdź plan” zawsze mieściły się w oknie.
         QQC2.ScrollView {
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+            QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
             id: reviewScroll
             objectName: "planManagerReview"
             property bool expanded: false
@@ -280,7 +282,7 @@ Rectangle {
                     clip: true
                     spacing: 8
                     model: manager.rows
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     delegate: Rectangle {
                         required property var modelData
                         readonly property string ticketId: modelData.id || modelData.workId
@@ -426,6 +428,8 @@ Rectangle {
                     }
                 }
                 QQC2.ScrollView {
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                    QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     QQC2.TextArea {

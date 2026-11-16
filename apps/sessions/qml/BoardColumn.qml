@@ -66,7 +66,7 @@ Rectangle {
             contentWidth: width
             contentHeight: cards.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: flick.contentHeight > flick.height ? QQC2.ScrollBar.AsNeeded : QQC2.ScrollBar.AlwaysOff }
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: cards

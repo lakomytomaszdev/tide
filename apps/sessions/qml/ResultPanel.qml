@@ -84,7 +84,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: report.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     TextEdit {
                         id: report
                         width: reportFlick.width - 10
@@ -123,7 +123,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: steps.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     ColumnLayout {
                         id: steps
                         width: stepsFlick.width - 10

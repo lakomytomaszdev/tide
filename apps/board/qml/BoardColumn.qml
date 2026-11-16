@@ -195,9 +195,7 @@ Rectangle {
             contentWidth: width
             contentHeight: cardsColumn.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {
-                policy: columnRoot.fill && flick.contentHeight > flick.height ? QQC2.ScrollBar.AsNeeded : QQC2.ScrollBar.AlwaysOff
-            }
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: cardsColumn
