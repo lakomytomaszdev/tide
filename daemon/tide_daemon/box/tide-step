@@ -25,24 +25,46 @@ set -u
 umask 077
 
 if [ "${1:-}" = --command ]; then
+    # Pułapka przed walidacją argumentów (K-109 PT-479, test_c): SIGTERM z RuntimeMaxSec tuż po starcie jednostki
+    # nie kończy powłoki domyślnie bez pliku. Do ustalenia `status` sygnał tylko ustawia `stopped`; zapis
+    # `zatrzymane` następuje zaraz po odczycie argumentów, bez startu polecenia.
+    status=
+    stopped=
+    recorded=
+    child=
+    # Zapis odporny na SIGTERM jednostki: przy KillMode=control-group systemd dosyła TERM także procesom
+    # rozwidlonym w trakcie zatrzymania (np. `mv` z pułapki), co zostawiało `exit-code.tmp` bez pliku. Na czas
+    # zapisu powłoka ignoruje TERM, a `mv` dziedziczy ignorowanie (zachowane przez exec); potem pułapka wraca.
+    record() {
+        trap '' TERM
+        printf '%s\n' "$1" > "$status.tmp" && mv -f -- "$status.tmp" "$status"
+        rc=$?
+        trap on_term TERM
+        return "$rc"
+    }
+    # `wait` przerwany sygnałem z pułapką wraca od razu (POSIX), więc zapis `zatrzymane` nie czeka na polecenie.
+    # Kod zapisany przed sygnałem zostaje (polecenie skończyło się samo).
+    on_term() {
+        if [ -z "$stopped" ] && [ -z "$recorded" ]; then
+            stopped=1
+            [ -z "$status" ] || record zatrzymane
+        fi
+        [ -z "$child" ] || kill -TERM "$child" 2>/dev/null
+    }
+    trap on_term TERM
     if [ "$#" -lt 5 ] || [ "$4" != -- ]; then
         echo "tide-step: użycie: tide-step --command <exit-code> <wynik> -- <polecenie…>" >&2
         exit 125
     fi
-    status=$2
     output=$3
+    rm -f -- "$2.tmp"
+    status=$2
     shift 4
-    rm -f -- "$status.tmp"
-    stopped=
-    recorded=
-    child=
-    record() {
-        printf '%s\n' "$1" > "$status.tmp" && mv -f -- "$status.tmp" "$status"
-    }
-    # `wait` przerwany sygnałem z pułapką wraca od razu (POSIX), więc zapis `zatrzymane` nie czeka na polecenie.
-    # Kod zapisany przed sygnałem zostaje (polecenie skończyło się samo).
-    trap 'if [ -z "$stopped" ] && [ -z "$recorded" ]; then stopped=1; record zatrzymane; fi
-          [ -z "$child" ] || kill -TERM "$child" 2>/dev/null' TERM
+    if [ -n "$stopped" ]; then
+        # SIGTERM przed odczytem argumentów: zapis teraz, polecenie nie startuje.
+        record zatrzymane
+        exit 143
+    fi
     "$@" < /dev/null >> "$output" 2>&1 &
     child=$!
     while :; do

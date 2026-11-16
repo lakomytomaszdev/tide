@@ -252,6 +252,24 @@ class WrapperTest(Case):
         with open(self.exit_file, encoding="ascii") as fh:
             self.assertEqual(fh.read(), "zatrzymane\n")
 
+    def test_repeated_group_sigterm_does_not_lose_the_stopped_record(self):
+        # K-109 PT-479 (test_c pod obciążeniem): przy KillMode=control-group systemd dosyła SIGTERM każdemu nowemu
+        # procesowi cgroup, także `mv` rozwidlonemu w pułapce — zostawał `exit-code.tmp` bez pliku. Tu ten sam
+        # zalew: SIGTERM do całej grupy co 1 ms aż do końca opakowania.
+        proc = self.wrapper("/bin/sleep", "30")
+        self.assertTrue(_wait(lambda: os.path.exists(self.log)))
+        time.sleep(0.2)
+        end = time.monotonic() + 20
+        while proc.poll() is None and time.monotonic() < end:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                break
+            time.sleep(0.001)
+        self.assertEqual(proc.wait(timeout=20), 143)
+        self.assertEqual(read_command_exit(self.exit_file), runner_mod.STOPPED)
+        self.assertNotIn("exit-code.tmp", self.listing())
+
     def test_code_recorded_before_a_late_sigterm_stays(self):
         proc = self.wrapper("/bin/sh", "-c", "exit 3")
         self.assertEqual(proc.wait(timeout=20), 3)
