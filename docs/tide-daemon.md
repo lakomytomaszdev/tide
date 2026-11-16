@@ -3352,8 +3352,35 @@ zamiar jako ślad), strażnik opiekuna `guard.runs`, ponowienie padniętych modu
 `log`, `exitFile`, `worktree`, `head`, `rerunOf`; w końcu `exit`, `tail`), a `command.*` dokłada `attempt`, `executor`,
 `isolation`, `class`, `consentVersion`, `source`. Koniec może być z innej rodziny niż start (przebieg zaczęty przed
 przełączeniem zapisu). Adapter tylko czyta: nie przepisuje dziennika i niczego nie zapisuje; w modelu tożsamości
-`command.*` ma źródło `reader`, dopóki PT-479 nie włączy zapisu. Odzyskiwanie niezakończonego `outside.started` po
-restarcie działa jak dotąd: jednostka `tide-outside-<krok>`, wynik z pliku `exit-code`, bez ponownego uruchomienia.
+`command.intent` ma źródło `reader` do PT-485. Odzyskiwanie niezakończonego `outside.started` po restarcie działa jak
+dotąd: jednostka `tide-outside-<krok>`, wynik z pliku `exit-code`, bez ponownego uruchomienia.
+
+**Polecenie kroku na hoście przez `Runner.run_command`** (K-109 PT-479, ADR-1; `tasks/runner.py`). Prośba `outside`
+kroku po zgodzie nie składa już argv w silniku: `commands.step_request` podaje polecenie, katalog kroku, worktree,
+dzisiejsze środowisko (`outside_env`) i limit czasu, a `HostRunner.run_command` uruchamia przejściową usługę
+`systemd-run --user --wait --collect --unit=tide-cmd-<attempt>` (nigdy `--scope`) z `-p RuntimeMaxSec=<OUTSIDE_TIMEOUT>`
+i opakowaniem `box/tide-step --command <exit-code> <wynik> -- /bin/sh <plik polecenia>`. `attempt` to losowy
+identyfikator próby; każda próba ma własny katalog `<krok>/outside/tide-cmd-<attempt>/` (`command`, `outside.log`,
+`exit-code`), więc stary plik wyniku nie jest wynikiem nowej próby. Treść polecenia leży w pliku, bo systemd rozwija
+`${…}` w argumentach usługi; środowisko przechodzi przez `--setenv=NAZWA` bez wartości (wartości nie trafiają do argv),
+bez zmiennych menedżera usług (`INVOCATION_ID`, `NOTIFY_SOCKET`…). Etap 1: `isolation: none`.
+
+Opakowanie zapisuje `exit-code` atomowo (`.tmp` i `mv`): kod polecenia przy zwykłym końcu, a przy SIGTERM
+(zatrzymanie jednostki, przekroczony `RuntimeMaxSec`) od razu `zatrzymane`; potem przekazuje sygnał poleceniu i czeka
+na jego koniec. Wynik pochodzi wyłącznie z tego pliku (`HostRunner.command_result`: liczba albo `zatrzymane`,
+`OUTSIDE_STOPPED`); klient `systemd-run --wait` jest tylko obserwatorem — jego kod wyjścia i śmierć (np. restart
+usługi Tide) nie są wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTSIDE_STOP_GRACE` od
+startu → `zatrzymane`; nieznany stan systemctl → czekanie. Zapora: `COMMAND_STOP_MARGIN` s po limicie bez wyniku
+silnik zatrzymuje jednostkę (`systemctl --user stop --no-block`), wynik i tak przychodzi z pliku.
+
+Zapis: `command.started` po uzyskaniu uchwytu (jak dawniej `outside.started` po `Popen`, pod tą samą blokadą dziennika;
+trwały zamiar przed startem to PT-485) i `command.finished`, oba z `attempt`, `executor: host-isolated`,
+`isolation: none`, `class` i `consentVersion` (puste do etapu 2), `unit`, `exitFile`, `loadavg`, `cores` (odczyt
+obciążenia z chwili zapisu), `source: step`. Nowa droga nie zapisuje `outside.*`; przebieg rozpoczęty przed
+przełączeniem kończy się w swojej rodzinie (`outside.finished`). Odzyskiwanie po restarcie dla `command.started` bez
+wyniku: jednostka żyje → czekanie, zakończona → wynik z `exit-code`, bez ponownego startu. Próba testów po scaleniu
+(merge-check) zostaje przy `outside.*` i `--scope` do PT-483; krok w pudełku nadal dostaje `box-outside`. Test
+z prawdziwym menedżerem użytkownika: `daemon/tests/test_runner_command_systemd.py` (w piaskownicy kroku pomijany).
 
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu

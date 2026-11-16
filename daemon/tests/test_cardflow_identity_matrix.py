@@ -261,7 +261,7 @@ class Review10OutsideCompletionUnit(Harness):
                 with f.outside_environment() as spawn:
                     f.engine._start_outside("K-38", independent, "echo ordinary-test")
                     spawn.assert_called_once()
-                    self.assertEqual(spawn.call_args.args[0][-1], "echo ordinary-test")
+                    self.assertEqual(Path(spawn.call_args.args[0][-1]).read_text(), "echo ordinary-test\n")  # PT-479: plik polecenia
 
 
 class Review9And8Probes(Harness):
@@ -803,7 +803,7 @@ class BarrierMatrixPositive(Harness):
             with self.f.outside_environment() as spawn:
                 self.f.engine._start_outside("K-38", step, "echo ordinary-test")
                 spawn.assert_called_once()
-                self.assertEqual(spawn.call_args.args[0][-1], "echo ordinary-test")
+                self.assertEqual(Path(spawn.call_args.args[0][-1]).read_text(), "echo ordinary-test\n")  # PT-479: plik polecenia
 
     def test_advance_runs_consented_outside_once(self):
         for _ in self.each():

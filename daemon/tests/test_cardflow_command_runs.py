@@ -5,7 +5,8 @@ które trwa, próba testów po scaleniu i zgoda w kolejce) w dwóch zapisach: dz
 `command.intent/started/finished` z tymi samymi danymi. Testy charakteryzujące utrwalają wynik konsumentów na zapisie
 `outside.*` (wartości odczytane z kodu sprzed adaptera); testy równoważności — że ten sam scenariusz w `command.*`
 daje ten sam wynik. Odzyskiwanie niezakończonego `outside.started` po restarcie (jednostka `tide-outside-<krok>`, bez
-ponownego uruchomienia) ma osobny test przez `FlowEngine` z licznikiem atrapy `systemd-run`.
+ponownego uruchomienia) ma osobny test przez `FlowEngine` z licznikiem atrapy `systemd-run`; od PT-479 start dawną
+drogą odtwarza w nim pomocnik `legacy_start` (nowa droga zapisuje `command.*` — test_cardflow_command_host.py).
 """
 import contextlib
 import dataclasses
@@ -373,12 +374,33 @@ class RestartRecoveryTest(_flow_case()):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def legacy_start(self, engine):
+        """Start polecenia dawną drogą sprzed PT-479 (historia `outside.started`, jednostka `--scope`
+        `tide-outside-<krok>`): od PT-479 prośba kroku zapisuje `command.*`, a ten test utrwala odzyskiwanie
+        przebiegów zapisanych przed przełączeniem. argv z `commands.outside_launch` (ta sama funkcja co przed PT-479,
+        dziś używana jeszcze przez merge-check)."""
+        import subprocess
+
+        def start(card, step, command):
+            name = step.get("step") or ""
+            worktree = step.get("worktree") or ""
+            unit, log, exit_file, argv, env = engine._outside_launch(name, step.get("stepDir") or "", worktree,
+                                                                     command)
+            with open(log, "ab") as out, engine.journal.lock:
+                subprocess.Popen(argv, cwd=worktree or None, env=env, stdin=subprocess.DEVNULL, stdout=out,
+                                 stderr=subprocess.STDOUT, start_new_session=True)
+                engine.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "",
+                                      command=command, unit=unit, log=log, exitFile=exit_file, worktree=worktree,
+                                      head="", rerunOf="")
+        engine._start_outside = start
+
     def test_unfinished_outside_run_is_recovered_by_its_unit_without_a_second_start(self):
         import time
         from .privatebus import wait_until
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")
+        self.legacy_start(self.flow.engine)
         reply = self.decide(card_id, choice="run")
         self.assertTrue(reply["ok"], (reply, [(e["type"], e.get("result"), e.get("reason"), e.get("error")) for e in self.events(card_id)]))
         self.assertTrue(wait_until(lambda: self.of(card_id, "outside.started"), timeout=20), self.events(card_id))

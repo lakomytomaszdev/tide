@@ -52,6 +52,7 @@ from ..coordination.repoplans import RepoPlans
 from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.runner import HostRunner, Runner
+from ..tasks import runner as runner_mod
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import testrerun
@@ -119,6 +120,7 @@ OUTSIDE_STOP_GRACE = 5          # tyle sekund od startu jednostka może jeszcze 
 OUTSIDE_STATE_TIMEOUT = 3       # limit jednego odczytu stanu jednostki, żeby nie blokować pętli usługi (s)
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
+COMMAND_STOP_MARGIN = 60        # s po RuntimeMaxSec bez wyniku przebiegu command.*: zapora — zatrzymanie jednostki
 ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
                           r"playwright|\bport(?:u|y|em)?\b|:\d{4}\b|\bsieci\b|\bsieć\b|network|środowisk|"
                           r"zainstalow|instalacj|uruchomi[ćeł]\w* (?:test|polecen|serwer)", re.IGNORECASE)
@@ -7544,7 +7546,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
             outside_heavy_of=self._outside_heavy_of, outside_heavy_state=self._outside_heavy_state,
             outside_quiet_state=self._outside_quiet_state, outside_class=self._outside_class,
             outside_collect=self._outside_collect, outside_stopped=self._outside_stopped,
-            outside_exit=self._outside_exit, outside_recheck_rules=self._outside_recheck_rules)
+            outside_exit=self._outside_exit, outside_recheck_rules=self._outside_recheck_rules,
+            unit_result=self._command_result, unit_stop=lambda unit: self.runner.stop_command(unit),
+            machine_load=lambda: self._load_reader()())
+
+    def _command_result(self, started: dict):
+        """Wynik przebiegu `command.*` z pliku `exit-code` przez runner (K-109 PT-479); None — trwa."""
+        return self.runner.command_result(started.get("unit") or "", started.get("exitFile") or "",
+                                          age=time.time() - _epoch(started.get("ts")), grace=OUTSIDE_STOP_GRACE,
+                                          state_timeout=OUTSIDE_STATE_TIMEOUT)
 
     def _outside_remembered(self, slug: str) -> list:
         return commands.outside_remembered(self._settings_data(), slug)
@@ -7567,7 +7577,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _outside_collect(self, card: str, name: str, started: dict, confirm=None):
         return commands.outside_collect(self._commands_ports(), self._commands(), card, name, started, confirm,
-                                        timeout=OUTSIDE_TIMEOUT, tail_size=OUTSIDE_TAIL)
+                                        timeout=OUTSIDE_TIMEOUT, tail_size=OUTSIDE_TAIL,
+                                        stop_margin=COMMAND_STOP_MARGIN)
 
     def _outside_stopped(self, started: dict, step_dir: str):
         return commands.outside_stopped(self._commands_ports(), started, step_dir, grace=OUTSIDE_STOP_GRACE,
@@ -8073,22 +8084,30 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
         requested_command = command
         command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
-        unit, log, exit_file, argv, env = self._outside_launch(name, step.get("stepDir") or "", worktree, command)
-        # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
-        # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
-        with open(log, "ab") as out, self.journal.lock:
+        # K-109 PT-479 (ADR-1): jedno polecenie jako przejściowa usługa `tide-cmd-<attempt>` przez
+        # `Runner.run_command`; argv i opakowanie `tide-step` składa runner, wynik przyjdzie z pliku `exit-code`.
+        request = commands.step_request(step, command, timeout=OUTSIDE_TIMEOUT, cpu_weight=STEP_CPU_WEIGHT,
+                                        old_jobs=OLD_RUNNER_JOBS)
+        # Ta sama blokada obejmuje świeży odczyt, start jednostki i zapis startu: decyzja
+        # ani historia nie mogą zmienić się pomiędzy kontrolą a startem. Zapis startu po uzyskaniu uchwytu,
+        # jak dawniej po Popen (szczelinę zamyka trwały zamiar przed startem, PT-485).
+        with self.journal.lock:
             # Odmowa człowieka albo cofnięcie zapisane po kontroli kolejki wygrywa ze startem (PT-311).
             self._outside_history(card, step)
             if not self._outside_still_allowed(card, step):
                 return
             self._outside_history(card, step, command=requested_command)
-            subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
-                             stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-            self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of)
+            handle = self.runner.run_command(request)
+            load = self._load_reader()()
+            self.journal.append(card, "command.started", step=name, ticket=step.get("ticket") or "",
+                                command=command, unit=handle.unit, log=handle.log, exitFile=handle.exit_file,
+                                worktree=worktree, head=head, rerunOf=rerun_of, attempt=handle.attempt,
+                                executor=runner_mod.EXECUTOR, isolation=runner_mod.ISOLATION,
+                                consentVersion="", loadavg=load.avg1, cores=load.cores, source="step",
+                                **{"class": ""})
         if self._outside_active is None:
             self._outside_active = {}
-        self._outside_active[name] = (card, unit)
+        self._outside_active[name] = (card, handle.unit)
 
     AUTO_DENY_LIMIT = 3
 

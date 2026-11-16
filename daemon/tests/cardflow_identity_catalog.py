@@ -978,6 +978,8 @@ EFFECTS = {
     ("Popen", "subprocess"): "Popen",
     ("open", "terminal"): "Konsola",
     ("start", "runner"): "start kroku",
+    # K-109 PT-479: polecenie nie-agentowe przez umowę Runner (ADR-1).
+    ("run_command", "runner"): "start polecenia",
     ("stop", "incus"): "incus.stop",
     ("start", "incus"): "incus.start",
     ("delete", "incus"): "incus.delete",

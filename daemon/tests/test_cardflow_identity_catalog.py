@@ -517,7 +517,12 @@ BARRIERS = {
 # przed skutkiem. Strażnik pośredni: wskazane funkcje wywołujące mają kontrolę przed wywołaniem.
 _LOCK = True
 EFFECT_SCOPE = {
-    ("cardflow/engine.py", "FlowEngine._start_outside", "Popen"): ("outside", "direct", {"_outside_history"}, _LOCK),
+    # K-109 PT-479: start polecenia kroku przez `Runner.run_command` pod blokadą dziennika po świeżej kontroli;
+    # sam Popen klienta jednostki leży w HostRunner i woła go wyłącznie `_start_outside`.
+    ("cardflow/engine.py", "FlowEngine._start_outside", "start polecenia"):
+        ("outside", "direct", {"_outside_history"}, _LOCK),
+    ("tasks/runner.py", "HostRunner.run_command", "Popen"):
+        ("outside", [("cardflow/engine.py", "FlowEngine._start_outside", {"_outside_history"})], None, False),
     ("cardflow/engine.py", "FlowEngine._merge_check_start", "Popen"):
         ("outside", "direct", {"_merge_check_history"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "Konsola"): ("step-launch", "direct", {"_process_check"}, _LOCK),

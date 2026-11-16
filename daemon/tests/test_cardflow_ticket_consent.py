@@ -39,17 +39,17 @@ class ConsentScenario:
         self.restart()
         shown = self.wait_column(card, "waiting")
         self.assertTrue(shown["derived"]["flow"]["ticketConsents"][0]["revoked"])
-        before = len(self.of(card, "outside.started"))
+        before = len(self.of(card, "command.started"))
         step = shown["derived"]["flow"]["decisions"][0]["step"]
         self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"step": step, "choice": "run"}))["ok"])
-        self.assertTrue(wait_until(lambda: len(self.of(card, "outside.finished")) == before + 1, timeout=20))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "command.finished")) == before + 1, timeout=20))
         self.assertTrue(wait_until(lambda: len(self.of(card, "step.finished")) >= 2
                                   and self.shown(card)["boardColumn"] == "waiting"
                                   and self.shown(card)["derived"]["flow"]["decisions"], timeout=20))
-        self.assertEqual(len(self.of(card, "outside.started")), before + 1)
+        self.assertEqual(len(self.of(card, "command.started")), before + 1)
         # Świadome ponowne nadanie przywraca automatyczne starty kolejnych próśb.
         self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"choice": "run-ticket"}))["ok"])
-        self.assertTrue(wait_until(lambda: len(self.of(card, "outside.started")) >= before + 3, timeout=25))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "command.started")) >= before + 3, timeout=25))
         self.assertTrue(self.call("RevokeTicketConsent", card, json.dumps(request))["ok"])
 
 
@@ -107,12 +107,13 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         # Nawet stara migawka decyzji nie uprawnia do startu po cofnięciu.
         eng._outside_ready(card, steps[0], st.finished["s1"], old["s1"])
         eng._outside_recheck(card, steps[1], st.finished["s2"])
-        self.assertFalse(self.of(card, "outside.started"))
+        self.assertFalse(self.of(card, "command.started"))
         self.assertNotIn("s2", fold(eng.journal.read(card)).step_decisions)
         eng._outside_ready(card, steps[2], st.finished["s3"], st.step_decisions["s3"])
-        log = Path(steps[2]["stepDir"], "outside", "outside.log")
+        self.assertEqual([e["step"] for e in self.of(card, "command.started")], ["s3"])
+        log = Path(self.of(card, "command.started")[0]["log"])     # <krok>/outside/tide-cmd-<attempt>/ (PT-479)
+        self.assertEqual(log.parent.parent, Path(steps[2]["stepDir"], "outside"))
         self.assertTrue(wait_until(lambda: log.exists() and "zewnetrzne-ok" in log.read_text(), timeout=5))
-        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s3"])
         self.assertEqual(json.loads(Path(self.settings).read_text())["outsideCommands"],
                          {"proj": ["echo zewnetrzne-ok *"]})
 
@@ -127,11 +128,11 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.assertIn("s1", eng._outside_waiting)
         eng.journal.append(card, "card.paused")
         self.assertIsNone(eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"]))
-        self.assertFalse(self.of(card, "outside.started"))
+        self.assertFalse(self.of(card, "command.started"))
         self.assertNotIn("s1", eng._outside_waiting)     # wstrzymana karta nie blokuje kolejki innym
         eng.journal.append(card, "card.resumed")
         eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
-        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1"])
+        self.assertEqual([e["step"] for e in self.of(card, "command.started")], ["s1"])
 
     def test_outside_command_runs_without_qml_disk_cache(self):
         """08.11: testy qml6 poza piaskownicą zapełniały ~/.cache/QtProject (100 GB) — polecenie outside dostaje
@@ -167,15 +168,16 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         st = fold(eng.journal.read(card))
         eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
         self.assertTrue(self.call("RevokeTicketConsent", card, json.dumps(request))["ok"])
-        self.assertTrue(wait_until(lambda: Path(steps[0]["stepDir"], "outside", "in", "exit-code").exists()
-                                  or Path(steps[0]["stepDir"], "outside", "exit-code").exists(), timeout=5))
+        exit_file = Path(self.of(card, "command.started")[0]["exitFile"])     # plik opakowania tide-step (PT-479)
+        self.assertEqual(exit_file.parent.parent, Path(steps[0]["stepDir"], "outside"))
+        self.assertTrue(wait_until(exit_file.exists, timeout=5))
         self.assertTrue(wait_until(lambda: eng._outside_ready(card, steps[0], st.finished["s1"],
                                                             st.step_decisions["s1"]) is not None, timeout=10))
-        self.assertEqual(self.of(card, "outside.finished")[0]["exit"], 0)
+        self.assertEqual(self.of(card, "command.finished")[0]["exit"], 0)
         eng._outside_ready(card, steps[1], st.finished["s2"], st.step_decisions["s2"])
         self.assertTrue(wait_until(lambda: eng._outside_ready(card, steps[1], st.finished["s2"],
                                                             st.step_decisions["s2"]) is not None, timeout=10))
-        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1", "s2"])
+        self.assertEqual([e["step"] for e in self.of(card, "command.started")], ["s1", "s2"])
 
     def test_new_order_and_base_boundary_do_not_inherit_old_consent(self):
         from tide_daemon.cardflow.state import fold
@@ -203,7 +205,7 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.assertEqual(self.call("ResolveCardStep", card, json.dumps({"choice": "run-ticket", "step": "s2"}))["error"],
                          "forbidden-command")
         eng._outside_ready(card, steps[1], forbidden, {"choice": "run", "auto": True})
-        self.assertFalse(self.of(card, "outside.started"))
+        self.assertFalse(self.of(card, "command.started"))
         self.assertEqual(fold(eng.journal.read(card)).finished["s2"]["command"], "make install")
 
     def test_finished_command_keeps_result_when_revoked_before_agent_resume(self):
@@ -219,4 +221,4 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.assertIn("s1", current.step_decisions)
         result = eng._outside_ready(card, steps[0], current.finished["s1"], current.step_decisions["s1"])
         self.assertIn("Kod wyjścia: 0", result["answer"])
-        self.assertEqual(len(self.of(card, "outside.started")), 1)
+        self.assertEqual(len(self.of(card, "command.started")), 1)

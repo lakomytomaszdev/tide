@@ -16,7 +16,7 @@ import os
 import time
 from unittest import mock
 
-from tide_daemon.cardflow import heavyqueue
+from tide_daemon.cardflow import commandruns, heavyqueue
 
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
@@ -126,19 +126,21 @@ class ExclusiveNeverRunsBesideHeavyTickTest(FlowInProcess):
         for _ in range(n):
             self.engine.tick()
 
+    # Start i koniec przebiegu przez widok `commandruns` (PT-481): od PT-479 prośba kroku zapisuje `command.*`.
+
     def running(self) -> set:
         """Polecenia `outside` rozpoczęte i jeszcze niezakończone (z dzienników wszystkich kart)."""
         out = set()
         for card in self.engine.journal.cards():
             st = self.engine.journal.state(card)
             out |= {name for name in st.outside_started
-                    if not any(e.get("type") == "outside.finished" and e.get("step") == name
+                    if not any(commandruns.phase(e) == "finished" and e.get("step") == name
                                for e in self.engine.journal.read(card))}
         return out
 
     def ever_started(self) -> set:
         return {e["step"] for card in self.engine.journal.cards() for e in self.engine.journal.read(card)
-                if e.get("type") == "outside.started"}
+                if commandruns.phase(e) == "started"}
 
     def release(self, base: str) -> None:
         with open(os.path.join(self.gate, base), "w", encoding="ascii") as fh:
@@ -147,7 +149,7 @@ class ExclusiveNeverRunsBesideHeavyTickTest(FlowInProcess):
     def wait_finished(self, card: str, name: str) -> None:
         def done():
             self.engine.tick()
-            return any(e.get("type") == "outside.finished" and e.get("step") == name
+            return any(commandruns.phase(e) == "finished" and e.get("step") == name
                        for e in self.engine.journal.read(card))
         self.assertTrue(wait_until(done, timeout=30), self.engine._heavy_held_state())
 

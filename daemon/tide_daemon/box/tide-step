@@ -12,8 +12,49 @@
 #  5. uruchamia polecenie z <krok>/in/prompt.txt na stdin i wyjściem dopisywanym do <krok>/out/step.log,
 #  6. zapisuje kod wyjścia atomowo w <krok>/in/exit-code (jak EXIT_WRAPPER hosta) i kończy się nim.
 # SIGTERM (systemctl --user kill) dostaje cała jednostka; opakowanie go przeczekuje, żeby zapisać kod.
+#
+# Tryb polecenia (K-109 PT-479, ADR-1): `tide-step --command <plik exit-code> <plik wyniku> -- <argv>` — jedno
+# polecenie nie-agentowe jako proces główny przejściowej usługi `tide-cmd-<attempt>` (HostRunner.run_command).
+# Bez TIDE_STEP i bez czyszczenia środowiska (etap 1: `isolation: none`, środowisko podaje jednostka). Polecenie
+# dostaje stdin z /dev/null i dopisuje wyjście do pliku wyniku. Kod wyjścia trafia atomowo (plik `.tmp` i `mv`)
+# do pliku exit-code; SIGTERM (zatrzymanie jednostki, przekroczony RuntimeMaxSec) zapisuje od razu `zatrzymane`,
+# przekazuje sygnał poleceniu i czeka na jego koniec — wynik nie zależy od klienta `systemd-run --wait`.
 set -u
 umask 077
+
+if [ "${1:-}" = --command ]; then
+    if [ "$#" -lt 5 ] || [ "$4" != -- ]; then
+        echo "tide-step: użycie: tide-step --command <exit-code> <wynik> -- <polecenie…>" >&2
+        exit 125
+    fi
+    status=$2
+    output=$3
+    shift 4
+    rm -f -- "$status.tmp"
+    stopped=
+    recorded=
+    child=
+    record() {
+        printf '%s\n' "$1" > "$status.tmp" && mv -f -- "$status.tmp" "$status"
+    }
+    # `wait` przerwany sygnałem z pułapką wraca od razu (POSIX), więc zapis `zatrzymane` nie czeka na polecenie.
+    # Kod zapisany przed sygnałem zostaje (polecenie skończyło się samo).
+    trap 'if [ -z "$stopped" ] && [ -z "$recorded" ]; then stopped=1; record zatrzymane; fi
+          [ -z "$child" ] || kill -TERM "$child" 2>/dev/null' TERM
+    "$@" < /dev/null >> "$output" 2>&1 &
+    child=$!
+    while :; do
+        wait "$child"
+        code=$?
+        kill -0 "$child" 2>/dev/null || break
+    done
+    if [ -n "$stopped" ]; then
+        exit 143
+    fi
+    recorded=1
+    record "$code"
+    exit "$code"
+fi
 
 if [ "${TIDE_STEP_CLEAN:-}" != 1 ]; then
     step=${TIDE_STEP:-}
