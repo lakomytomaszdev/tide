@@ -3335,6 +3335,11 @@ karty przez `SetCardPaused`).
   `running`/`waiting` mają `exclusive`.
 - *Restart*: znacznik ciszy odtwarza się z `step.finished.exclusive` i bieżących `quietCommands` (dla trwających
   i czekających); klasa jest pamiętana do końca uruchomienia polecenia, więc zmiana wzorców dotyczy nowych zgłoszeń.
+- *Błąd klasyfikacji* (K-109 PT-482): pamiętana jest tylko klasa policzona bez błędu (i znacznik kroku `exclusive`).
+  Błąd odczytu projektu, kontraktu albo ustawień — np. `BoardBusy` w odczycie prezentacji przy transakcji Tablicy
+  trzymanej przez tick — daje „lekkie” tylko dla tego wywołania; start w ticku liczy klasę od nowa. 13.11 taki błąd
+  zapamiętał `make test-changed` K-99-PT-395-1 jako lekkie i polecenie ruszyło obok pomiaru K-113-PT-468-3
+  (regresja: `daemon/tests/test_cardflow_exclusive_tick.py`).
 
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu

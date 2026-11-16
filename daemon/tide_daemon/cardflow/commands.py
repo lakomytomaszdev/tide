@@ -495,11 +495,19 @@ def outside_quiet_of(ports,card: str, step: dict, command: str, marked: bool | N
 def outside_class(ports,card: str, step: dict, command: str, marked: bool | None = None) -> tuple[bool, bool]:
     """(ciężkie, wymaga ciszy) procesu `step`. `marked` — pole `exclusive` wyniku kroku; None — odczyt
     ze stanu karty (`journal.state`, także po restarcie: znacznik odtwarza się z `step.finished` i ustawień).
-    Próba testów po scaleniu jest ciężka i nie wymaga ciszy."""
+    Próba testów po scaleniu jest ciężka i nie wymaga ciszy.
+
+    Pamiętana jest tylko klasa policzona bez błędu (i znacznik kroku `exclusive`, najostrzejszy). Błąd odczytu
+    (projekt, kontrakt, ustawienia) daje wynik tego wywołania — lekkie albo sam znacznik kroku — bez zapisu łagodniejszej
+    klasy w pamięci, więc następne wywołanie liczy od nowa
+    (K-109 PT-482: 13.11 odczyt prezentacji przy zajętej Tablicy, `BoardBusy`, zapamiętał `make test-changed`
+    K-99-PT-395-1 jako lekkie i polecenie ruszyło obok pomiaru wymagającego ciszy K-113-PT-468-3)."""
     name = step.get("step") or ""
     known, quiet = ports.outside_heavy_state(), ports.outside_quiet_state()
-    if name not in quiet:
-        exclusive = False
+    if name in quiet:
+        exclusive = quiet[name]
+    else:
+        exclusive, failed = False, False
         if not mergecheck.is_step(name):
             try:
                 if marked is None:
@@ -510,19 +518,24 @@ def outside_class(ports,card: str, step: dict, command: str, marked: bool | None
                 roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
                 exclusive = heavyqueue.needs_quiet(command, roots, ports.quiet_patterns(), marked=exclusive)
             except Exception:
-                pass        # błąd projektu albo ustawień: zostaje sam znacznik kroku
-        quiet[name] = exclusive
-    if name not in known:
-        if quiet[name] or mergecheck.is_step(name):
-            heavy = True
-        else:
-            try:
-                _, project = ports.project(card)
-                worktree = step.get("worktree") or ""
-                roots = (worktree, project.repo, step.get("stepDir") or "")
-                heavy = heavyqueue.classify(command, roots, ports.heavy_contract(card, worktree),
-                                            ports.heavy_patterns()).heavy
-            except Exception:
-                heavy = False
+                failed = True   # błąd projektu albo ustawień: zostaje sam znacznik kroku
+        # Znacznik kroku `exclusive` jest najostrzejszą klasą — pamiętamy go także przy błędzie (`_heavy_running`
+        # czyta pamięć); łagodniejszego wyniku z błędu nie pamiętamy.
+        if not failed or exclusive:
+            quiet[name] = exclusive
+    if name in known:
+        heavy = known[name]
+    elif exclusive or mergecheck.is_step(name):
+        heavy = True
         known[name] = heavy
-    return bool(known[name] or quiet[name]), bool(quiet[name])
+    else:
+        try:
+            _, project = ports.project(card)
+            worktree = step.get("worktree") or ""
+            roots = (worktree, project.repo, step.get("stepDir") or "")
+            heavy = heavyqueue.classify(command, roots, ports.heavy_contract(card, worktree),
+                                        ports.heavy_patterns()).heavy
+            known[name] = heavy
+        except Exception:
+            heavy = False       # bez zapisu w pamięci: następne wywołanie (start w ticku) liczy od nowa
+    return bool(heavy or exclusive), bool(exclusive)
