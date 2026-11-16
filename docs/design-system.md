@@ -121,6 +121,40 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Terminal (Konsola, #26):** karty jak pigułki kafelków (Geist, tło `card`, promień `tile`, ramka w kolorze tekstu o kryciu `opacity.outline`, aktywna z obwódką teal na tle teal ~0,11); karta agenta „● projekt · gałąź” z paskiem stanu pod tytułem (teal pracuje, brzoskwinia „czeka”, „○” skończył bez koloru). Pole terminala z kryciem `opacity.panel` i rozmyciem, Geist Mono `terminal.fontPt`, margines `terminal.marginPx`, bez paska przewijania i menu, w prawym dolnym rogu trzy fale z kryciem `terminal.watermark.opacity`. Prompt: chipy z tłem pastelu przesuniętym o 84% w stronę tła okna i tekstem w pastelu (projekt na `card`, gałąź lawenda, worktree sky, zmiany masło, agent w kolorze stanu), godzina po prawej, „›” teal (róż po błędzie). Pasek statusu Claude Code tym samym językiem, limity w kolorach poziomu jak w widżecie Limity AI.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
 
+## Standard interfejsu okna Tide (K-128)
+
+Wspólny zestaw komponentów okna Tide (`widgets/lib`, importowany w widokach jako `Tide`). Wzorzec wyglądu to makieta
+S-9 w `docs/agents/k-128/makieta/index.html` (opis i sposób otwarcia: `docs/agents/k-128/makieta/README.md`).
+Kolejne tickety karty K-128 dopisują tu swoje komponenty.
+
+### Paski przewijania
+
+`Tide.ScrollBar` (`widgets/lib/ScrollBar.qml`) to jedyny pasek przewijania w oknie Tide (makieta S-9, wariant A).
+
+- **Wygląd:** tor w kolorze tekstu o kryciu `scrollbar.track` (0,04), uchwyt w kolorze tekstu o kryciu `scrollbar.thumb`
+  (0,30), szerokość `scrollbar.width` (10 px), zaokrąglenie do połowy szerokości. Po najechaniu i przy przeciąganiu
+  uchwyt przyjmuje akcent o kryciu `scrollbar.thumbActive` (0,75). Wartości są w `theme/palette/mist.json`, a generator
+  `widgets/stage.py` udostępnia je jako `Tokens.scrollbarTrack`, `scrollbarThumb`, `scrollbarThumbActive` i
+  `scrollbarWidth` (osobny blok na końcu `Tokens.qml`).
+- **Widoczność:** pasek jest widoczny od razu, gdy jest co przewijać (`size < 1`), bez wcześniejszego przewijania i
+  najechania, a ukryty, gdy treść mieści się w widoku. Nie używamy polityk `AsNeeded` ani `AlwaysOff`: o widoczności
+  decyduje sam komponent, więc polityka nie zależy od wysokości treści (brak pętli powiązań).
+- **Użycie:** pionowy i poziomy jak wbudowany pasek, na `Flickable`, `ListView`, `GridView` i `ScrollView`:
+
+  ```qml
+  Flickable {
+      QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+      QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
+  }
+  ```
+
+  Gołego `QQC2.ScrollBar {}`, `ScrollIndicator {}` ani `ScrollView` bez `Tide.ScrollBar` w `apps/` nie dodajemy; pilnuje
+  tego test `apps/tide/tests/test_scrollbar_static.py`.
+- **Miejsce:** pasek leży na krawędzi przewijanego widoku i nakłada się na treść. Gdy ma jej nie zasłaniać, zmniejsz
+  szerokość treści o `Tide.Tokens.scrollbarWidth`.
+- **Wyjątek (K-104):** widok zmian (`apps/common/qml/git/DiffView.qml`, `SyntaxText.qml`, `ModuleHighlighter.qml`)
+  zostaje bez zmian; zgranie jego paska z `Tide.ScrollBar` należy do etapu A2 karty K-128.
+
 ## Ikony
 
 Ikony aplikacji są okrągłe (baza: McMojave-circle-dark). Nakładka „Tide” dziedziczy po bazie i dokłada tylko różnice: aliasy (Toolbox JetBrains, błędne `code`), kafelki z oryginalnych ikon (okrągłe zostają, pełne grafiki wycięte w koło, przezroczyste kształty na tle w swoim kolorze), foldery w tealu, glify w pastelach dla aplikacji bez ikony. `tide-icons audit` pokazuje pokrycie, `tide-icons sync` uzupełnia nakładkę.
