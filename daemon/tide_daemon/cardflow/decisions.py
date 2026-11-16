@@ -19,7 +19,10 @@ Decyzja:
 - `fault` — dla błędów kroku z dziennika kroku (faults.py): `tide`, `model`, `user`, `provider`, `unknown`;
   dla YouTracka `tracker`, dla review planu bez recenzenta `provider`; pusty napis dla pozostałych rodzajów,
 - `findings[]` — tylko `plan-approval`: uwagi recenzenta `{id, severity, text, tickets, selected}` (`selected`: domyślne
-  zaznaczenie — `blocker` i `major`, nie `nit`); dla pozostałych rodzajów pusta lista,
+  zaznaczenie — `blocker` i `major`, nie `nit`; po automatycznej poprawce planu żadna); dla pozostałych rodzajów pusta
+  lista,
+- `findingsApplied` — tylko `plan-approval`: `true`, gdy planujący poprawił plan po REQUEST_CHANGES, więc uwagi
+  dotyczą wersji sprzed poprawki i są już naniesione w tym planie (K-130),
 - `technical{}` — szczegóły do zwiniętego bloku „Szczegóły techniczne”.
 
 Zgoda na polecenie (`permission`, PT-124) ma dodatkowo:
@@ -792,8 +795,10 @@ def _plan_decision(st: FlowState) -> dict | None:
             "kind": "plan-approval", **_sentences("plan-approval", happened, ""),
             "options": _recommended_first(options), "freeText": True,
             "reply": {"method": EDIT_PLAN, "params": {"action": "return"}, "field": "feedback"},
-            "findings": [{"id": f"f{n}", **f, "selected": review_findings.default_selected(f)}
+            # K-130: po poprawce uwagi są naniesione w tym planie — żadna nie jest zaznaczona „do poprawy”.
+            "findings": [{"id": f"f{n}", **f, "selected": not corrected and review_findings.default_selected(f)}
                          for n, f in enumerate(listed, 1)],
+            "findingsApplied": corrected,
             "technical": technical}
 
 
