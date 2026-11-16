@@ -320,9 +320,11 @@ class CharacterizationTest(FixtureCase):
 
 COUNTING_SYSTEMD_RUN = r'''#!/usr/bin/python3
 import os, sys, time
+# Ścieżki wpisane przy instalacji: krok agenta biegnie z oczyszczonym środowiskiem (bez zmiennych testu).
+LAUNCHES, RELEASE = {launches!r}, {release!r}
 args = sys.argv[1:]
 unit = next((a.split("=", 1)[1] for a in args if a.startswith("--unit=")), "")
-with open(os.environ["PT481_LAUNCHES"], "a", encoding="utf-8") as fh:
+with open(LAUNCHES, "a", encoding="utf-8") as fh:
     fh.write(unit + "\n")
 if unit.startswith("tide-outside-"):
     # Jednostka „żyje” (plik pid jak w atrapie flowfakes) do zwolnienia przez test: polecenie trwa podczas restartu.
@@ -330,7 +332,7 @@ if unit.startswith("tide-outside-"):
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, unit + ".pid"), "w") as fh:
         fh.write(str(os.getpid()))
-    while not os.path.exists(os.environ["PT481_RELEASE"]):
+    while not os.path.exists(RELEASE):
         time.sleep(0.05)
 os.execv(sys.argv[0] + ".real", [sys.argv[0] + ".real", *args])
 '''
@@ -352,11 +354,9 @@ class RestartRecoveryTest(_flow_case()):
         real = self.fakes["systemd-run"]
         os.rename(real, real + ".real")
         with open(real, "w", encoding="utf-8") as fh:
-            fh.write(COUNTING_SYSTEMD_RUN)
+            fh.write(COUNTING_SYSTEMD_RUN.replace("{launches!r}", repr(self.launch_log))
+                     .replace("{release!r}", repr(self.release)))
         os.chmod(real, os.stat(real + ".real").st_mode | stat.S_IXUSR)
-        patcher = mock.patch.dict(os.environ, {"PT481_LAUNCHES": self.launch_log, "PT481_RELEASE": self.release})
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.addCleanup(lambda: open(self.release, "a").close())
 
     def launches(self):
