@@ -1,0 +1,354 @@
+{
+ "cards": {
+  "K-1": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \" · plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Ekran logowania SDDM\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-1\", \"tip\": \"\", \"tone\": \"sky\"}"
+  ],
+  "K-10": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Import przepisu z linku, zdjęcie jako zapas\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-10\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"CookApp\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-11": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-11\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Limit zapytań na klucz API\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"bez agenta, robię sam\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"webservice\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"Uruchom ponownie…\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"\", \"text\": \"Uruchom ponownie…\", \"tip\": \"\", \"tones\": [\"teal\"]}"
+  ],
+  "K-12": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-12\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Miesięczne zestawienie godzin do faktury\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"TimeTracker\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-150\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pilne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProject\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProject\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProjectText\", \"text\": \"+ CookApp\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProjectText\", \"text\": \"+ mobileapp\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardYouTrackSync\", \"text\": \"⟳\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-150 · zapis do YouTracka w toku\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-150 · zapis do YouTracka w toku\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pilne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pilne\", \"tip\": \"\", \"tone\": \"rose\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-13": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"LogViewer\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Eksport podsumowania przebiegu do PDF\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-13\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-131\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardYouTrackSync\", \"text\": \"✓\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-131 · zsynchronizowane — w YouTracku „Open”\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-131 · zsynchronizowane — w YouTracku „Open”\", \"tone\": \"neutral\"}"
+  ],
+  "K-14": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Historia diagnoz pojazdu z filtrem po VIN\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-14\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"mobileapp\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"✓ specyfikacja gotowa\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}"
+  ],
+  "K-15": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-15\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Tryb skupienia: wyciszone powiadomienia i przygaszony dock\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-16": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-16\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-151\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Zapis stanu w YouTracku czeka na sieć\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardYouTrackSync\", \"text\": \"⟳\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-151 · YouTrack niedostępny — zapis czeka\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-151 · YouTrack niedostępny — zapis czeka\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-17": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-17\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-152\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YouTrack odrzucił zmianę stanu\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardYouTrackSync\", \"text\": \"⚠\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-152 · YouTrack odmówił zmiany stanu · stan według: ticket PT-3\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-152 · YouTrack odmówił zmiany stanu · stan według: ticket PT-3\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-18": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-18\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Karta z dodatkowym projektem bez znacznika\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProject\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardExtraProjectText\", \"text\": \"+ webservice\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-19": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-19\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-153\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Znacznik YouTracka bez stanu synchronizacji\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-153\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-153\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-2": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \" · plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-2\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Raport poranny: „Na daily”\", \"tip\": \"\", \"tone\": \"neutral\"}"
+  ],
+  "K-20": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Bardzo długi tytuł karty, który nie mieści się w czterech liniach kafelka, bo opisuje całą zmianę wraz z jej uzasadnieniem, listą plików, ryzykiem regresji, sposobem sprawdzenia i wszystkimi szczegółami, które ktoś wkleił do pola tytułu zamiast opisu\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-20\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-21": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"gotowe\", \"text\": \"\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"pracuje\", \"text\": \"\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"ty\", \"text\": \"\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"kind\": \"progressBar\", \"name\": \"\", \"ratio\": 0.333, \"text\": \"\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-10 · czeka na Ciebie\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-8 · pracuje\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-9 · gotowe\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Claude · koordynator · 1 z 3\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-21\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Starsza usługa: ticket bez fazy\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"fala 1 z 1\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"●\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTicketStrip\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTileWaveLabel\", \"text\": \"fala 1 z 1\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"Przejdź do agenta\", \"ar\": \"link\", \"name\": \"agentLink\", \"text\": \"Przejdź do agenta\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-22": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-22\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Specyfikacja gotowa bez własnej notatki\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"✓ specyfikacja gotowa\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"pomysł\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pomysł\", \"tip\": \"\", \"tone\": \"butter\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-3": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \" · plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-3\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Opisy kart w Tide Sesje\", \"tip\": \"\", \"tone\": \"neutral\"}"
+  ],
+  "K-4": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \" · LogViewer\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-4\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Unikalne filtry w wyszukiwaniu logów z wielu przebiegów naraz, z zapamiętaniem ostatnio użytych wartości w każdej kolumnie i szybkim czyszczeniem filtrów\", \"tip\": \"\", \"tone\": \"neutral\"}"
+  ],
+  "K-5": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"gotowe\", \"text\": \"\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"kolejka\", \"text\": \"\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"odrzucone\", \"text\": \"\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"review\", \"text\": \"\", \"tip\": \"\", \"tone\": \"lavender\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"todo\", \"text\": \"\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": true, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"pracuje\", \"text\": \"\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": true, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"ty\", \"text\": \"\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"kind\": \"progressBar\", \"name\": \"\", \"ratio\": 0.3, \"text\": \"\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-1 · scalony\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-2 · review w toku\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-3 · pracuje: implementer\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-4 · w kolejce poza piaskownicą: make test\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-5 · czeka na Ciebie: pytanie o zakres\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-6 · nie ruszył\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-7 · poza zakresem\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Claude · koordynator · 3 z 10\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-5\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"PT-3: okno tablicy w trakcie\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Tablica pracy z backlogiem i tagami\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"●\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTicketStrip\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTileWaveLabel\", \"text\": \"fala 2 z 3\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"Otwórz w Sesjach →\", \"ar\": \"link\", \"name\": \"sessionsLink\", \"text\": \"Otwórz w Sesjach →\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"Przejdź do agenta\", \"ar\": \"link\", \"name\": \"agentLink\", \"text\": \"Przejdź do agenta\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-6": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"kind\": \"progressBar\", \"name\": \"\", \"ratio\": 0.615, \"text\": \"\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Biblioteka kazusów: zatwierdzanie bazowego UPN\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Codex · koordynator · 8 z 13\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-6\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"LA-035 po review OK, LA-036 w trakcie\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"agent-team\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"●\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"Przejdź do agenta\", \"ar\": \"link\", \"name\": \"agentLink\", \"text\": \"Przejdź do agenta\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ],
+  "K-7": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"kind\": \"progressBar\", \"name\": \"\", \"ratio\": 1, \"text\": \"\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Claude · koordynator · 4 z 4\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"LogViewer\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Hotfix: unikalne wyszukiwanie fraz\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-7\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"YT LOG-142\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"hotfix/tom-142-unique\", \"tip\": \"\", \"tone\": \"lavender\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"pilne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"●\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"✓ review OK · 4 commity, gałąź niescalona\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardYouTrackSync\", \"text\": \"⚠\", \"tip\": \"\", \"tone\": \"rose\"}",
+   "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"Przenieś kartę do Gotowych\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"\", \"text\": \"Gotowe\", \"tip\": \"Przenieś kartę do Gotowych\", \"tones\": [\"mint\"]}",
+   "{\"ad\": \"\", \"an\": \"YouTrack LOG-142 · YouTrack: stan zmieniony ręcznie — w YouTracku „In Progress”, Tide: „Fixed”\", \"ar\": \"statictext\", \"name\": \"cardYouTrack\", \"text\": \"\", \"tip\": \"YouTrack LOG-142 · YouTrack: stan zmieniony ręcznie — w YouTracku „In Progress”, Tide: „Fixed”\", \"tone\": \"rose\"}",
+   "{\"ad\": \"\", \"an\": \"Zmiany gałęzi\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"cardTileDiff\", \"text\": \"Zmiany gałęzi\", \"tip\": \"\", \"tones\": []}",
+   "{\"ad\": \"\", \"an\": \"pilne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"pilne\", \"tip\": \"\", \"tone\": \"rose\"}"
+  ],
+  "K-8": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"gotowe\", \"text\": \"\", \"tip\": \"\", \"tone\": \"mint\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"gapBefore\": false, \"kind\": \"segment\", \"name\": \"ticketSegment\", \"phase\": \"ty\", \"text\": \"\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"kind\": \"progressBar\", \"name\": \"\", \"ratio\": 0.556, \"text\": \"\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-1 · scalony\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"\", \"tip\": \"PT-2 · czeka na Ciebie: pytanie o archiwalne logi\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Claude · koordynator · 5 z 9\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"LogViewer\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-8\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"TOM-146: czy warunek ma działać też na archiwalnych logach?\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Wartość w logu: warunki na kolumnach przebiegu\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"●\", \"tip\": \"\", \"tone\": \"peach\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTicketStrip\", \"text\": \"\", \"tip\": \"\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"cardTileWaveLabel\", \"text\": \"fala 1 z 1\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"Otwórz w Sesjach →\", \"ar\": \"link\", \"name\": \"sessionsLink\", \"text\": \"Otwórz w Sesjach →\", \"tip\": \"\", \"tone\": \"teal\"}",
+   "{\"ad\": \"\", \"an\": \"Przejdź do agenta\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"agentButton\", \"text\": \"Przejdź do agenta\", \"tip\": \"\", \"tones\": [\"peach\"]}"
+  ],
+  "K-9": [
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-9\", \"tip\": \"\", \"tone\": \"sky\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Własne okno i kafelek Dockera\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"przeniesiona, agent jeszcze nie ruszył\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+   "{\"ad\": \"\", \"an\": \"Uruchom agenta…\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"\", \"text\": \"Uruchom agenta…\", \"tip\": \"\", \"tones\": [\"teal\"]}",
+   "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+  ]
+ },
+ "roots": {
+  "K-1": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne\", \"an\": \"K-1 Ekran logowania SDDM\", \"ar\": \"button\", \"border\": \"\", \"compact\": true, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 3, \"waiting\": false}",
+  "K-10": "{\"activeFocus\": false, \"ad\": \"CookApp · własne\", \"an\": \"K-10 Import przepisu z linku, zdjęcie jako zapas\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-11": "{\"activeFocus\": false, \"ad\": \"webservice · Firma · bez agenta, robię sam\", \"an\": \"K-11 Limit zapytań na klucz API\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-12": "{\"activeFocus\": false, \"ad\": \"TimeTracker · własne, pilne\", \"an\": \"K-12 Miesięczne zestawienie godzin do faktury\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-13": "{\"activeFocus\": false, \"ad\": \"LogViewer · Firma\", \"an\": \"K-13 Eksport podsumowania przebiegu do PDF\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-14": "{\"activeFocus\": false, \"ad\": \"mobileapp · Firma · ✓ specyfikacja gotowa\", \"an\": \"K-14 Historia diagnoz pojazdu z filtrem po VIN\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-15": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-15 Tryb skupienia: wyciszone powiadomienia i przygaszony dock\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-16": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-16 Zapis stanu w YouTracku czeka na sieć\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-17": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-17 YouTrack odrzucił zmianę stanu\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-18": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-18 Karta z dodatkowym projektem bez znacznika\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-19": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-19 Znacznik YouTracka bez stanu synchronizacji\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-2": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne\", \"an\": \"K-2 Raport poranny: „Na daily”\", \"ar\": \"button\", \"border\": \"\", \"compact\": true, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 3, \"waiting\": false}",
+  "K-20": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł\", \"an\": \"K-20 Bardzo długi tytuł karty, który nie mieści się w czterech liniach kafelka, bo opisuje całą zmianę wraz z jej uzasadnieniem, listą plików, ryzykiem regresji, sposobem sprawdzenia i wszystkimi szczegółami, które ktoś wkleił do pola tytułu zamiast opisu\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-21": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł · fala 1 z 1\", \"an\": \"K-21 Starsza usługa: ticket bez fazy\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-22": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne, pomysł · ✓ specyfikacja gotowa\", \"an\": \"K-22 Specyfikacja gotowa bez własnej notatki\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-3": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne\", \"an\": \"K-3 Opisy kart w Tide Sesje\", \"ar\": \"button\", \"border\": \"\", \"compact\": true, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 3, \"waiting\": false}",
+  "K-4": "{\"activeFocus\": false, \"ad\": \"LogViewer · Firma\", \"an\": \"K-4 Unikalne filtry w wyszukiwaniu logów z wielu przebiegów naraz, z zapamiętaniem ostatnio użytych wartości w każdej kolumnie i szybkim czyszczeniem filtrów\", \"ar\": \"button\", \"border\": \"\", \"compact\": true, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 3, \"waiting\": false}",
+  "K-5": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne · PT-3: okno tablicy w trakcie\", \"an\": \"K-5 Tablica pracy z backlogiem i tagami\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-6": "{\"activeFocus\": false, \"ad\": \"agent-team · własne · LA-035 po review OK, LA-036 w trakcie\", \"an\": \"K-6 Biblioteka kazusów: zatwierdzanie bazowego UPN\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-7": "{\"activeFocus\": false, \"ad\": \"LogViewer · Firma, pilne · ✓ review OK · 4 commity, gałąź niescalona\", \"an\": \"K-7 Hotfix: unikalne wyszukiwanie fraz\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}",
+  "K-8": "{\"activeFocus\": false, \"ad\": \"LogViewer · Firma · TOM-146: czy warunek ma działać też na archiwalnych logach?\", \"an\": \"K-8 Wartość w logu: warunki na kolumnach przebiegu\", \"ar\": \"button\", \"border\": \"peach\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": true}",
+  "K-9": "{\"activeFocus\": false, \"ad\": \"plasma-tide · własne · przeniesiona, agent jeszcze nie ruszył\", \"an\": \"K-9 Własne okno i kafelek Dockera\", \"ar\": \"button\", \"border\": \"\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}"
+ },
+ "states": {
+  "dragged": true,
+  "draggedOpacity": 0.35,
+  "dragging": true,
+  "focused": {
+   "items": [
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-9\", \"tip\": \"\", \"tone\": \"sky\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Własne okno i kafelek Dockera\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"plasma-tide\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"przeniesiona, agent jeszcze nie ruszył\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"Uruchom agenta…\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"\", \"text\": \"Uruchom agenta…\", \"tip\": \"\", \"tones\": [\"teal\"]}",
+    "{\"ad\": \"\", \"an\": \"własne\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"własne\", \"tip\": \"\", \"tone\": \"lavender\"}"
+   ],
+   "root": "{\"activeFocus\": true, \"ad\": \"plasma-tide · własne · przeniesiona, agent jeszcze nie ruszył\", \"an\": \"K-9 Własne okno i kafelek Dockera\", \"ar\": \"button\", \"border\": \"teal\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}"
+  },
+  "ghost": {
+   "items": [
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-11\", \"tip\": \"\", \"tone\": \"sky\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Limit zapytań na klucz API\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"bez agenta, robię sam\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"webservice\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}"
+   ],
+   "root": "{\"activeFocus\": false, \"ad\": \"webservice · Firma · bez agenta, robię sam\", \"an\": \"K-11 Limit zapytań na klucz API\", \"ar\": \"button\", \"border\": \"teal\", \"compact\": false, \"ghost\": true, \"name\": \"\", \"opacity\": 0.94, \"selected\": false, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}"
+  },
+  "hoverChangesFill": true,
+  "hoverReleased": true,
+  "pulse": [
+   [
+    "gotowe",
+    1
+   ],
+   [
+    "review",
+    1
+   ],
+   [
+    "pracuje",
+    0.45
+   ],
+   [
+    "kolejka",
+    1
+   ],
+   [
+    "ty",
+    1
+   ],
+   [
+    "todo",
+    1
+   ],
+   [
+    "odrzucone",
+    1
+   ]
+  ],
+  "selected": {
+   "items": [
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"K-11\", \"tip\": \"\", \"tone\": \"sky\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"Limit zapytań na klucz API\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"bez agenta, robię sam\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"\", \"ar\": \"none\", \"name\": \"\", \"text\": \"webservice\", \"tip\": \"\", \"tone\": \"neutral\"}",
+    "{\"ad\": \"\", \"an\": \"Firma\", \"ar\": \"statictext\", \"kind\": \"tag\", \"name\": \"\", \"text\": \"Firma\", \"tip\": \"\", \"tone\": \"sky\"}",
+    "{\"ad\": \"\", \"an\": \"Uruchom ponownie…\", \"ar\": \"button\", \"kind\": \"button\", \"name\": \"\", \"text\": \"Uruchom ponownie…\", \"tip\": \"\", \"tones\": [\"teal\"]}"
+   ],
+   "root": "{\"activeFocus\": false, \"ad\": \"webservice · Firma · bez agenta, robię sam\", \"an\": \"K-11 Limit zapytań na klucz API\", \"ar\": \"button\", \"border\": \"teal\", \"compact\": false, \"ghost\": false, \"name\": \"\", \"opacity\": 1, \"selected\": true, \"text\": \"\", \"tip\": \"\", \"titleMaxLines\": 4, \"waiting\": false}"
+  }
+ }
+}
