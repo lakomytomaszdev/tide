@@ -463,7 +463,7 @@ class SharedComponentTest(unittest.TestCase):
             pkg = stage(os.path.join(tmp, "pkg"))
             source = os.path.join(REPO, "apps", "common", "qml", "card")
             for name in ("DecisionDialog.qml", "CardFullView.qml", "DecisionForm.qml", "decision.js",
-                         "TicketTile.qml", "ticket.js"):
+                         "TicketTile.qml", "ticket.js", "PlanTable.qml", "HistoryBlock.qml", "history.js"):
                 with open(os.path.join(source, name), "rb") as fh:
                     expected = fh.read()
                 for view in ("board", "sessions"):

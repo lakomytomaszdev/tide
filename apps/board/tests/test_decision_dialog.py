@@ -97,6 +97,7 @@ class PackageTest(unittest.TestCase):
         for name in ("qml/card/DecisionDialog.qml", "qml/card/DecisionOption.qml", "qml/card/DecisionFinding.qml",
                      "qml/card/DecisionForm.qml", "qml/card/DecisionKind.qml", "qml/card/CardFullView.qml",
                      "qml/card/TicketTile.qml", "qml/card/ticket.js", "qml/card/decision.js",
+                     "qml/card/PlanTable.qml", "qml/card/HistoryBlock.qml", "qml/card/history.js",
                      "qml/tide/Tokens.qml"):
             self.assertIn(name, files)
 

@@ -16,7 +16,7 @@ def plan():
         "  title: t.item ? t.item.title : null, border: t.border.color.toString(), "
         "  people: t.item ? [t.item.executor || '', t.item.reviewer || ''] : null })); "
         "const empty = all(v, 'fullPlanEmpty')[0]; "
-        "return JSON.stringify({ tiles: tiles, waves: all(v, 'fullWave').length, "
+        "return JSON.stringify({ tiles: tiles, waves: new Set(all(v, 'fullTicket').filter(t => t.wave > 0).map(t => t.wave)).size, "
         "  empty: !!empty && empty.visible, cardTitle: v.card.title, "
         "  phases: all(v, 'fullPhase').map(p => [p.phaseId, p.phaseState]) }) })()"))
 '''

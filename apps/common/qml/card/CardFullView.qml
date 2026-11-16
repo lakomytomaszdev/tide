@@ -106,7 +106,8 @@ Rectangle {
     // Bieżące zlecenie od najnowszego wpisu; wcześniejsze (`old`) osobno, zwinięte.
     readonly property var currentHistory: history.filter(h => !h.old).reverse()
     readonly property var oldHistory: history.filter(h => h.old === true).reverse()
-    property bool oldOpen: false
+    // „Pokaż starsze” rozwija wcześniejsze zlecenia wewnątrz bloku historii (HistoryBlock.olderOpen).
+    property alias oldOpen: historyBlock.olderOpen
     readonly property var stoppedByLimit: flow && Array.isArray(flow.stoppedByLimit) ? flow.stoppedByLimit : []
     readonly property var otherProviders: flow && Array.isArray(flow.otherProviders) ? flow.otherProviders : []
     readonly property var limitTransfer: flow && flow.limitTransfer ? flow.limitTransfer : null
@@ -445,121 +446,10 @@ Rectangle {
         return isNaN(when.getTime()) ? "" : Qt.formatDateTime(when, "d.MM HH:mm")
     }
 
-    // Czas po polsku bez znaczników ISO: „dziś 14:20”, „wczoraj 14:20”, starsze „24.10 14:20”.
-    function absoluteTime(ts) {
-        if (!ts) return ""
-        const d = new Date(ts * 1000)
-        if (isNaN(d.getTime())) return ""
-        const now = new Date()
-        const midnight = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
-        const days = Math.round((midnight(now) - midnight(d)) / 86400000)
-        const time = Qt.formatDateTime(d, "HH:mm")
-        return days <= 0 ? "dziś " + time : days === 1 ? "wczoraj " + time : Qt.formatDateTime(d, "d.MM HH:mm")
-    }
-
-    function relativeTime(ts) {
-        if (!ts) return ""
-        const minutes = Math.floor((Date.now() / 1000 - ts) / 60)
-        if (minutes < 1) return "przed chwilą"
-        if (minutes < 60) return minutes + " min temu"
-        const hours = Math.floor(minutes / 60)
-        return hours < 24 ? hours + " godz. temu" : ""
-    }
-
-    function historyWhen(ts) {
-        return [absoluteTime(ts), relativeTime(ts)].filter(x => !!x).join(" · ")
-    }
-
     function phaseCaption(phase) {
         if (phase.state === "skipped") return "nie dotyczy"
         const who = phase.executor === "user" ? "ty" : phase.executor
         return [who, clock(phase.ts), phase.note].filter(x => !!x).join(" · ")
-    }
-
-    // Jedna linia historii: czas, rodzaj, zdanie, znacznik zdarzenia użytkownika i — tylko dla kroków bieżącego
-    // zlecenia z pytaniem albo zatrzymanych (`canResume` z usługi) — „Wznów rozmowę”.
-    component HistoryLine: Rectangle {
-        id: line
-        required property var modelData
-        property bool canResume: false
-        property bool dimmed: false
-        objectName: "fullHistoryLine"
-        readonly property string text: modelData.text
-        readonly property bool byUser: modelData.actor === "user"
-        readonly property bool byCaretaker: modelData.actor === "caretaker"
-        readonly property string when: view.historyWhen(modelData.ts)
-        Layout.fillWidth: true
-        implicitHeight: lineRow.implicitHeight + 14
-        radius: Tide.Tokens.radiusTile
-        color: Tide.Tokens.backgroundCard
-        opacity: dimmed ? 0.7 : 1
-        Accessible.role: Accessible.ListItem
-        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : "",
-                      byCaretaker ? modelData.actorLabel : ""].filter(x => !!x).join(", ")
-        RowLayout {
-            id: lineRow
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.margins: 10
-            spacing: 10
-            Text {
-                Layout.preferredWidth: 150
-                text: line.when
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textMuted
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                elide: Text.ElideRight
-            }
-            Text {
-                objectName: "historyKind"
-                Layout.preferredWidth: 70
-                text: line.modelData.kindLabel
-                textFormat: Text.PlainText
-                color: Tide.Tokens.lavender
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-            }
-            Text {
-                objectName: "historyText"
-                Layout.fillWidth: true
-                text: line.text
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                wrapMode: Text.Wrap
-            }
-            Text {
-                objectName: "historyUser"
-                visible: line.byUser
-                text: "Ty"
-                textFormat: Text.PlainText
-                color: Tide.Tokens.peach
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                font.weight: Font.DemiBold
-            }
-            Text {
-                objectName: "historyCaretaker"
-                visible: line.byCaretaker
-                text: line.modelData.actorLabel || ""   // podpis z usługi („Opiekun”) zamiast nazwy wykonawcy
-                textFormat: Text.PlainText
-                color: Tide.Tokens.teal
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                font.weight: Font.DemiBold
-            }
-            Tide.Button {
-                objectName: "historyResume"
-                visible: line.canResume
-                text: "Wznów rozmowę"
-                small: true
-                Accessible.name: "Wznów rozmowę w kroku " + line.modelData.text
-                onClicked: view.enterStepRequested(line.modelData.step)
-            }
-        }
     }
 
     color: Tide.Tokens.backgroundWindow
@@ -939,13 +829,13 @@ Rectangle {
             }
 
             // Plan i „Teraz w tle”: w Przeglądzie obok siebie; zakładka Plan pokazuje sam plan na całą szerokość.
-            // PT-503 zastąpi fale tabelą planu z przypiętą bieżącą falą — w tym miejscu (`fullPlan`).
+            // Plan to tabela z przypiętą bieżącą falą (PlanTable.qml, PT-503), nie kafelki fal.
             RowLayout {
                 Layout.fillWidth: true
                 visible: view.onOverview || view.tab === "plan"
                 spacing: 20
 
-                // Fale ticketów.
+                // Plan karty.
                 ColumnLayout {
                     objectName: "fullPlan"
                     Layout.fillWidth: true
@@ -992,41 +882,20 @@ Rectangle {
                         ticketSettingsEnabled: view.ticketSettingsEnabled
                         onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                     }
-                    RowLayout {
+                    // Tabela planu (PT-503): w Przeglądzie do 420 px z własnym przewijaniem, w zakładce Plan na całą
+                    // wysokość widoku (nagłówek sekcji i odstęp odejmujemy od dostępnej wysokości).
+                    PlanTable {
                         Layout.fillWidth: true
-                        spacing: 10
-                        Repeater {
-                            model: view.waves
-                            delegate: ColumnLayout {
-                                id: wave
-                                required property var modelData
-                                required property int index
-                                objectName: "fullWave"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.alignment: Qt.AlignTop
-                                spacing: 8
-                                Text {
-                                    text: "Fala " + (wave.index + 1)
-                                    textFormat: Text.PlainText
-                                    color: Tide.Tokens.textSecondary
-                                    font.family: Tide.Theme.uiFamily
-                                    font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                                    font.weight: Font.DemiBold
-                                }
-                                Repeater {
-                                    model: wave.modelData
-                                    delegate: TicketTile {
-                                        required property var modelData
-                                        Layout.fillWidth: true
-                                        ticketId: modelData
-                                        item: view.ticket(modelData)
-                                        ticketSettingsEnabled: view.ticketSettingsEnabled
-                                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
-                                    }
-                                }
-                            }
-                        }
+                        visible: view.waves.length > 0
+                        waves: view.waves
+                        tickets: view.tickets
+                        planRows: view.flow && view.flow.plan && Array.isArray(view.flow.plan.rows) ? view.flow.plan.rows : []
+                        decisions: view.decisions.filter(d => view.answeredIds.indexOf(d.id) < 0)
+                        ticketSettingsEnabled: view.ticketSettingsEnabled
+                        fill: view.tab === "plan"
+                        availableHeight: flick.height - 52
+                        maxHeight: 420
+                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                     }
                 }
 
@@ -1225,46 +1094,17 @@ Rectangle {
                 }
             }
 
-            // Historia ludzkim językiem: bieżące zlecenie na wierzchu, wcześniejsze zwinięte i tylko do odczytu.
-            // Zakładka Historia pokazuje tylko tę sekcję; PT-503 zamknie ją w stałym bloku z własnym przewijaniem.
-            ColumnLayout {
-                objectName: "fullHistory"
+            // Historia ludzkim językiem w stałym bloku (PT-503): bieżące zlecenie na wierzchu, wcześniejsze za
+            // „Pokaż starsze” wewnątrz bloku; blok ma 340 px, w zakładce Historia — całą wysokość widoku.
+            HistoryBlock {
+                id: historyBlock
                 Layout.fillWidth: true
                 visible: view.onOverview || view.tab === "history"
-                spacing: 8
-                Text {
-                    text: "Historia"
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textPrimary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
-                    font.weight: Font.DemiBold
-                }
-                Text {
-                    objectName: "fullHistoryEmpty"
-                    visible: view.history.length === 0
-                    text: "Nic jeszcze się nie wydarzyło."
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textMuted
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                }
-                Repeater {
-                    model: view.currentHistory
-                    delegate: HistoryLine { canResume: modelData.canResume === true }
-                }
-                Tide.Button {
-                    objectName: "fullHistoryOld"
-                    visible: view.oldHistory.length > 0
-                    text: (view.oldOpen ? "▾ " : "▸ ") + "Wcześniejsze zlecenia (" + view.oldHistory.length + ")"
-                    variant: "ghost"
-                    Accessible.name: "Wcześniejsze zlecenia: " + view.oldHistory.length + (view.oldOpen ? ", rozwinięte" : ", zwinięte")
-                    onClicked: view.oldOpen = !view.oldOpen
-                }
-                Repeater {
-                    model: view.oldOpen ? view.oldHistory : []
-                    delegate: HistoryLine { canResume: false; dimmed: true }
-                }
+                current: view.currentHistory
+                older: view.oldHistory
+                fill: view.tab === "history"
+                availableHeight: flick.height - 40
+                onResumeRequested: step => view.enterStepRequested(step)
             }
 
             // Ustawienia karty (PT-134): zapisują się od razu, przyciski nazywają skutek.

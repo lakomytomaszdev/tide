@@ -244,12 +244,38 @@ ustawienia karty z tej samej listy co sekcja „Ustawienia karty” — z tymi s
 archiwizacja, zmiana gałęzi) i z polem, które dostaje fokus. Esc zamyka po kolei: potwierdzenie, menu, kartę.
 
 Zakładki: **Przegląd** (cała strona karty: tytuł, gałąź, fazy, start, „Twój ruch”, plan z „Teraz w tle”, uwagi,
-historia, ustawienia), **Plan** (sam plan) i **Historia** (sama historia) — miejsce na tabelę planu i stały blok
-historii z następnego ticketu K-128 — **Opis** (opis karty w `Tide.Prose` z `markdown: true`; Tablica przekazuje
+historia, ustawienia), **Plan** (sama tabela planu na całą wysokość widoku) i **Historia** (sam blok historii na całą
+wysokość), **Opis** (opis karty w `Tide.Prose` z `markdown: true`; Tablica przekazuje
 `markdownRenderer` = `backend.renderMarkdown`, Sesje nie mają renderera, więc działa tryb Markdown `prose.js`) i
 **Zmiany** (otwiera ten sam widok zmian gałęzi co „Zmiany gałęzi”, `DiffView`; bez gałęzi karty wyłączona
 z podpowiedzią). W widoku jest najwyżej jeden `primary`: „Wybierz ↵” w „Twój ruch”, a przy otwartym pytaniu
 o potwierdzenie — przycisk pytania (archiwizacja jest `danger`).
+
+#### Plan jako tabela (`PlanTable.qml`)
+
+Makieta S-9 „Plan karty”, wariant C. Jeden ticket w wierszu; kolumny: **Fala**, **Ticket** (sky, mono, stała kolumna ze
+skracaniem — numer nie nachodzi na sąsiednie elementy), **Tytuł** (pełny, zawijany; pod nim uwagi z wiersza planu
+`flow.plan.rows[].note` i pytanie ticketu czekającego z `flow.decisions[]` w `text.muted`), **Stan** (plakietka w kolorze
+stanu, etykieta z usługi), **Wykonawca → recenzent** i **⋯** (`Tide.Button` ikona z ustawieniami ticketu, tylko gdy
+`ticketSettingsEnabled`, czyli na Tablicy; otwiera `TicketSettingsDialog`). Ticket spoza karty jest przygaszony.
+Dane są z tych samych pól co dawne kafelki fal (`derived.tickets[]`, `flow.plan.waves`).
+
+- **Bieżąca fala przypięta.** Czysta funkcja `currentWave` (`ticket.js`) wybiera najniższą falę z ticketem w stanie
+  innym niż gotowe/odrzucone. Jej wiersze leżą w bloku pod nagłówkiem tabeli, z plakietką „teraz” i tłem brzoskwini ~0,07,
+  nie powtarzają się niżej, a blok ma najwyżej 40% wysokości tabeli (dłuższy przewija się sam; gdy reszta tabeli i tak
+  nie wypełniłaby miejsca, dostaje je całe). Gdy wszystkie fale są zakończone, nic nie jest przypięte, a tabela zaczyna
+  od pierwszej fali.
+- **Rozmiar.** Minimalna szerokość 720 px; węższy widok przewija tabelę w poziomie (`Tide.ScrollBar`). W Przeglądzie
+  tabela ma najwyżej 420 px i własne przewijanie pionowe, w zakładce Plan zajmuje całą wysokość.
+- Kafelki fal znikły z planu; `TicketTile` zostaje przy karcie „Od razu” (jeden ticket bez fal).
+
+#### Historia w stałym bloku (`HistoryBlock.qml`)
+
+Makieta S-9 „Historia karty”, wariant A. `ListView` w ramce o stałej wysokości 340 px (w zakładce Historia — cała
+wysokość) z `Tide.ScrollBar`: strona karty nie rośnie z liczbą zdarzeń. Najnowsze są u góry, licznik zdarzeń stoi
+w nagłówku sekcji, a „Pokaż starsze” rozwija wcześniejsze zlecenia wewnątrz bloku (przygaszone, bez „Wznów rozmowę”).
+Wiersz: czas (`history.js`), rodzaj, zdanie w `Tide.Prose`, znacznik „Ty” albo „Opiekun” i — tylko tam, gdzie usługa
+daje `canResume` — „Wznów rozmowę”. Ten sam komponent pokaże historię w panelu karty na Tablicy.
 
 ## Ikony
 

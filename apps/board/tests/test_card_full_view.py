@@ -38,7 +38,7 @@ def full():
         "  findings: byY(all(v, 'decisionFinding')).map(f => f.checked), "
         "  error: one('decisionError') ? one('decisionError').text : '', "
         "  choose: one('fullChoose') ? one('fullChoose').enabled : null, "
-        "  waves: byX(all(v, 'fullWave')).map(w => byY(all(w, 'fullTicket')).map(t => [t.ticketId, t.statusLabel])), "
+        "  waves: Object.values(byY(all(v, 'fullTicket')).reduce((m, t) => { (m[t.wave] = m[t.wave] || []).push([t.ticketId, t.statusLabel]); return m }, {})), "
         "  planEmpty: !!one('fullPlanEmpty'), "
         "  now: byY(all(v, 'fullNow')).map(s => [s.stepId, s.label, all(s, 'fullNowEnter').length]), "
         "  nowEmpty: one('fullNowEmpty') ? one('fullNowEmpty').text : null, "
@@ -364,6 +364,8 @@ out["calls"] = [c[0] for c in calls()]
         data["cardOpen"] = "full"
         out = self.probe(STATE_PY + """
 click(card("K-8"))
+js("page.cardFullView.selectTab('history')")   # PT-503: historia w stałym bloku, w zakładce na całą wysokość
+wait(150)
 HIST =("(function () { const v = page.cardFullView; const all = " + ALL + "; "
         "return JSON.stringify(all(v, 'fullHistoryLine').sort((a, b) => a.mapToItem(v, 0, 0).y - b.mapToItem(v, 0, 0).y)"
         ".map(l => [l.text, l.when, l.byUser, all(l, 'historyResume').filter(b => b.visible).length, l.modelData.old])) })()")
