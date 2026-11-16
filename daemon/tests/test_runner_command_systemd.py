@@ -8,7 +8,10 @@ Przypadki z kartki:
   c) przekroczenie `RuntimeMaxSec` (krótki limit) — wynik rozstrzygnięty (`zatrzymane`),
   d) zabicie klienta `systemd-run --wait` w trakcie (SIGTERM jak przy restarcie usługi i SIGKILL) — jednostka
      biegnie dalej, wynik z pliku po jej końcu,
-  e) brak jednostki po `--collect` nie gubi wyniku.
+  e) brak jednostki po `--collect` nie gubi wyniku,
+  f) K-109 PT-485, wyścig z systemd: żądanie `systemd-run` wysłane, odzyskiwanie zakłada znacznik `abandoned`, a
+     jednostka powstaje dopiero potem (klient opóźniony nakładką) — polecenie się nie wykonuje, `exit-code` =
+     `zatrzymane`; dla porównania próba bez opóźnienia: znacznik `run`, odzyskiwanie nie porzuca, wynik z pliku.
 
 W piaskownicy kroku agenta nie ma menedżera użytkownika — moduł się wtedy pomija (pominięcie nie jest dowodem;
 autor uruchamia go poza piaskownicą). Każdy przypadek wypisuje na stderr wiersz `PT479 <przypadek>: …` z jednostką,
@@ -216,6 +219,64 @@ class RealSystemdCommandTest(unittest.TestCase):
               f"({(status.stderr or status.stdout).strip()[:120]})", file=sys.stderr, flush=True)
         self.assertNotEqual(status.returncode, 0)
         self.assertEqual(value, 3)
+
+    # --- K-109 PT-485: znacznik próby przeciw opóźnionemu utworzeniu jednostki ------------------------------------
+
+    def delayed_systemd_run(self, gate):
+        """Nakładka na prawdziwy `systemd-run`: czeka na plik bramki i dopiero wtedy wysyła żądanie — jednostka
+        powstaje po odzyskiwaniu, jak przy żądaniu wysłanym tuż przed awarią usługi."""
+        path = os.path.join(self.tmp, "systemd-run-late")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/sh\nwhile [ ! -e "{gate}" ]; do sleep 0.05; done\n'
+                     f'exec {shutil.which("systemd-run")} "$@"\n')
+        os.chmod(path, 0o700)
+        return path
+
+    def test_f_unit_created_after_abandoned_marker_never_runs_the_command(self):
+        gate = os.path.join(self.tmp, "gate")
+        counter = os.path.join(self.tmp, "executions")
+        self.runner = HostRunner(self.delayed_systemd_run(gate))
+        handle = self.start(f'echo ran >> "{counter}"; exit 0')
+        self.assertEqual(self.runner.command_state(handle.unit), "gone", "jednostka powstała przed odzyskaniem")
+        abandoned = self.runner.abandon_command(handle.exit_file)      # odzyskiwanie zamiaru bez startu
+        open(gate, "w").close()                                         # teraz żądanie trafia do systemd
+        client = handle.proc.wait(timeout=60)
+        value = self.wait_result(handle)
+        executions = 0
+        if os.path.exists(counter):
+            with open(counter, encoding="ascii") as fh:
+                executions = len(fh.read().splitlines())
+        marker = runner_mod.read_marker(runner_mod.marker_of(handle.exit_file))
+        self.report("f", handle, value, client)
+        print(f"PT485 f: abandon_command={abandoned}, znacznik={marker!r}, wykonania polecenia={executions}, "
+              f"exit-code={self.exit_text(handle)!r}", file=sys.stderr, flush=True)
+        self.assertTrue(abandoned)
+        self.assertEqual(marker, runner_mod.MARK_ABANDONED)
+        self.assertEqual(executions, 0, "polecenie wykonane mimo znacznika abandoned")
+        self.assertEqual(self.exit_text(handle), runner_mod.STOPPED)
+        self.assertEqual(value, runner_mod.STOPPED)
+
+    def test_f_started_command_is_not_abandoned_by_recovery(self):
+        counter = os.path.join(self.tmp, "executions")
+        handle = self.start(f'sleep 2; echo ran >> "{counter}"; exit 4')
+        self.assertTrue(self.wait_state(handle, "active"))
+        marker = runner_mod.marker_of(handle.exit_file)
+        end = time.monotonic() + 10
+        while time.monotonic() < end and runner_mod.read_marker(marker) != runner_mod.MARK_RUN:
+            time.sleep(0.05)
+        abandoned = self.runner.abandon_command(handle.exit_file)
+        state = self.runner.command_state(handle.unit)
+        value = self.wait_result(handle)
+        client = handle.proc.wait(timeout=30)
+        with open(counter, encoding="ascii") as fh:
+            executions = len(fh.read().splitlines())
+        self.report("f-run", handle, value, client)
+        print(f"PT485 f-run: abandon_command={abandoned}, znacznik={runner_mod.read_marker(marker)!r}, "
+              f"jednostka przy odzyskiwaniu={state}, wykonania polecenia={executions}", file=sys.stderr, flush=True)
+        self.assertFalse(abandoned)
+        self.assertEqual(runner_mod.read_marker(marker), runner_mod.MARK_RUN)
+        self.assertEqual(state, "active")
+        self.assertEqual((value, executions), (4, 1))
 
 
 if __name__ == "__main__":

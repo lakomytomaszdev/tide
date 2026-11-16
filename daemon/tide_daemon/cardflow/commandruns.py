@@ -47,6 +47,11 @@ COMMON_START = ("step", "ticket", "command", "unit", "log", "exitFile", "worktre
 COMMON_FINISH = ("step", "ticket", "command", "exit", "tail", "ts", "seq")
 COMMAND_ONLY = ("attempt", "executor", "isolation", "class", "consentVersion", "source", "loadavg", "cores",
                 "recovered", "reason")
+# Rezerwacja budżetu w zamiarze (K-109 PT-485, ADR-1 pkt 2): klasa z bieżącej decyzji kolejki i miejsce (projekt).
+INTENT_BUDGET = ("heavy", "exclusive", "project")
+NOT_STARTED = "not-started"     # `reason` końca zamiaru rozstrzygniętego bez startu polecenia
+NOT_STARTED_NOTE = ("Polecenie nie wystartowało: usługa Tide przerwała start i po odzyskaniu porzuciła tę próbę "
+                    "(nic nie zostało uruchomione). Jeśli nadal jest potrzebne, poproś o nie ponownie.")
 
 
 def phase(event) -> str:
@@ -134,12 +139,58 @@ def runs(events) -> list[Run]:
             index = running.pop(name)
             found[index] = replace(found[index], finished=True, finished_seq=event.get("seq"),
                                    exit=event.get("exit"), tail=_text(event.get("tail")), end=event)
+        else:
+            intents.pop(name, None)     # zamiar rozstrzygnięty bez startu (`reason: not-started`, PT-485)
     return found
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """Ostatni zamiar `command.intent` kroku i jego los (K-109 PT-485): `started` — start tej próby (także
+    odzyskany), `finished` — koniec (z `reason: not-started`, gdy polecenie nigdy nie wystartowało)."""
+    intent: dict
+    started: dict | None = None
+    finished: dict | None = None
+
+    @property
+    def pending(self) -> bool:
+        return self.started is None and self.finished is None
+
+    @property
+    def not_started(self) -> bool:
+        return self.started is None and self.finished is not None
+
+
+def attempt_of(events, name: str) -> Attempt | None:
+    """Ostatni zamiar kroku `name` z jego startem i końcem albo None (krok bez zamiaru, np. przebieg `outside.*`).
+    Start i koniec należą do zamiaru, gdy przyszły po nim (start z innym `attempt` — nie)."""
+    found = None
+    for event in events:
+        current = phase(event)
+        if not current or (event.get("step") or "") != name:
+            continue
+        if current == "intent":
+            found = Attempt(event)
+        elif found is None:
+            continue
+        elif current == "started" and found.started is None and found.finished is None:
+            attempt, planned = _attempt(event), _attempt(found.intent)
+            if not attempt or not planned or attempt == planned:
+                found = replace(found, started=event)
+        elif current == "finished" and found.finished is None:
+            found = replace(found, finished=event)
+    return found
+
+
+def intended(events) -> set:
+    """Kroki z jakimkolwiek zamiarem `command.intent`: jedna decyzja kroku = jeden zamiar, ponowny start wymaga nowej
+    decyzji (nowego kroku) i nowego zamiaru (K-109 PT-485)."""
+    return {event.get("step") or "" for event in events if phase(event) == "intent"}
+
+
 def pending(events) -> dict:
-    """Krok → identyfikator próby zamiarów `command.intent` bez startu (zamiar przed uruchomieniem, ADR-1 pkt 1).
-    Rozstrzyganie takiego zamiaru po restarcie należy do PT-485; tu tylko widok."""
+    """Krok → identyfikator próby zamiarów `command.intent` bez startu i bez końca (zamiar przed uruchomieniem,
+    ADR-1 pkt 1). Rozstrzyga je odzyskiwanie (`commands.outside_recover`, PT-485)."""
     waiting: dict = {}
     for event in events:
         current = phase(event)

@@ -13,7 +13,7 @@
 #  6. zapisuje kod wyjścia atomowo w <krok>/in/exit-code (jak EXIT_WRAPPER hosta) i kończy się nim.
 # SIGTERM (systemctl --user kill) dostaje cała jednostka; opakowanie go przeczekuje, żeby zapisać kod.
 #
-# Tryb polecenia (K-109 PT-479, ADR-1): `tide-step --command <plik exit-code> <plik wyniku> -- <argv>` — jedno
+# Tryb polecenia (K-109 PT-479, ADR-1): `tide-step --command <plik exit-code> <plik wyniku> <znacznik> -- <argv>` — jedno
 # polecenie nie-agentowe jako proces główny przejściowej usługi `tide-cmd-<attempt>` (HostRunner.run_command).
 # Bez TIDE_STEP i bez czyszczenia środowiska (etap 1: `isolation: none`, środowisko podaje jednostka). Polecenie
 # dostaje stdin z /dev/null i dopisuje wyjście do pliku wyniku. Kod wyjścia trafia atomowo (plik `.tmp` i `mv`)
@@ -21,6 +21,9 @@
 # przekazuje sygnał poleceniu i czeka na jego koniec — wynik nie zależy od klienta `systemd-run --wait`. Wczesny
 # zapis chroni wynik przed SIGKILL po TimeoutStopSec; `zatrzymane` jest wynikiem końcowym dopiero po końcu jednostki
 # (HostRunner.command_result).
+# Znacznik próby (K-109 PT-485, dowód braku procesu): przed startem polecenia opakowanie zakłada plik <znacznik>
+# (obok exit-code) przez O_CREAT|O_EXCL (`set -C`) z treścią `run`. Gdy już istnieje (odzyskiwanie zamiaru zapisało
+# `abandoned`), polecenie nie startuje, a exit-code dostaje `zatrzymane`.
 set -u
 umask 077
 
@@ -52,17 +55,33 @@ if [ "${1:-}" = --command ]; then
         [ -z "$child" ] || kill -TERM "$child" 2>/dev/null
     }
     trap on_term TERM
-    if [ "$#" -lt 5 ] || [ "$4" != -- ]; then
-        echo "tide-step: użycie: tide-step --command <exit-code> <wynik> -- <polecenie…>" >&2
+    if [ "$#" -lt 6 ] || [ "$5" != -- ] || [ -z "$4" ]; then
+        echo "tide-step: użycie: tide-step --command <exit-code> <wynik> <znacznik> -- <polecenie…>" >&2
         exit 125
     fi
     output=$3
+    marker=$4
     rm -f -- "$2.tmp"
     status=$2
-    shift 4
+    shift 5
     if [ -n "$stopped" ]; then
         # SIGTERM przed odczytem argumentów: zapis teraz, polecenie nie startuje.
         record zatrzymane
+        exit 143
+    fi
+    # Znacznik próby przed startem polecenia: O_EXCL rozstrzyga wyścig z odzyskiwaniem zamiaru w usłudze.
+    set -C
+    if printf '%s\n' run 2>/dev/null > "$marker"; then
+        set +C
+    else
+        set +C
+        echo "tide-step: znacznik próby $marker już istnieje — polecenie porzucone, nie startuje" >&2
+        recorded=1
+        record zatrzymane
+        exit 125
+    fi
+    if [ -n "$stopped" ]; then
+        # SIGTERM w trakcie zakładania znacznika (`zatrzymane` już zapisane): polecenie nie startuje.
         exit 143
     fi
     "$@" < /dev/null >> "$output" 2>&1 &

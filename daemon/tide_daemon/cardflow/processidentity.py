@@ -249,18 +249,26 @@ EVENTS = MappingProxyType({
         writer=("ticket",), neutral=("command", "exit", "tail"), extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),
     # K-109 PT-481: nowa rodzina przebiegu (zamiar → start → wynik), czytana przez widok `commandruns` razem
-    # z `outside.started`/`outside.finished`. Zamiar jest śladem procesu bez startu jednostki.
-    commandruns.INTENT: _reader(Event("outside-trace", _trace(neutral=("command", *COMMAND_NEUTRAL)))),
+    # z `outside.started`/`outside.finished`. Zamiar jest śladem procesu bez startu jednostki; od PT-485 zapisuje
+    # go `_start_outside` przed `run_command` (jednostka i pliki próby, rezerwacja budżetu: `heavy`, `exclusive`,
+    # `project`).
+    commandruns.INTENT: Event("outside-trace", _trace(
+        writer=("ticket", "worktree"),
+        neutral=("command", "exitFile", "head", "log", "rerunOf", "unit",
+                 *(name for name in COMMAND_NEUTRAL if name not in ("loadavg", "cores", *COMMAND_LATER)),
+                 *commandruns.INTENT_BUDGET)),
+        reason="zamiar przed startem polecenia (protokół jednego wykonania, ADR-1 pkt 1–2)"),
     # K-109 PT-479: start i wynik zapisuje prośba `outside` kroku (`_start_outside`, `commands.outside_ready`);
-    # pola odzyskiwania zamiaru (`recovered`, `reason`) zapisze dopiero PT-485.
+    # pola odzyskiwania zamiaru zapisuje `commands.outside_recover` (PT-485): `recovered` w starcie, `reason`
+    # (`not-started`) w końcu. Drugie z pól w drugim zdarzeniu jest tylko rozpoznawane (źródło `reader`).
     commandruns.STARTED: _reader_fields(Event("outside-start", _trace(
         writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf", *COMMAND_NEUTRAL),
         extra={"unit": OUTSIDE_UNIT_OWN}), reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"),
-        COMMAND_LATER),
+        ("reason",)),
     commandruns.FINISHED: _reader_fields(Event("outside-finish", _trace(
         writer=("ticket",), neutral=("command", "exit", "exitFile", "tail", *COMMAND_NEUTRAL),
         extra={"unit": replace(OUTSIDE_UNIT_INHERITED, source="writer")}),
-        reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"), COMMAND_LATER),
+        reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"), ("recovered",)),
     "intent": Event("action"),
     "result": Event("action"),
     # --- metadane karty: zdarzenia bez roli dowodowej ------------------------------------
@@ -883,6 +891,17 @@ def process_identities(events):
                     else:
                         identity.outside_units[domain] = unit
                         identity.outside_runs.setdefault(domain, {"started": dict(event), "finished": None})
+            elif kind == commandruns.INTENT and not unknown:
+                # K-109 PT-485: zamiar ustala jednostkę próby przed startem — start musi ją powtórzyć, a koniec
+                # zamiaru rozstrzygniętego bez startu (`reason: not-started`) dziedziczy ją z zamiaru. Uruchomienia
+                # (`outside_runs`) zamiar nie otwiera.
+                unit = event.get("unit")
+                if canonical_text(unit, True):
+                    previous = identity.outside_units.get(domain)
+                    if previous is not None and previous != unit:
+                        identity.worsen("inconsistent")
+                    else:
+                        identity.outside_units[domain] = unit
             elif role == "outside-finish":
                 # Zakończenie należy do uruchomienia tej samej domeny; pierwsze zakończenie wygrywa.
                 run = identity.outside_runs.get(domain)

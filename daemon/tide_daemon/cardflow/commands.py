@@ -27,7 +27,7 @@ from typing import Callable
 
 from ..tasks import agentcmd, stepstop
 from ..tasks import runner as runner_mod
-from . import boxstep, consent, heavyqueue, mergecheck, processidentity, testpolicy, trialhold
+from . import boxstep, commandruns, consent, heavyqueue, mergecheck, processidentity, testpolicy, trialhold
 from .commandruns import FINISHES, INTENTS, PHASES, STARTS, Run, family, pending, phase, runs  # noqa: F401 — widok
 from .errors import FlowError
 from .state import _epoch, ticket_of
@@ -130,6 +130,10 @@ class Ports:
     unit_stop: Callable = None         # (jednostka) → zatrzymanie bez czekania
     unit_gone: Callable = None         # (jednostka) → True tylko przy potwierdzonym końcu (`unknown` = żyje)
     machine_load: Callable = None      # () → heavyqueue.Load
+    # K-109 PT-485: odzyskiwanie zamiaru bez startu — znacznik próby `abandoned` (O_EXCL) i stan jednostki.
+    unit_abandon: Callable = None      # (plik exit-code) → True: polecenie nigdy nie wystartuje; False: wystartowało
+    unit_state: Callable = None        # (jednostka) → `active`, `gone` albo `unknown`
+    outside_recover: Callable = None
 
 
 def queue_heavy(entry) -> bool:
@@ -183,7 +187,10 @@ def outside_history(ports,card: str, step: dict | None = None, *, command: str |
                     or done.get("command") != command
                     or decision.get("choice") not in ("run", "run-always", "run-ticket")
                     or ("command" in decision and decision["command"] != command)
-                    or name in st.outside_started):
+                    or name in st.outside_started
+                    # K-109 PT-485: jedna decyzja = jeden zamiar; także zamiar rozstrzygnięty `not-started`
+                    # nie pozwala na drugi start (ponowne uruchomienie wymaga nowej decyzji w nowym kroku).
+                    or name in commandruns.intended(events)):
                 raise ValueError("brak aktualnej prośby i zgody na start outside")
         return events
     except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -242,7 +249,8 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
     # zakończenie innej próby tej samej nazwy nie jest odpowiedzią bieżącej (PT-288 review 2, M4).
     # K-105 PT-415: czekanie (kolejka, trwające polecenie) z pamięci; każdy skutek (wznowienie z wynikiem, start,
     # zapis `outside.finished`) dopiero po świeżym odczycie i tej samej redukcji na nim.
-    run_state, started, finished = processidentity.outside_run(ports.outside_history(card, step, fresh=False), name)
+    events = ports.outside_history(card, step, fresh=False)
+    run_state, started, finished = processidentity.outside_run(events, name)
     if run_state != "ok":
         raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
 
@@ -251,6 +259,18 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
         if run[0] != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
         return run
+    # K-109 PT-485 (ADR-1 pkt 5): zamiar bez startu rozstrzyga odzyskiwanie (znacznik próby, nigdy ponowny start);
+    # zamiar zakończony `not-started` wznawia krok z wynikiem `zatrzymane` — bez drugiego zamiaru tej decyzji.
+    attempt = commandruns.attempt_of(events, name)
+    if attempt is not None and attempt.started is None:
+        if attempt.pending:
+            ports.outside_recover(card, step, attempt.intent)
+            return None
+        attempt = commandruns.attempt_of(ports.outside_history(card, step), name)
+        if attempt is None or not attempt.not_started:
+            return None
+        end = attempt.finished
+        return {**decision, "answer": f"Kod wyjścia: {end.get('exit')}\n{commandruns.NOT_STARTED_NOTE}"}
     if finished:
         _, started, finished = fresh_run()
     if finished:
@@ -311,6 +331,65 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
     # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
     return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
                                   f"Koniec wyniku:\n{tail}"}
+
+
+def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: dict) -> str:
+    """Odzyskiwanie zamiaru `command.intent` bez startu (K-109 PT-485, ADR-1 pkt 5). Nigdy nie uruchamia polecenia.
+
+    Rozstrzyga wyłącznie znacznik próby (`O_EXCL`, `Runner.abandon_command`), nie samo zapytanie o jednostkę:
+    - znacznik `abandoned` założony (albo założony wcześniej przez odzyskiwanie) — polecenie nigdy nie wystartuje, także
+      gdy jednostka powstanie później: `command.finished` z `exit: zatrzymane`, `reason: not-started`, zwolnienie
+      rezerwacji miejsca i kolejki ciężkich;
+    - znacznik `run` (opakowanie uruchomiło polecenie) — dopiero wtedy stan jednostki `tide-cmd-<attempt>`: żyje albo
+      skończona/zebrana → `command.started` z `recovered: true` (wynik zbiera dalej `outside_collect` z `exit-code`,
+      brak pliku po końcu jednostki → `zatrzymane`); stan nieznany — czekanie do kolejnego ticku.
+
+    Świeży odczyt historii, znacznik i zapis pod jedną blokadą dziennika (jak start w `_start_outside`). Zwraca
+    `not-started`, `started` albo "" (bez rozstrzygnięcia)."""
+    name = step.get("step") or ""
+    with ports.journal.lock:
+        attempt = commandruns.attempt_of(ports.outside_history(card, step), name)
+        if attempt is None or not attempt.pending or attempt.intent.get("seq") != intent.get("seq"):
+            return ""       # historia zmieniła się po odczycie z pamięci: kolejny tick od nowa
+        intent = attempt.intent
+        unit, exit_file = intent.get("unit"), intent.get("exitFile")
+        if (not isinstance(unit, str) or not unit.startswith(runner_mod.COMMAND_PREFIX)
+                or not isinstance(exit_file, str) or not exit_file):
+            raise FlowError("outside-history", "zamiar polecenia bez jednostki i pliku wyniku — wykonanie wstrzymane")
+        try:
+            abandoned = ports.unit_abandon(exit_file)
+        except OSError as exc:
+            ports.outside_log(name, f"zamiar {unit}: znacznik próby niedostępny ({exc}) — czekam")
+            return ""
+        # Pola przebiegu z zamiaru: start i koniec tej samej próby powtarzają je bez zmian.
+        fields = {"step": name, "ticket": step.get("ticket") or "", "command": intent.get("command") or "",
+                  "attempt": intent.get("attempt") or "", "executor": intent.get("executor") or "",
+                  "isolation": intent.get("isolation") or "", "class": intent.get("class") or "",
+                  "consentVersion": intent.get("consentVersion") or "", "unit": unit, "exitFile": exit_file,
+                  "source": intent.get("source") or ""}
+        load = ports.machine_load()
+        if abandoned:
+            ports.journal.append(card, "command.finished", **fields, exit=runner_mod.STOPPED, tail="",
+                                 reason=commandruns.NOT_STARTED, loadavg=load.avg1, cores=load.cores)
+            ports.outside_busy(card)        # buduje zbiór aktywnych po restarcie
+            state.active.pop(name, None)
+            state.waiting.pop(name, None)
+            ports.outside_heavy_state().pop(name, None)
+            ports.outside_quiet_state().pop(name, None)
+            ports.heavy_held().pop(name, None)
+            ports.outside_log(name, f"zamiar {unit} porzucony bez startu polecenia")
+            return commandruns.NOT_STARTED
+        if ports.unit_state(unit) == "unknown":
+            ports.outside_log(name, f"zamiar {unit}: polecenie wystartowało, stan jednostki nieznany — czekam")
+            return ""
+        ports.journal.append(card, "command.started", **fields, log=intent.get("log") or "",
+                             worktree=intent.get("worktree") or "", head=intent.get("head") or "",
+                             rerunOf=intent.get("rerunOf") or "", loadavg=load.avg1, cores=load.cores,
+                             recovered=True)
+        ports.outside_busy(card)
+        state.active[name] = (card, unit)
+        ports.outside_log(name, f"zamiar {unit}: polecenie wystartowało — odzyskany start")
+        return "started"
 
 
 def outside_collect(ports,state: CommandsState, card: str, name: str, started: dict, confirm=None, *,
@@ -396,8 +475,14 @@ def outside_stopped(ports,started: dict, step_dir: str, *, grace: float, state_t
 
 def outside_exit(journal, card: str, name: str) -> str:
     """Plik kodu wyjścia uruchomienia outside procesu ze wspólnego wyniku redukcji (PT-288 review 2, M7):
-    niezakończone uruchomienie, które zajmuje miejsce (najpierw bieżącej próby), inaczej bieżące."""
+    niezakończone uruchomienie, które zajmuje miejsce (najpierw bieżącej próby), inaczej bieżące.
+
+    Zamiar bez startu (K-109 PT-485): nierozstrzygnięty — ścieżka bez pliku (miejsce zajęte do `command.finished`,
+    nawet gdy opakowanie zdążyło zapisać `exit-code`); rozstrzygnięty `not-started` — "" (rezerwacja zwolniona)."""
     events = journal.read(card)
+    attempt = commandruns.attempt_of(events, name)
+    if attempt is not None and attempt.started is None:
+        return "/nonexistent/in/exit-code" if attempt.pending else ""
     found = processidentity.outside_runs(events).get(name)
     if found is None:
         found = processidentity.outside_run(events, name)[1] or {}
@@ -481,14 +566,22 @@ def outside_busy(ports,state: CommandsState, card: str, *, total: int, per_proje
         # proces wstrzymany z jakimkolwiek startem zajmuje miejsce zachowawczo.
         state.active = {}
         for other in ports.journal.cards():
-            for name, started in processidentity.outside_runs(ports.journal.read(other)).items():
+            events = ports.journal.read(other)
+            for name, started in processidentity.outside_runs(events).items():
                 unit = started.get("unit")
                 state.active[name] = (other, unit if isinstance(unit, str) else "")
+            # K-109 PT-485: zamiar bez startu trzyma rezerwację miejsca (polecenie mogło ruszyć) do `command.finished`.
+            for name in commandruns.pending(events):
+                unit = (commandruns.attempt_of(events, name).intent or {}).get("unit")
+                state.active.setdefault(name, (other, unit if isinstance(unit, str) else ""))
     alive = {}
     for name, (other, unit) in state.active.items():
         # Plik kodu wyjścia przebiegu (`outside.*`: <krok>/outside/in/exit-code, `command.*`: plik opakowania
         # tide-step — liczba albo `zatrzymane`).
-        code = runner_mod.read_command_exit(ports.outside_exit(other, name))
+        path = ports.outside_exit(other, name)
+        if not path:
+            continue        # zamiar rozstrzygnięty bez startu (PT-485): rezerwacja zwolniona
+        code = runner_mod.read_command_exit(path)
         if code is None:
             alive[name] = (other, unit)
         elif (code == runner_mod.STOPPED and unit.startswith(runner_mod.COMMAND_PREFIX)

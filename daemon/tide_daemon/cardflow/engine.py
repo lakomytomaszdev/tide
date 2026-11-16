@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import functools
 import json
 import hashlib
@@ -60,6 +61,7 @@ from . import testpolicy
 from . import mergecheck
 from . import heavyqueue
 from . import commands
+from . import commandruns
 from .commands import queue_heavy as _queue_heavy, test_pool_available  # noqa: F401  (dotychczasowe nazwy)
 from . import queueview
 from . import ticketlimit
@@ -7349,7 +7351,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             merge_check_start=self._merge_check_start, merge_check_repo=self._merge_check_repo,
             unit_result=self._command_result, unit_stop=lambda unit: self.runner.stop_command(unit),
             unit_gone=lambda unit: self.runner.command_state(unit, timeout=OUTSIDE_STATE_TIMEOUT) == "gone",
-            machine_load=lambda: self._load_reader()())
+            machine_load=lambda: self._load_reader()(),
+            unit_abandon=lambda exit_file: self.runner.abandon_command(exit_file),
+            unit_state=lambda unit: self.runner.command_state(unit, timeout=OUTSIDE_STATE_TIMEOUT),
+            outside_recover=self._outside_recover)
+
+    def _outside_recover(self, card: str, step: dict, intent: dict) -> str:
+        return commands.outside_recover(self._commands_ports(), self._commands(), card, step, intent)
 
     def _command_result(self, started: dict):
         """Wynik przebiegu `command.*` z pliku `exit-code` przez runner (K-109 PT-479); None — trwa."""
@@ -7744,6 +7752,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return True
         try:
             events = self.journal.read(card)
+            attempt = commandruns.attempt_of(events, name)
+            planned = attempt.intent if attempt is not None and attempt.pending else {}
+            if isinstance(planned.get("heavy"), bool) and isinstance(planned.get("exclusive"), bool):
+                # K-109 PT-485: zamiar bez startu po restarcie — klasa z rezerwacji zapisanej w zamiarze.
+                known[name], quiet[name] = planned["heavy"] or planned["exclusive"], planned["exclusive"]
+                return known[name]
             started = processidentity.outside_runs(events).get(name) or \
                 processidentity.outside_run(events, name)[1] or {}
             current = fold(events)
@@ -7835,6 +7849,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             identities = processidentity.process_identities(events)
             started = {name for name, identity in identities.items() if isinstance(name, str)
                        and identity.has_outside_start}
+            # K-109 PT-485: zamiar (także rozstrzygnięty `not-started`) to już ślad startu tej decyzji — miejsce
+            # trzyma `_outside_active` do `command.finished`, a drugi start tej decyzji jest wykluczony.
+            started |= commandruns.intended(events)
             current = fold(events)
             if current.paused:
                 continue        # wstrzymana karta nie zajmuje miejsca w kolejce (wraca do niej po wznowieniu)
@@ -7887,27 +7904,40 @@ class FlowEngine(CaretakerChat, PlanEditing):
         command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
         # K-109 PT-479 (ADR-1): jedno polecenie jako przejściowa usługa `tide-cmd-<attempt>` przez
         # `Runner.run_command`; argv i opakowanie `tide-step` składa runner, wynik przyjdzie z pliku `exit-code`.
-        request = commands.step_request(step, command, timeout=OUTSIDE_TIMEOUT, cpu_weight=STEP_CPU_WEIGHT,
-                                        old_jobs=OLD_RUNNER_JOBS)
-        # Ta sama blokada obejmuje świeży odczyt, start jednostki i zapis startu: decyzja
-        # ani historia nie mogą zmienić się pomiędzy kontrolą a startem. Zapis startu po uzyskaniu uchwytu,
-        # jak dawniej po Popen (szczelinę zamyka trwały zamiar przed startem, PT-485).
+        # K-109 PT-485 (ADR-1 pkt 1–2): trwały identyfikator próby przed startem; jednostka i pliki próby wynikają
+        # z niego, więc zamiar zapisuje je, zanim powstanie jakikolwiek proces.
+        attempt = runner_mod.new_attempt()
+        request = dataclasses.replace(
+            commands.step_request(step, command, timeout=OUTSIDE_TIMEOUT, cpu_weight=STEP_CPU_WEIGHT,
+                                  old_jobs=OLD_RUNNER_JOBS), attempt=attempt)
+        files = runner_mod.command_files(request.folder, attempt)
+        # Ta sama blokada obejmuje świeży odczyt, zapis zamiaru, start jednostki i zapis startu: decyzja
+        # ani historia nie mogą zmienić się pomiędzy kontrolą a startem.
         with self.journal.lock:
             # Odmowa człowieka albo cofnięcie zapisane po kontroli kolejki wygrywa ze startem (PT-311).
             self._outside_history(card, step)
             if not self._outside_still_allowed(card, step):
                 return
+            # Bez zamiaru tej decyzji (także rozstrzygniętego `not-started`) — inaczej FlowError, bez startu.
             self._outside_history(card, step, command=requested_command)
+            # Rezerwacja budżetu z bieżącej decyzji kolejki (`outside_ready`: klasa policzona przed przyjęciem).
+            heavy, exclusive = self._outside_class(card, step, requested_command)
+            fields = {"step": name, "ticket": step.get("ticket") or "", "command": command, "unit": files.unit,
+                      "log": files.log, "exitFile": files.exit_file, "worktree": worktree, "head": head,
+                      "rerunOf": rerun_of, "attempt": attempt, "executor": runner_mod.EXECUTOR,
+                      "isolation": runner_mod.ISOLATION, "consentVersion": "", "source": "step", "class": ""}
+            # Jeden zapis zamiaru przed `run_command` (jedyna droga startu jednostki polecenia kroku). Miejsce
+            # i kolejka ciężkich są zajęte od tej chwili do `command.finished` (także `reason: not-started`).
+            self.journal.append(card, "command.intent", **fields, heavy=bool(heavy), exclusive=bool(exclusive),
+                                project=self._project(card)[1].slug)
+            if self._outside_active is None:
+                self._outside_active = {}
+            self._outside_active[name] = (card, files.unit)
+            # Awaria między zamiarem a zapisem startu: odzyskiwanie (`commands.outside_recover`) rozstrzyga próbę
+            # znacznikiem `O_EXCL`, nigdy nie uruchamia jej drugi raz.
             handle = self.runner.run_command(request)
             load = self._load_reader()()
-            self.journal.append(card, "command.started", step=name, ticket=step.get("ticket") or "",
-                                command=command, unit=handle.unit, log=handle.log, exitFile=handle.exit_file,
-                                worktree=worktree, head=head, rerunOf=rerun_of, attempt=handle.attempt,
-                                executor=runner_mod.EXECUTOR, isolation=runner_mod.ISOLATION,
-                                consentVersion="", loadavg=load.avg1, cores=load.cores, source="step",
-                                **{"class": ""})
-        if self._outside_active is None:
-            self._outside_active = {}
+            self.journal.append(card, "command.started", **fields, loadavg=load.avg1, cores=load.cores)
         self._outside_active[name] = (card, handle.unit)
 
     AUTO_DENY_LIMIT = 3

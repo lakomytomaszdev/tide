@@ -21,7 +21,8 @@ OUTSIDE_METHODS = (
     "_outside_remembered", "_outside_history", "_outside_ready", "_outside_collect", "_outside_stopped",
     "_outside_recheck", "_outside_recheck_rules", "_outside_busy", "_outside_heavy_state", "_outside_quiet_state",
     "_outside_heavy_of", "_outside_quiet_of", "_outside_class", "_outside_describe", "_outside_behind",
-    "_outside_log", "_outside_exit", "_outside_still_allowed", "_outside_launch")
+    "_outside_log", "_outside_exit", "_outside_still_allowed", "_outside_launch",
+    "_outside_recover")     # K-109 PT-485: odzyskiwanie zamiaru bez startu
 # K-109 PT-484: 12 metod próby testów po scaleniu — logika w commands.py, w silniku wrappery.
 MERGE_CHECK_METHODS = (
     "_merge_checks", "_merge_check_waiting", "_merge_check_step", "_merge_check_history", "_merge_check_run",

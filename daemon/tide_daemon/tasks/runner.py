@@ -11,6 +11,12 @@ z opakowaniem `tide-step --command`, plikiem `exit-code` i `RuntimeMaxSec` = lim
 wyłącznie z pliku `exit-code` (`command_result`): liczba albo `zatrzymane`. Klient `systemd-run --wait` jest tylko
 obserwatorem — jego kod wyjścia i śmierć nie są wynikiem. Etap 1: `isolation: none` (dzisiejsze środowisko
 i uprawnienia usługi Tide, przekazane przez `--setenv=NAZWA` bez wartości w argv).
+
+Dowód braku procesu (K-109 PT-485, ADR-1 pkt 5): w katalogu próby, obok `exit-code`, leży jednorazowy znacznik
+próby zakładany przez `open(O_CREAT|O_EXCL)`. Opakowanie zakłada go z treścią `run` przed startem polecenia (gdy już
+jest — kończy się bez polecenia i zapisuje `zatrzymane`); odzyskiwanie zamiaru bez startu zakłada go z treścią
+`abandoned` (`abandon_command`). Kto pierwszy założy znacznik, ten rozstrzyga: polecenie biegnie albo nie wystartuje
+nigdy, także gdy jednostka powstanie po odzyskaniu.
 """
 from __future__ import annotations
 
@@ -32,6 +38,8 @@ EXECUTOR = "host-isolated"      # wykonawca hosta; izolacja w etapie 1 wyłączo
 ISOLATION = "none"
 EXIT_FILE = "exit-code"
 LOG_FILE = "outside.log"
+MARKER_FILE = "attempt-marker"  # znacznik próby (PT-485): `run` — opakowanie, `abandoned` — odzyskiwanie
+MARK_RUN, MARK_ABANDONED = "run", "abandoned"
 _ATTEMPT = re.compile(r"^[a-z0-9]{1,32}$")
 # Zmienne menedżera usług i aktywacji: należą do usługi Tide, nie do polecenia (dawniej `env -u INVOCATION_ID`).
 UNIT_ENV = frozenset({"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID",
@@ -100,6 +108,76 @@ def command_unit(attempt: str) -> str:
     return COMMAND_PREFIX + attempt
 
 
+def new_attempt() -> str:
+    """Nowy identyfikator próby (trwały: zapisany w zamiarze przed startem, K-109 PT-485)."""
+    return secrets.token_hex(8)
+
+
+class CommandFiles(NamedTuple):
+    """Jednostka i pliki próby `attempt` w katalogu kroku — wyznaczone przed startem (zamiar je zapisuje)."""
+    unit: str
+    folder: str
+    exit_file: str
+    log: str
+    script: str
+    marker: str
+
+
+def command_files(folder: str, attempt: str) -> CommandFiles:
+    if not isinstance(attempt, str) or not _ATTEMPT.match(attempt):
+        raise ValueError(f"niepoprawny identyfikator próby: {attempt!r}")
+    unit = command_unit(attempt)
+    path = os.path.join(folder, "outside", unit)
+    return CommandFiles(unit, path, *(os.path.join(path, name)
+                                      for name in (EXIT_FILE, LOG_FILE, "command", MARKER_FILE)))
+
+
+def marker_of(exit_file: str) -> str:
+    """Znacznik próby obok pliku `exit-code` tej próby."""
+    return os.path.join(os.path.dirname(exit_file), MARKER_FILE)
+
+
+def claim_abandoned(exit_file: str) -> bool:
+    """Odzyskiwanie zamiaru bez startu (K-109 PT-485): zakłada znacznik próby z treścią `abandoned`
+    (`O_CREAT|O_EXCL`). True — polecenie tej próby nigdy nie wystartuje (znacznik założony teraz albo wcześniej przez
+    odzyskiwanie); False — znacznik założyło opakowanie (`run` albo jego niepełny zapis), polecenie wystartowało.
+
+    Brak katalogu próby: zamiar przerwany przed `run_command` — katalog powstaje tu (ponowny `run_command` z tym samym
+    `attempt` i tak kończy się kolizją katalogu i nazwy jednostki). Inny błąd zapisu (`OSError`) przechodzi do
+    wywołującego — bez rozstrzygnięcia."""
+    marker = marker_of(exit_file)
+    os.makedirs(os.path.dirname(marker), mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        # Własny wcześniejszy zapis odzyskiwania (awaria przed `command.finished`) daje ten sam wynik; pusty albo
+        # niepełny plik traktujemy jak `run` — rozstrzyga wtedy jednostka i `exit-code` (zachowawczo).
+        return read_marker(marker) == MARK_ABANDONED
+    try:
+        os.write(fd, (MARK_ABANDONED + "\n").encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
+
+
+def read_marker(path: str) -> str:
+    """Treść znacznika próby (`run`, `abandoned`) albo "" (brak, niepełny zapis, dowiązanie, inna treść)."""
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        text = os.read(fd, 16).decode("ascii", "replace")
+    except OSError:
+        return ""
+    finally:
+        if fd is not None:
+            os.close(fd)
+    value = text[:-1] if text.endswith("\n") else ""
+    return value if value in (MARK_RUN, MARK_ABANDONED) else ""
+
+
 class Started(NamedTuple):
     """Wynik `start`: złożony krok (`unit`, `git_dir`, pliki) i uchwyt procesu, gdy runner go ma (Popen; None —
     brak, silnik zna wtedy krok tylko po jednostce, jak po restarcie usługi)."""
@@ -136,6 +214,10 @@ class Runner(Protocol):
 
     def stop_command(self, unit: str) -> None:
         """Zatrzymanie jednostki polecenia bez czekania (opakowanie zapisze `zatrzymane`)."""
+
+    def abandon_command(self, exit_file: str) -> bool:
+        """Dowód braku procesu (K-109 PT-485): znacznik próby `abandoned` przez `O_EXCL` (`claim_abandoned`).
+        True — polecenie nigdy nie wystartuje; False — opakowanie już je uruchomiło."""
 
 
 class HostRunner:
@@ -178,17 +260,15 @@ class HostRunner:
         if request.cwd:
             argv.append(f"--working-directory={request.cwd}")
         argv += [f"--setenv={name}" for name in sorted(_command_env(request.env))]
-        argv += ["--", "/bin/sh", TIDE_STEP_SCRIPT, "--command", exit_file, log, "--", "/bin/sh", script]
+        argv += ["--", "/bin/sh", TIDE_STEP_SCRIPT, "--command", exit_file, log, marker_of(exit_file), "--",
+                 "/bin/sh", script]
         return argv
 
     def run_command(self, request: CommandRequest) -> CommandHandle:
-        attempt = request.attempt or secrets.token_hex(8)
-        if not _ATTEMPT.match(attempt):
-            raise ValueError(f"niepoprawny identyfikator próby: {attempt!r}")
-        unit = command_unit(attempt)
-        folder = os.path.join(request.folder, "outside", unit)
-        exit_file, log, script = (os.path.join(folder, name) for name in (EXIT_FILE, LOG_FILE, "command"))
-        if any(c in path for path in (exit_file, log, script, TIDE_STEP_SCRIPT, request.cwd or "") for c in "$%\n"):
+        attempt = request.attempt or new_attempt()
+        unit, folder, exit_file, log, script, marker = command_files(request.folder, attempt)
+        if any(c in path for path in (exit_file, log, script, marker, TIDE_STEP_SCRIPT, request.cwd or "")
+               for c in "$%\n"):
             # Argumenty jednostki (także `--working-directory=`) przechodzą przez rozwijanie zmiennych
             # i specyfikatorów systemd.
             raise ValueError(f"ścieżka polecenia ze znakiem specjalnym systemd: {folder} (cwd {request.cwd!r})")
@@ -238,6 +318,9 @@ class HostRunner:
 
     def stop_command(self, unit: str) -> None:
         stepstop._systemctl("stop", "--no-block", unit + ".service", timeout=5)
+
+    def abandon_command(self, exit_file: str) -> bool:
+        return claim_abandoned(exit_file)
 
 
 def _command_env(env: dict) -> dict:

@@ -3351,15 +3351,15 @@ zamiar jako ślad), strażnik opiekuna `guard.runs`, ponowienie padniętych modu
 (`runs`), bez porównywania nazw. Pola wspólne mają w obu rodzinach te same klucze (`step`, `ticket`, `command`, `unit`,
 `log`, `exitFile`, `worktree`, `head`, `rerunOf`; w końcu `exit`, `tail`), a `command.*` dokłada `attempt`, `executor`,
 `isolation`, `class`, `consentVersion`, `source`. Koniec może być z innej rodziny niż start (przebieg zaczęty przed
-przełączeniem zapisu). Adapter tylko czyta: nie przepisuje dziennika i niczego nie zapisuje; w modelu tożsamości
-`command.intent` ma źródło `reader` do PT-485. Odzyskiwanie niezakończonego `outside.started` po restarcie działa jak
+przełączeniem zapisu). Adapter tylko czyta: nie przepisuje dziennika i niczego nie zapisuje; od PT-485
+udostępnia też los ostatniego zamiaru kroku (`attempt_of`) i kroki z zamiarem (`intended`). Odzyskiwanie niezakończonego `outside.started` po restarcie działa jak
 dotąd: jednostka `tide-outside-<krok>`, wynik z pliku `exit-code`, bez ponownego uruchomienia.
 
 **Polecenie kroku na hoście przez `Runner.run_command`** (K-109 PT-479, ADR-1; `tasks/runner.py`). Prośba `outside`
 kroku po zgodzie nie składa już argv w silniku: `commands.step_request` podaje polecenie, katalog kroku, worktree,
 dzisiejsze środowisko (`outside_env`) i limit czasu, a `HostRunner.run_command` uruchamia przejściową usługę
 `systemd-run --user --wait --collect --unit=tide-cmd-<attempt>` (nigdy `--scope`) z `-p RuntimeMaxSec=<OUTSIDE_TIMEOUT>`
-i opakowaniem `box/tide-step --command <exit-code> <wynik> -- /bin/sh <plik polecenia>`. `attempt` to losowy
+i opakowaniem `box/tide-step --command <exit-code> <wynik> <znacznik> -- /bin/sh <plik polecenia>`. `attempt` to losowy
 identyfikator próby; każda próba ma własny katalog `<krok>/outside/tide-cmd-<attempt>/` (`command`, `outside.log`,
 `exit-code`), więc stary plik wyniku nie jest wynikiem nowej próby. Treść polecenia leży w pliku, bo systemd rozwija
 `${…}` w argumentach usługi; środowisko przechodzi przez `--setenv=NAZWA` bez wartości (wartości nie trafiają do argv),
@@ -3380,12 +3380,40 @@ wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTS
 po świeżym odczycie dziennika, zatrzymuje jednostkę (`systemctl --user stop --no-block`); wynik i tak przychodzi
 z pliku.
 
-Zapis: `command.started` po uzyskaniu uchwytu (jak dawniej `outside.started` po `Popen`, pod tą samą blokadą dziennika;
-trwały zamiar przed startem to PT-485) i `command.finished`, oba z `attempt`, `executor: host-isolated`,
+Zapis: `command.started` po uzyskaniu uchwytu i `command.finished`, oba z `attempt`, `executor: host-isolated`,
 `isolation: none`, `class` i `consentVersion` (puste do etapu 2), `unit`, `exitFile`, `loadavg`, `cores` (odczyt
 obciążenia z chwili zapisu), `source: step`. Nowa droga nie zapisuje `outside.*`; przebieg rozpoczęty przed
 przełączeniem kończy się w swojej rodzinie (`outside.finished`). Odzyskiwanie po restarcie dla `command.started` bez
-wyniku: jednostka żyje → czekanie, zakończona → wynik z `exit-code`, bez ponownego startu. Próba testów po scaleniu
+wyniku: jednostka żyje → czekanie, zakończona → wynik z `exit-code`, bez ponownego startu.
+
+**Trwały zamiar przed startem i dowód braku procesu** (K-109 PT-485, ADR-1 pkt 1, 2 i 5). `_start_outside` pod
+blokadą dziennika, po świeżej kontroli zgody, nadaje trwały `attempt` (`runner.new_attempt`), wyznacza z niego jednostkę
+i pliki próby (`runner.command_files`) i **jednym zapisem** `command.intent` utrwala polecenie, `attempt`, `executor`,
+`isolation`, `class`/`consentVersion` (puste do etapu 2), `unit`, `log`, `exitFile`, `worktree`, `head`, `rerunOf`,
+`source` i rezerwację budżetu z bieżącej decyzji kolejki: `heavy`, `exclusive` (klasa policzona przy przyjęciu
+w `outside_ready`) i `project` (miejsce projektu). Dopiero potem `run_command` startuje `tide-cmd-<attempt>`; innej
+drogi startu jednostki polecenia kroku nie ma. Zamiar zajmuje krok w stanie karty (`outside_started`) i miejsce
+w `outside_busy`/kolejce ciężkich (także po restarcie: `commandruns.pending`, klasa z pól zamiaru w `_started_heavy`)
+aż do `command.finished`; ta sama decyzja nie dostaje drugiego zamiaru (`outside_history` odmawia startu kroku
+z jakimkolwiek zamiarem, także rozstrzygniętym).
+
+O tym, czy polecenie w ogóle biegnie, rozstrzyga jednorazowy **znacznik próby** `attempt-marker` w katalogu próby
+(obok `exit-code`, katalog `0700` usługi), zakładany przez `open(O_CREAT|O_EXCL)`: opakowanie `tide-step --command`
+przed startem polecenia zakłada go z treścią `run` (`set -C`); gdy już istnieje, kończy się kodem 125 bez polecenia
+i zapisuje `exit-code` = `zatrzymane`. Odzyskiwanie zamiaru bez startu (`commands.outside_recover`, z `outside_ready`
+w ticku, pod blokadą dziennika po świeżym odczycie) zakłada ten sam znacznik z treścią `abandoned`
+(`HostRunner.abandon_command`): sukces (albo znacznik `abandoned` z wcześniejszego odzyskiwania) — polecenie nigdy nie
+wystartuje, także gdy jednostka powstanie później → `command.finished` z `exit: zatrzymane`, `reason: not-started`,
+zwolnienie rezerwacji i wznowienie kroku z tym wynikiem; porażka (`run` albo niepełny zapis opakowania) — polecenie
+wystartowało → dopiero wtedy stan `tide-cmd-<attempt>`: żyje albo skończona/zebrana → `command.started` z `recovered:
+true` i wynik jak zwykle z `exit-code` (brak pliku po końcu jednostki → `zatrzymane`); stan nieznany albo błąd zapisu
+znacznika → czekanie do kolejnego ticku. Samo „brak jednostki” niczego nie rozstrzyga. Nazwa jednostki i katalog próby
+z `attempt` są drugą zaporą: ponowny `run_command` z tym samym `attempt` kończy się kolizją. Odzyskiwanie nigdy nie
+uruchamia polecenia; ponowne uruchomienie wymaga nowej decyzji (nowego kroku) i nowego zamiaru. Testy: restart przez
+`FlowEngine.tick` w `daemon/tests/test_cardflow_command_host.py`, opakowanie i znacznik z prawdziwymi procesami
+w `test_runner_command.py`, wyścig z prawdziwym `systemd-run --user` (przypadek `f`) w `test_runner_command_systemd.py`.
+
+Próba testów po scaleniu
 (merge-check) zostaje przy `outside.*` i `--scope` do PT-483; krok w pudełku nadal dostaje `box-outside`. Test
 z prawdziwym menedżerem użytkownika: `daemon/tests/test_runner_command_systemd.py` (w piaskownicy kroku pomijany).
 

@@ -577,6 +577,10 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
+        elif commandruns.phase(e) == "intent":
+            # K-109 PT-485: zamiar przed startem — polecenie mogło już ruszyć, więc krok jest zajęty jak trwającym
+            # przebiegiem (bez drugiego startu, z rezerwacją miejsca) do startu albo końca `not-started`.
+            st.outside_started[e.get("step")] = e
         elif commandruns.phase(e) == "started":     # `outside.started` albo `command.started` (PT-481)
             st.outside_launched.add(e.get("step"))
             st.outside_started[e.get("step")] = e

@@ -79,8 +79,10 @@ class ArgvTest(Case):
         self.assertIn(f"--working-directory={self.worktree}", argv)
         tail = argv[argv.index("--") + 1:]
         script = os.path.join(folder, "command")
+        # K-109 PT-485: jedyna zmiana argv — ścieżka znacznika próby obok `exit-code`.
         self.assertEqual(tail, ["/bin/sh", runner_mod.TIDE_STEP_SCRIPT, "--command", handle.exit_file, handle.log,
-                                "--", "/bin/sh", script])
+                                os.path.join(folder, "attempt-marker"), "--", "/bin/sh", script])
+        self.assertFalse(os.path.exists(os.path.join(folder, "attempt-marker")), "znacznik zakłada opakowanie")
         # Treść polecenia w pliku, nie w argv (systemd rozwija `${…}` i `%` w argumentach usługi).
         with open(script, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "make test-changed BASE=${BASE:-abc} 100%\n")
@@ -208,8 +210,9 @@ class WrapperTest(Case):
     def wrapper(self, *command, **kw):
         self.exit_file = os.path.join(self.tmp, "exit-code")
         self.log = os.path.join(self.tmp, "outside.log")
+        self.marker = runner_mod.marker_of(self.exit_file)
         return subprocess.Popen(["/bin/sh", runner_mod.TIDE_STEP_SCRIPT, "--command", self.exit_file, self.log,
-                                 "--", *command], start_new_session=True, **kw)
+                                 self.marker, "--", *command], start_new_session=True, **kw)
 
     def listing(self):
         return sorted(os.listdir(self.tmp))
@@ -276,10 +279,102 @@ class WrapperTest(Case):
         self.assertEqual(read_command_exit(self.exit_file), 3)
 
     def test_usage_error_without_separator(self):
-        proc = subprocess.run(["/bin/sh", runner_mod.TIDE_STEP_SCRIPT, "--command", "a", "b", "true"],
-                              capture_output=True, text=True, timeout=20)
-        self.assertEqual(proc.returncode, 125)
-        self.assertIn("użycie", proc.stderr)
+        for args in (("a", "b", "c", "true"), ("a", "b", "--", "true")):    # bez `--`; bez znacznika (stary kształt)
+            with self.subTest(args=args):
+                proc = subprocess.run(["/bin/sh", runner_mod.TIDE_STEP_SCRIPT, "--command", *args],
+                                      capture_output=True, text=True, timeout=20)
+                self.assertEqual(proc.returncode, 125)
+                self.assertIn("użycie", proc.stderr)
+
+    # --- znacznik próby (K-109 PT-485): prawdziwe procesy opakowania, bez systemd --------------------------------
+
+    def counter_command(self):
+        """Polecenie, które liczy własne wykonania (dopisuje wiersz do pliku licznika)."""
+        self.counter = os.path.join(self.tmp, "executions")
+        return ("/bin/sh", "-c", f'echo ran >> "{self.counter}"; exit 4')
+
+    def executions(self) -> int:
+        try:
+            with open(self.counter, encoding="ascii") as fh:
+                return len(fh.read().splitlines())
+        except FileNotFoundError:
+            return 0
+
+    def test_wrapper_claims_run_marker_before_the_command(self):
+        self.counter_command()
+        marker = runner_mod.marker_of(os.path.join(self.tmp, "exit-code"))
+        # Polecenie liczy się tylko, gdy znacznik `run` już leży, zanim samo ruszy (kolejność: znacznik → exec).
+        proc = self.wrapper("/bin/sh", "-c", f'test "$(cat "{marker}")" = run && echo ran >> "{self.counter}"; '
+                                             'exit 4')
+        self.assertEqual(proc.wait(timeout=20), 4)
+        self.assertEqual(self.executions(), 1)
+        self.assertEqual(runner_mod.read_marker(self.marker), runner_mod.MARK_RUN)
+        self.assertEqual(stat.S_IMODE(os.stat(self.marker).st_mode), 0o600)
+        self.assertEqual(read_command_exit(self.exit_file), 4)
+
+    def test_abandoned_marker_before_start_means_command_never_runs(self):
+        self.assertTrue(runner_mod.claim_abandoned(os.path.join(self.tmp, "exit-code")))
+        proc = self.wrapper(*self.counter_command())
+        self.assertEqual(proc.wait(timeout=20), 125)
+        self.assertEqual(self.executions(), 0, "polecenie wykonane mimo znacznika abandoned")
+        self.assertEqual(read_command_exit(self.exit_file), runner_mod.STOPPED)
+        self.assertEqual(runner_mod.read_marker(self.marker), runner_mod.MARK_ABANDONED)
+        self.assertNotIn("exit-code.tmp", self.listing())
+        self.assertFalse(os.path.exists(self.log), "plik wyniku polecenia, które nie wystartowało")
+
+    def test_recovery_does_not_abandon_a_started_command_and_waits_for_its_result(self):
+        gate = os.path.join(self.tmp, "gate")
+        proc = self.wrapper("/bin/sh", "-c", f'while [ ! -e "{gate}" ]; do sleep 0.02; done; echo ran; exit 6')
+        self.assertTrue(_wait(lambda: runner_mod.read_marker(runner_mod.marker_of(self.exit_file)) == "run"))
+        runner = HostRunner()
+        # Odzyskiwanie zamiaru: znacznik `run` już jest — porażka O_EXCL, bez nadpisania; wynik jeszcze nie znany.
+        self.assertFalse(runner.abandon_command(self.exit_file))
+        self.assertFalse(runner.abandon_command(self.exit_file), "drugie odzyskiwanie też nie porzuca")
+        self.assertEqual(runner_mod.read_marker(self.marker), runner_mod.MARK_RUN)
+        self.assertIsNone(read_command_exit(self.exit_file))
+        self.assertIsNone(proc.poll())
+        open(gate, "w").close()
+        self.assertEqual(proc.wait(timeout=20), 6)
+        self.assertEqual(read_command_exit(self.exit_file), 6)
+        with open(self.log, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "ran\n")
+
+
+class MarkerTest(Case):
+    """`claim_abandoned` — jednorazowy znacznik próby przez O_CREAT|O_EXCL (K-109 PT-485)."""
+
+    def test_claim_is_exclusive_idempotent_for_recovery_and_creates_missing_attempt_folder(self):
+        files = runner_mod.command_files(self.step_dir, "abc123")
+        self.assertFalse(os.path.exists(files.folder))
+        self.assertTrue(runner_mod.claim_abandoned(files.exit_file))     # zamiar przerwany przed run_command
+        self.assertEqual(stat.S_IMODE(os.stat(files.folder).st_mode), 0o700)
+        self.assertEqual(runner_mod.read_marker(files.marker), runner_mod.MARK_ABANDONED)
+        # Awaria odzyskiwania przed zapisem końca: ponowne odzyskiwanie daje ten sam wynik.
+        self.assertTrue(runner_mod.claim_abandoned(files.exit_file))
+        # Ten sam `attempt` drugi raz nie startuje (katalog próby już jest) — druga zapora obok nazwy jednostki.
+        with mock.patch.object(runner_mod.subprocess, "Popen") as popen, self.assertRaises(FileExistsError):
+            HostRunner("/x/systemd-run").run_command(CommandRequest(command="true", folder=self.step_dir,
+                                                                    attempt="abc123"))
+        popen.assert_not_called()
+
+    def test_run_or_partial_marker_is_never_overwritten(self):
+        for text in ("run\n", "", "ru", "abandoned"):
+            with self.subTest(text=text):
+                files = runner_mod.command_files(self.step_dir, "p" + str(len(text)) + ("x" if text else "e"))
+                os.makedirs(files.folder)
+                with open(files.marker, "w", encoding="ascii") as fh:
+                    fh.write(text)
+                self.assertFalse(runner_mod.claim_abandoned(files.exit_file))
+                with open(files.marker, encoding="ascii") as fh:
+                    self.assertEqual(fh.read(), text)
+
+    def test_symlinked_marker_is_not_followed(self):
+        files = runner_mod.command_files(self.step_dir, "lnk")
+        os.makedirs(files.folder)
+        target = os.path.join(self.tmp, "target")
+        os.symlink(target, files.marker)
+        self.assertFalse(runner_mod.claim_abandoned(files.exit_file))
+        self.assertFalse(os.path.exists(target))
 
 
 class ObserverClientTest(Case):

@@ -676,8 +676,11 @@ DELEGATIONS = {
     # K-109 PT-478: kolejka i zbieranie wyniku w commands.py; cienkie wrappery `_outside*` silnika delegują do nich.
     ("cardflow/commands.py", "outside_behind"): "outside",
     ("cardflow/commands.py", "outside_collect"): "outside",
+    # K-109 PT-485: odzyskiwanie zamiaru bez startu — świeży `outside_history` pod journal.lock przed znacznikiem
+    # próby i zapisem (`command.finished` not-started albo `command.started` recovered); nigdy Popen.
+    ("cardflow/commands.py", "outside_recover"): "outside",
     **{("cardflow/engine.py", f"FlowEngine._outside_{name}"): "outside" for name in (
-        "behind", "busy", "collect", "exit", "history", "ready", "recheck")},
+        "behind", "busy", "collect", "exit", "history", "ready", "recheck", "recover")},
     # PT-329: przebieg pod zgodą próby testów po scaleniu (kolejka outside, wynik) i decyzja z panelu.
     # K-109 PT-484: logika w commands.py; cienkie wrappery `_merge_check*` silnika delegują do niej.
     ("cardflow/commands.py", "merge_checks"): "outside",
@@ -796,8 +799,15 @@ RAW_READS = {
         "K-109 PT-481: widok przebiegów obu rodzin zapisu (para start → koniec kroku) — czysta projekcja bez I/O "
         "i zapisu; skutek mają wyłącznie wywołujący, każdy z własną barierą albo uzasadnieniem w tym katalogu",
     ("cardflow/commandruns.py", "pending"):
-        "K-109 PT-481: zamiary command.intent bez startu (widok dla PT-485) — czysta projekcja bez I/O i zapisu, "
-        "dziś bez wywołań w produkcie; nie uruchamia ani nie rozstrzyga procesu",
+        "K-109 PT-481/PT-485: zamiary command.intent bez startu i końca — czysta projekcja bez I/O i zapisu; woła ją "
+        "commands.outside_busy (rezerwacja miejsca po restarcie), sama nie uruchamia ani nie rozstrzyga procesu",
+    ("cardflow/commandruns.py", "attempt_of"):
+        "K-109 PT-485: ostatni zamiar kroku z jego startem i końcem — czysta projekcja bez I/O i zapisu; skutki mają "
+        "wywołujący z barierą outside (outside_ready/outside_recover po outside_history, outside_exit, "
+        "_started_heavy), sama nie uruchamia ani nie rozstrzyga procesu",
+    ("cardflow/commandruns.py", "intended"):
+        "K-109 PT-485: kroki z jakimkolwiek zamiarem — czysta projekcja; zawęża (nigdy nie dopuszcza) start: "
+        "outside_history odmawia drugiego startu tej decyzji, _seed_outside_waiting nie wstawia jej do kolejki",
 }
 
 # Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja
