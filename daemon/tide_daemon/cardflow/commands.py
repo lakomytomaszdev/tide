@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..tasks import agentcmd, stepstop
+from ..tasks import runner as runner_mod
 from . import boxstep, consent, heavyqueue, mergecheck, processidentity, testpolicy, trialhold
 from .commandruns import FINISHES, INTENTS, PHASES, STARTS, Run, family, pending, phase, runs  # noqa: F401 — widok
 from .errors import FlowError
@@ -44,6 +45,7 @@ class CommandsState:
     logged: dict = field(default_factory=dict)   # krok → ostatni powód czekania wypisany w dzienniku usługi
     # (karta, ticket, seq wyniku) scaleń „fast-forward” bez próby testów po scaleniu — bez ponownego gita (PT-484).
     merge_ff: set = field(default_factory=set)
+    fenced: set = field(default_factory=set)     # jednostki `tide-cmd-*`, którym zaporę zatrzymania już wysłano
 
 
 class StateAlias:
@@ -123,6 +125,11 @@ class Ports:
     merge_check_head: Callable
     merge_check_start: Callable
     merge_check_repo: Callable
+    # K-109 PT-479: przebieg `command.*` przez runner (wynik z `exit-code`, zapora zatrzymania) i obciążenie maszyny.
+    unit_result: Callable = None       # (start przebiegu) → liczba, `zatrzymane` albo None (trwa)
+    unit_stop: Callable = None         # (jednostka) → zatrzymanie bez czekania
+    unit_gone: Callable = None         # (jednostka) → True tylko przy potwierdzonym końcu (`unknown` = żyje)
+    machine_load: Callable = None      # () → heavyqueue.Load
 
 
 def queue_heavy(entry) -> bool:
@@ -284,8 +291,22 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
     if collected is None:
         return None
     code, tail = collected
-    ports.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
-                         command=started.get("command") or "", exit=code, tail=tail)
+    if family(started.get("type")) == "command":
+        # Ten sam przebieg kończy się w swojej rodzinie (K-109 PT-479); pola przebiegu z jego startu,
+        # obciążenie maszyny z chwili końca.
+        load = ports.machine_load()
+        ports.journal.append(card, "command.finished", step=name, ticket=step.get("ticket") or "",
+                             command=started.get("command") or "", exit=code, tail=tail,
+                             **{"attempt": started.get("attempt") or "", "executor": started.get("executor") or "",
+                                "isolation": started.get("isolation") or "", "class": started.get("class") or "",
+                                "consentVersion": started.get("consentVersion") or "",
+                                "unit": started.get("unit") or "", "exitFile": started.get("exitFile") or "",
+                                "loadavg": load.avg1, "cores": load.cores,
+                                "source": started.get("source") or ""})
+    else:
+        # Przebieg rozpoczęty dawną drogą (`outside.started` sprzed PT-479) kończy się w swojej rodzinie.
+        ports.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+                             command=started.get("command") or "", exit=code, tail=tail)
     # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
     # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
     return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
@@ -293,7 +314,7 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
 
 
 def outside_collect(ports,state: CommandsState, card: str, name: str, started: dict, confirm=None, *,
-                    timeout: float, tail_size: int):
+                    timeout: float, tail_size: int, stop_margin: float = 60):
     """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
     wyjścia, zatrzymana jednostka bez kodu (PT-315, `outside_stopped`) albo przekroczony czas `timeout`. Wspólne dla
     prośby kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego.
@@ -304,6 +325,28 @@ def outside_collect(ports,state: CommandsState, card: str, name: str, started: d
     przekroczyło czas, więc nie dokłada świeżego odczytu do czekania."""
     ports.outside_busy(card)            # buduje zbiór aktywnych po restarcie
     state.active[name] = (card, started["unit"])
+    if family(started.get("type")) == "command":
+        # K-109 PT-479: przebieg `command.*` — wynik wyłącznie z pliku `exit-code` jednostki `tide-cmd-<attempt>`
+        # (liczba albo `zatrzymane`); kod klienta `systemd-run --wait` nie jest wynikiem.
+        code = ports.unit_result(started)
+        if code is None:
+            if (ports.wall_clock() - _epoch(started.get("ts")) >= timeout + stop_margin
+                    and started["unit"] not in state.fenced):
+                # Zapora za RuntimeMaxSec (np. jednostka zawieszona w zatrzymaniu): zatrzymanie bez wyniku, raz
+                # i po świeżym odczycie (K-105 PT-415) — wynik i tak przyjdzie z pliku opakowania po końcu jednostki.
+                if confirm is not None and not confirm():
+                    return None
+                state.fenced.add(started["unit"])
+                ports.unit_stop(started["unit"])
+            return None
+        if confirm is not None and not confirm():
+            return None
+        tail = read_tail(started.get("log") or "", tail_size)
+        state.fenced.discard(started["unit"])
+        state.active.pop(name, None)
+        ports.outside_heavy_state().pop(name, None)
+        ports.outside_quiet_state().pop(name, None)
+        return code, tail
     step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
     code = stepstop.read_exit_code(step_dir)
     if code is None and ports.wall_clock() - _epoch(started.get("ts")) < timeout:
@@ -315,20 +358,24 @@ def outside_collect(ports,state: CommandsState, card: str, name: str, started: d
     if code is None:
         stepstop._systemctl("stop", started["unit"] + ".scope")
         code = "przekroczony czas"
-    tail = ""
-    try:
-        with open(started["log"], "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - tail_size))
-            tail = fh.read().decode("utf-8", "replace")
-    except OSError:
-        tail = "(brak wyniku)"
+    tail = read_tail(started["log"], tail_size)
     state.active.pop(name, None)
     ports.outside_heavy_state().pop(name, None)
     ports.outside_quiet_state().pop(name, None)
     # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
     stepstop._systemctl("stop", started["unit"] + ".scope")
     return code, tail
+
+
+def read_tail(log: str, size: int) -> str:
+    """Koniec pliku wyniku polecenia (`size` bajtów) albo „(brak wyniku)”."""
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - size))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return "(brak wyniku)"
 
 
 def outside_stopped(ports,started: dict, step_dir: str, *, grace: float, state_timeout: float,
@@ -376,14 +423,35 @@ def outside_still_allowed(ports,state: CommandsState, card: str, step: dict) -> 
 
 def outside_launch(name: str, step_dir: str, worktree: str, command: str, *, systemd_run: str, cpu_weight: int,
                    old_jobs: int):
-    """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko polecenia poza piaskownicą (jednostka
-    `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`). Wspólne dla prośby kroku i próby testów po
-    scaleniu (PT-329); start i jego zapis należą do wywołującego."""
+    """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko próby testów po scaleniu (jednostka
+    `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`; PT-329). Prośba kroku idzie od PT-479 przez
+    `Runner.run_command` (argv składa runner); merge-check przechodzi na nią w PT-483. Start i jego zapis należą
+    do wywołującego."""
     folder = os.path.join(step_dir, "outside")
     os.makedirs(os.path.join(folder, "in"), exist_ok=True)
     exit_file = os.path.join(folder, "in", "exit-code")
     log = os.path.join(folder, "outside.log")
     unit = f"tide-outside-{name}"
+    env = outside_env(worktree, old_jobs=old_jobs)
+    argv = [systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
+            "-p", f"CPUWeight={cpu_weight}", "-p", f"IOWeight={cpu_weight}", "--",
+            "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
+            exit_file, "/bin/sh", "-c", command]
+    return unit, log, exit_file, argv, env
+
+
+def step_request(step: dict, command: str, *, timeout: int, cpu_weight: int, old_jobs: int):
+    """Prośba `Runner.run_command` dla polecenia `outside` kroku (K-109 PT-479): katalog kroku, worktree jako
+    katalog roboczy, dzisiejsze środowisko i limit czasu polecenia jako RuntimeMaxSec. argv składa runner."""
+    worktree = step.get("worktree") or ""
+    return runner_mod.CommandRequest(command=command, folder=step.get("stepDir") or "", cwd=worktree,
+                                     env=outside_env(worktree, old_jobs=old_jobs), timeout=int(timeout),
+                                     cpu_weight=cpu_weight)
+
+
+def outside_env(worktree: str, *, old_jobs: int) -> dict:
+    """Dzisiejsze środowisko polecenia poza piaskownicą (etap 1, `isolation: none`): środowisko usługi z Node
+    i Chrome użytkownika, bez pamięci dyskowej QML i z limitem JOBS dla gałęzi sprzed wspólnej puli testów."""
     env = dict(os.environ)
     from ..tasks import node as node_mod
     prefix = node_mod.node_home(os.path.expanduser("~"))
@@ -399,11 +467,7 @@ def outside_launch(name: str, step_dir: str, worktree: str, command: str, *, sys
         # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
         # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej `old_jobs` procesów.
         env["JOBS"] = str(old_jobs)
-    argv = [systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
-            "-p", f"CPUWeight={cpu_weight}", "-p", f"IOWeight={cpu_weight}", "--",
-            "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
-            exit_file, "/bin/sh", "-c", command]
-    return unit, log, exit_file, argv, env
+    return env
 
 
 # --- miejsca i kolejka -----------------------------------------------------------------------------
@@ -422,7 +486,16 @@ def outside_busy(ports,state: CommandsState, card: str, *, total: int, per_proje
                 state.active[name] = (other, unit if isinstance(unit, str) else "")
     alive = {}
     for name, (other, unit) in state.active.items():
-        if stepstop.read_exit_code(os.path.dirname(os.path.dirname(ports.outside_exit(other, name)))) is None:
+        # Plik kodu wyjścia przebiegu (`outside.*`: <krok>/outside/in/exit-code, `command.*`: plik opakowania
+        # tide-step — liczba albo `zatrzymane`).
+        code = runner_mod.read_command_exit(ports.outside_exit(other, name))
+        if code is None:
+            alive[name] = (other, unit)
+        elif (code == runner_mod.STOPPED and unit.startswith(runner_mod.COMMAND_PREFIX)
+              and not ports.unit_gone(unit)):
+            # K-109 PT-479 (review 2): opakowanie zapisuje `zatrzymane` od razu przy SIGTERM, a procesy polecenia
+            # mogą żyć do `TimeoutStopSec` — miejsce i kolejka ciężkich (także `exclusive`) zostają zajęte do
+            # potwierdzonego końca jednostki, jak `command_result` i jak zatrzymany scope dawnej drogi (PT-315).
             alive[name] = (other, unit)
     state.active = alive
     if len(alive) >= total:

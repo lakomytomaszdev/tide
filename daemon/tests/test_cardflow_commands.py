@@ -236,6 +236,37 @@ class QueueTest(unittest.TestCase):
         self.assertFalse(commands.outside_busy(p, state, "K-2", total=7, per_project=2))
         self.assertTrue(commands.outside_busy(p, state, "K-2", total=2, per_project=6))
 
+    def test_stopped_command_unit_holds_its_place_until_the_unit_is_gone(self):
+        # Review PT-479 r2, MAJOR 1: `zatrzymane` w pliku opakowania przy żywej jednostce `tide-cmd-*` (procesy po
+        # SIGTERM do `TimeoutStopSec`) nie zwalnia miejsca ani kolejki ciężkich; `unknown` stanu też trzyma.
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_file = os.path.join(tmp, "exit-code")
+            with open(exit_file, "w", encoding="ascii") as fh:
+                fh.write("zatrzymane\n")
+            for gone, busy in ((False, True), (True, False)):
+                with self.subTest(gone=gone):
+                    asked = []
+                    state = commands.CommandsState(active={"a": ("K-1", "tide-cmd-0123abcd")})
+                    p = ports(project=project_of({"K-1": "plasma-tide", "K-2": "plasma-tide"}),
+                              outside_exit=lambda card, name: exit_file,
+                              unit_gone=lambda unit: asked.append(unit) or gone)
+                    self.assertEqual(commands.outside_busy(p, state, "K-2", total=7, per_project=1), busy)
+                    self.assertEqual(asked, ["tide-cmd-0123abcd"])
+                    self.assertEqual("a" in state.active, busy)
+
+    def test_numeric_or_legacy_exit_releases_without_asking_the_unit(self):
+        # Liczba w pliku i dawna droga (`outside.*`, scope `tide-outside-*`) — bez zmian: bez pytania o jednostkę.
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_file = os.path.join(tmp, "exit-code")
+            for text, unit in (("0\n", "tide-cmd-0123abcd"), ("zatrzymane\n", "tide-outside-K-1-PT-1-1")):
+                with self.subTest(text=text, unit=unit):
+                    with open(exit_file, "w", encoding="ascii") as fh:
+                        fh.write(text)
+                    state = commands.CommandsState(active={"a": ("K-1", unit)})
+                    p = ports(project=project_of({"K-1": "plasma-tide", "K-2": "plasma-tide"}),
+                              outside_exit=lambda card, name: exit_file)
+                    self.assertFalse(commands.outside_busy(p, state, "K-2", total=7, per_project=1))
+
     def test_log_prints_only_a_changed_reason(self):
         state, out = commands.CommandsState(), io.StringIO()
         with redirect_stdout(out):

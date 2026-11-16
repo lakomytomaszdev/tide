@@ -175,7 +175,15 @@ def _reader(event):
                  "reader", event.dynamic, event.start)
 
 
+def _reader_fields(event, names):
+    """Zdarzenie zapisywane w kodzie, którego pola `names` są dopiero rozpoznawane przed zapisem (źródło `reader`)."""
+    fields = MappingProxyType({name: replace(spec, source="reader") if name in names else spec
+                               for name, spec in event.fields.items()})
+    return Event(event.role, fields, event.reason, event.source, event.dynamic, event.start)
+
+
 COMMAND_NEUTRAL = commandruns.COMMAND_ONLY
+COMMAND_LATER = ("recovered", "reason")     # pola odzyskiwania zamiaru bez startu (PT-485)
 
 EVENTS = MappingProxyType({
     # --- kontekst i procesy -------------------------------------------------------------
@@ -230,20 +238,29 @@ EVENTS = MappingProxyType({
         extra={"outside": Field("discriminator", "bool", domain="outside",
                                 note="prośba o polecenie outside tego kroku")}),
         start="process"),
+    # K-109 PT-479: prośba kroku zapisuje już `command.started`; `outside.started` zapisuje tylko próba testów po
+    # scaleniu (do PT-483), bez `rerunOf` — pole zostaje w historii przebiegów kroków sprzed przełączenia.
     "outside.started": Event("outside-start", _trace(
-        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf"),
-        extra={"unit": OUTSIDE_UNIT_OWN})),
+        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log"),
+        extra={"unit": OUTSIDE_UNIT_OWN,
+               "rerunOf": Field("neutral", note="ponowienie padniętych modułów (prośba kroku sprzed PT-479)",
+                                source="historical")})),
     "outside.finished": Event("outside-finish", _trace(
         writer=("ticket",), neutral=("command", "exit", "tail"), extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),
     # K-109 PT-481: nowa rodzina przebiegu (zamiar → start → wynik), czytana przez widok `commandruns` razem
     # z `outside.started`/`outside.finished`. Zamiar jest śladem procesu bez startu jednostki.
     commandruns.INTENT: _reader(Event("outside-trace", _trace(neutral=("command", *COMMAND_NEUTRAL)))),
-    commandruns.STARTED: _reader(Event("outside-start", _trace(
-        neutral=("command", "exitFile", "head", "log", "rerunOf", *COMMAND_NEUTRAL),
-        extra={"unit": OUTSIDE_UNIT_OWN}))),
-    commandruns.FINISHED: _reader(Event("outside-finish", _trace(
-        neutral=("command", "exit", "exitFile", "tail", *COMMAND_NEUTRAL), extra={"unit": OUTSIDE_UNIT_INHERITED}))),
+    # K-109 PT-479: start i wynik zapisuje prośba `outside` kroku (`_start_outside`, `commands.outside_ready`);
+    # pola odzyskiwania zamiaru (`recovered`, `reason`) zapisze dopiero PT-485.
+    commandruns.STARTED: _reader_fields(Event("outside-start", _trace(
+        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf", *COMMAND_NEUTRAL),
+        extra={"unit": OUTSIDE_UNIT_OWN}), reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"),
+        COMMAND_LATER),
+    commandruns.FINISHED: _reader_fields(Event("outside-finish", _trace(
+        writer=("ticket",), neutral=("command", "exit", "exitFile", "tail", *COMMAND_NEUTRAL),
+        extra={"unit": replace(OUTSIDE_UNIT_INHERITED, source="writer")}),
+        reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"), COMMAND_LATER),
     "intent": Event("action"),
     "result": Event("action"),
     # --- metadane karty: zdarzenia bez roli dowodowej ------------------------------------

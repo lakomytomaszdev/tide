@@ -596,7 +596,8 @@ class EngineGateTest(unittest.TestCase):
                 mock.patch("tide_daemon.tasks.node.chrome_bin", return_value=""):
             self.engine._start_outside("K-60", step, "echo ordinary-test")
         spawn.assert_called_once()
-        self.assertEqual(self.journal.read("K-60")[-1]["type"], "outside.started")
+        # K-109 PT-479: prośba kroku startuje przez Runner.run_command i zapisuje przebieg `command.*`.
+        self.assertEqual(self.journal.read("K-60")[-1]["type"], "command.started")
 
 
 class PublicGateTest(unittest.TestCase):

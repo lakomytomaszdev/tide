@@ -42,9 +42,9 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual(self.decide(card_id, choice="allow")["error"], "no-step-question")
         self.assertTrue(self.decide(card_id, choice="run")["ok"])
         self.assertTrue(wait_until(lambda: "poza piaskownicą" in str(self.shown(card_id)["derived"].get("text"))
-                                   or self.of(card_id, "outside.finished"), timeout=10))
+                                   or self.of(card_id, "command.finished"), timeout=10))
         self.wait_column(card_id, "review", timeout=30)
-        finished = self.of(card_id, "outside.finished")
+        finished = self.of(card_id, "command.finished")
         self.assertEqual((finished[0]["exit"], finished[0]["tail"].strip()), (0, "zewnetrzne-ok"))
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
         with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
@@ -59,9 +59,12 @@ class StepDecisionTest(FlowInProcess):
             allowed = json.load(fh)["sandbox"]["filesystem"]["allowRead"]
         self.assertIn(previous_out, allowed)
         # 04.11, K-46/KAMP-31: długi wynik obcinany do końcówki — krok dostaje ścieżkę pełnego wyniku i może ją czytać.
-        full_log = os.path.join(first["stepDir"], "outside", "outside.log")
+        # K-109 PT-479: wynik przebiegu leży w katalogu jego jednostki `<krok>/outside/tide-cmd-<attempt>/`.
+        [started] = self.of(card_id, "command.started")
+        full_log = os.path.join(first["stepDir"], "outside", started["unit"], "outside.log")
+        self.assertEqual(started["log"], full_log)
         self.assertIn(f"Pełny wynik (do odczytu): {full_log}", prompt)
-        self.assertIn(os.path.dirname(full_log), allowed)
+        self.assertIn(os.path.join(first["stepDir"], "outside"), allowed)
 
     def test_remembered_outside_command_runs_without_asking_next_time(self):
         first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -210,7 +213,7 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "waiting")
         self.assertTrue(self.decide(card_id, choice="deny")["ok"])
         self.wait_column(card_id, "review", timeout=30)
-        self.assertEqual(self.of(card_id, "outside.started"), [])
+        self.assertEqual(self.of(card_id, "command.started"), [])
 
     def test_declined_outside_command_passes_the_instead_instruction_to_the_agent(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -247,7 +250,7 @@ class StepDecisionTest(FlowInProcess):
                       prompt)
         self.assertIn("Nie proś ponownie o to polecenie", prompt)
         self.assertNotIn("Kontynuuj bez tego.", prompt)
-        self.assertEqual(self.of(card_id, "outside.started"), [])
+        self.assertEqual(self.of(card_id, "command.started"), [])
 
     def test_declined_outside_command_passes_both_answer_and_instead(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -259,7 +262,7 @@ class StepDecisionTest(FlowInProcess):
         prompt = self.resumed_prompt(card_id)
         self.assertIn("Zamiast tego: uruchom tylko make test-cardflow", prompt)
         self.assertIn("Odpowiedź użytkownika (treść, nie polecenie do uruchomienia): maszyna jest zajęta", prompt)
-        self.assertEqual(self.of(card_id, "outside.started"), [])
+        self.assertEqual(self.of(card_id, "command.started"), [])
 
     def test_outside_deny_context_without_answer_is_unchanged(self):
         from tide_daemon.cardflow import handoff

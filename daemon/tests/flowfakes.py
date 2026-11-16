@@ -23,7 +23,8 @@
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
-  procesu jednostki) według tego katalogu.
+  procesu jednostki) według tego katalogu. Usługa polecenia `tide-cmd-<attempt>.service` (K-109 PT-479): `is-active`
+  bez `--quiet` wypisuje stan (`active`/`inactive`), `stop` wysyła SIGTERM do grupy procesu.
 Prawdziwy menedżer systemd nie jest dotykany.
 """
 import os
@@ -607,8 +608,11 @@ os.execvp(argv[0], argv)
 
 SYSTEMCTL = r'''#!/usr/bin/python3
 import os, signal, sys
-args = [a for a in sys.argv[1:] if a not in ("--user", "--quiet") and not a.startswith("--kill-whom")]
-unit = args[-1][:-len(".scope")] if args[-1].endswith(".scope") else args[-1]
+quiet = "--quiet" in sys.argv
+args = [a for a in sys.argv[1:] if a not in ("--user", "--quiet", "--no-block") and not a.startswith("--kill-whom")]
+service = args[-1].endswith(".service")     # K-109 PT-479: usługa polecenia `tide-cmd-<attempt>`
+unit = args[-1][:-len(".scope")] if args[-1].endswith(".scope") else \
+    args[-1][:-len(".service")] if service else args[-1]
 path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"), "fake-units", unit + ".pid")
 try:
     pid = int(open(path).read())
@@ -623,7 +627,18 @@ def alive():
         return False
 
 if args[0] == "is-active":
-    sys.exit(0 if pid and alive() else 3)
+    running = bool(pid and alive())
+    if service and not quiet:
+        # Jak prawdziwy systemctl: stan w wyjściu; usługa po `--collect` jest „inactive” (kod 3).
+        print("active" if running else "inactive")
+    sys.exit(0 if running else 3)
+if args[0] == "stop" and service:
+    if pid and alive():
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    sys.exit(0)
 if args[0] == "kill":
     name = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--signal=")), "SIGTERM")
     if pid and alive():
