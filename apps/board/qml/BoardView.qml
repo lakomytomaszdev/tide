@@ -8,7 +8,8 @@
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
 // railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
-// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
+// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132); full=K-8[,end] — pełna karta
+// (z `end` przewinięta do końca treści, zrzuty PT-502). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
 // shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
 // Zrzuty ekranu i model okna „Co ma zrobić agent?” idą przez backend (imagesJson, modelsJson, tasksJson,
 // pasteImage, addFiles, capture…); na czas „Zrób zrzut” widok chowa całe okno Tide i przywraca je po Spectacle.
@@ -222,7 +223,18 @@ Item {
             }
             if (view.previewValue("import")) openImport()
             if (view.previewValue("decide")) openDecisions(view.previewValue("decide"))
+            if (view.previewValue("full")) {
+                const parts = view.previewValue("full").split(",")
+                if (openFull(parts[0]) && parts.indexOf("end") >= 0) previewEnd.start()
+            }
         }
+    }
+
+    // Podgląd full=K-8,end: przewinięcie dopiero po ułożeniu treści pełnej karty (zrzut okna robi się po 900 ms).
+    Timer {
+        id: previewEnd
+        interval: 400
+        onTriggered: page.cardFullView.showEnd()
     }
 
     Connections {

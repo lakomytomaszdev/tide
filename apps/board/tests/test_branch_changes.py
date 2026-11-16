@@ -63,8 +63,10 @@ js("page.openFull('K-8')")
 until(lambda: js("page.cardFullView.visible && page.cardFullView.width > 0"))
 wait(400)   # układ pełnej karty się ustala
 out["full"] = js("page.fullOpen")
-out["button"] = obj("fullBranchDiff").property("visible")
-out["label"] = obj("fullBranchDiff").property("text")
+# PT-502: „Zmiany gałęzi” jest w menu ⋯ paska górnego (pozycja z Repeatera — szukana w drzewie elementów).
+click(named("fullMenu"))
+out["button"] = js("(" + FIND + ")(page.cardFullView, 'fullBranchDiff').visible")
+out["label"] = js("(" + FIND + ")(page.cardFullView, 'fullBranchDiff').text")
 click(at("(" + FIND + ")(page.cardFullView, 'fullBranchDiff')"))
 out["open"] = js("page.diffOpen")
 out["call"] = calls()[-1]

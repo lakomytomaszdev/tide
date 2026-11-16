@@ -1,7 +1,15 @@
-// Pełna karta na cały widok okna Tide (K-35, PT-128): „← Tablica” i Esc wracają, u góry pasek 7 faz, pod nim
-// „Twój ruch” — pierwsza czekająca decyzja do rozstrzygnięcia w miejscu (ten sam DecisionForm co w oknie decyzji)
-// albo jedno zdanie, gdy nic nie czeka — a niżej fale ticketów z ludzkim stanem i „Teraz w tle” z samymi
-// trwającymi krokami.
+// Pełna karta na cały widok okna Tide (K-35, PT-128): u góry pasek 7 faz, pod nim „Twój ruch” — pierwsza czekająca
+// decyzja do rozstrzygnięcia w miejscu (ten sam DecisionForm co w oknie decyzji) albo jedno zdanie, gdy nic nie
+// czeka — a niżej fale ticketów z ludzkim stanem i „Teraz w tle” z samymi trwającymi krokami.
+//
+// Stały pasek górny (K-128, PT-502, makieta S-9 „Rama i pasek”, wariant B): Tide.TopBar poza przewijaną treścią —
+// powrót z nazwą gospodarza (`backText`: „Tablica” albo „Sesje”; klik i Esc wracają, gdy nie ma otwartego
+// potwierdzenia ani menu), projekt, numer i tytuł karty, jedna akcja główna („Porozmawiaj z opiekunem”, gdy opiekun
+// ma problem karty) i menu ⋯ z „Zmiany gałęzi”, „Edytuj opis”, „Raport i dowody” oraz wszystkimi pozycjami dawnego
+// „Karta ▾” (z tymi samymi potwierdzeniami). Zakładki: Przegląd (cała strona), Plan i Historia (te same sekcje co
+// w Przeglądzie, każda osobno — miejsce na tabelę planu i blok historii z PT-503), Opis (Tide.Prose w trybie
+// Markdown; `markdownRenderer` gospodarza — Tablica — albo prose.js — Sesje) i Zmiany (ten sam widok zmian gałęzi
+// co „Zmiany gałęzi”; bez gałęzi wyłączona z podpowiedzią).
 //
 // Widok czyta wyłącznie pola usługi: `derived.phases[]`, `derived.tickets[]` (`status`, `statusLabel`,
 // `waitingOn`, `executor`, `reviewer`, `wave`), `derived.flow.decisions[]`, `flow.plan.waves`, `flow.running[]`
@@ -21,7 +29,7 @@
 // od razu — bez „Zapisz / Anuluj”. Każdy przycisk nazywa skutek („Przenieś do Gotowych”), a widok wysyła
 // `settingRequested(kind, params)` z gotowym zdaniem skutku (`params.effect`), które Tablica pokazuje po zapisie.
 // Archiwizacja i zmiana gałęzi najpierw pytają o potwierdzenie ze skutkiem; odmowa niczego nie wysyła. Sekcja
-// „Ustawienia karty” i menu „Karta ▾” biorą akcje z jednej listy (`actions`), więc zawsze są te same.
+// „Ustawienia karty” i menu ⋯ biorą akcje z jednej listy (`actions`), więc zawsze są te same.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -129,6 +137,62 @@ Rectangle {
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
     signal caretakerTalkRequested()
+    signal linkRequested(string url)
+
+    // --- pasek górny i zakładki (PT-502) -------------------------------------------------------------
+    // Nazwa widoku-gospodarza dla powrotu („Tablica”, „Sesje”); pusta — bez powrotu.
+    property string backText: ""
+    // Renderer Markdown gospodarza (Tablica: backend.renderMarkdown); bez niego opis renderuje prose.js (Sesje).
+    property var markdownRenderer: null
+    // Bieżąca zakładka: overview | plan | history | description („Zmiany” otwiera osobny widok, nie zakładkę).
+    property string tab: "overview"
+    readonly property bool onOverview: tab === "overview"
+    readonly property bool hasBranch: !!(flow && flow.cardBranch)
+    readonly property string description: card && card.description ? card.description : ""
+    readonly property var tabs: [
+        { id: "overview", label: "Przegląd" },
+        { id: "plan", label: "Plan" },
+        { id: "history", label: "Historia" },
+        { id: "description", label: "Opis" },
+        { id: "changes", label: "Zmiany", enabled: hasBranch,
+          hint: hasBranch ? "Zmiany gałęzi karty względem bazy"
+                          : "Karta nie ma jeszcze gałęzi, więc nie ma zmian do pokazania." }
+    ]
+    // Menu ⋯: akcje dawnego nagłówka, a pod nimi ta sama lista co sekcja „Ustawienia karty” (`actions`).
+    readonly property var menuItems: {
+        const items = []
+        if (hasBranch) items.push({ id: "branch-diff", label: "Zmiany gałęzi", name: "fullBranchDiff" })
+        items.push({ id: "description", label: "Edytuj opis", name: "fullDescription" })
+        if (card && card.sourceIssue)
+            items.push({ id: "source-issue", name: "fullSourceIssue",
+                         label: "Raport i dowody " + card.sourceIssue + " · wersja " + (card.sourceIssueVersion || 0) })
+        for (const a of actions)
+            items.push({ id: "setting:" + a.id, label: a.label + (a.input || a.danger ? "…" : ""), danger: !!a.danger })
+        return items
+    }
+
+    function selectTab(id) {
+        if (id === "changes") {
+            if (hasBranch) branchDiffRequested()
+            return
+        }
+        if (tab === id) return
+        tab = id
+        flick.contentY = 0
+    }
+
+    function menuAction(id) {
+        if (!card) return
+        if (id === "branch-diff") branchDiffRequested()
+        else if (id === "description") descriptionRequested()
+        else if (id === "source-issue") navigateRequested("issues", card.sourceIssue)
+        else if (id.indexOf("setting:") === 0) {
+            const action = actions.find(a => a.id === id.slice(8))
+            if (!action) return
+            if (action.input) focusAction(action.id)
+            else run(action.id)
+        }
+    }
 
     // --- rzadkie ustawienia (PT-134) -----------------------------------------------------------------
     readonly property string storedBranch: card && card.branch ? card.branch : ""
@@ -139,7 +203,7 @@ Rectangle {
     readonly property bool paused: !!(flow && flow.paused)
     readonly property bool canPause: !!(derived && (!flow || !flow.plan || flow.plan.status !== "done")
                                         && derived.column !== "review" && !(flow && flow.merged))
-    property bool menuOpen: false
+    property alias menuOpen: topBar.menuOpen
     property string settingError: ""
     // Pytanie o potwierdzenie: null albo {kind, params, title, effect, yes}.
     property var confirming: null
@@ -168,7 +232,7 @@ Rectangle {
     readonly property string branchButton: typedBranch === "" || typedBranch === shownBranch
         ? actionLabel("branch") : "Zmień gałąź na " + typedBranch
 
-    // Menu „Karta ▾” nigdy nie zapisuje pola na ślepo: pozycje z polem przewijają do niego i dają fokus.
+    // Menu ⋯ nigdy nie zapisuje pola na ślepo: pozycje z polem przewijają do niego i dają fokus.
     function focusAction(id) {
         menuOpen = false
         focusField(id === "youtrack" ? youtrackField : branchField)
@@ -216,9 +280,20 @@ Rectangle {
         flick.contentY = 0
     }
 
+    // Pola ustawień są w Przeglądzie: z innej zakładki najpierw przełącza, a przewija po ułożeniu treści.
     function focusField(field) {
+        if (!onOverview) {
+            tab = "overview"
+            Qt.callLater(() => { showSettings(); field.forceActiveFocus() })
+            return
+        }
         showSettings()
         field.forceActiveFocus()
+    }
+
+    // Koniec treści bieżącej zakładki (zrzuty i testy „pasek stoi przy przewijaniu”).
+    function showEnd() {
+        flick.contentY = Math.max(0, flick.contentHeight - flick.height)
     }
 
     function applyYoutrack() {
@@ -326,6 +401,7 @@ Rectangle {
         branchField.text = ""
         youtrackField.text = ""
         form.reset()
+        tab = "overview"
         flick.contentY = 0
         forceActiveFocus()
     }
@@ -475,11 +551,11 @@ Rectangle {
                 font.pointSize: Tide.Tokens.fontSizePt * 0.85
                 font.weight: Font.DemiBold
             }
-            Tide.TextButton {
+            Tide.Button {
                 objectName: "historyResume"
                 visible: line.canResume
                 text: "Wznów rozmowę"
-                variant: "outline"
+                small: true
                 Accessible.name: "Wznów rozmowę w kroku " + line.modelData.text
                 onClicked: view.enterStepRequested(line.modelData.step)
             }
@@ -510,10 +586,42 @@ Rectangle {
         onClicked: view.forceActiveFocus()
     }
 
+    // Stały pasek górny: poza Flickable, więc przewijanie treści go nie przesuwa. Leży nad treścią (z), żeby menu ⋯
+    // i jego warstwa „klik obok zamyka” przykrywały przewijaną stronę.
+    Tide.TopBar {
+        id: topBar
+        objectName: "fullTopBar"
+        name: "full"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        z: 3
+        backText: view.backText
+        crumbs: view.card && (view.card.projectName || view.card.project) ? [view.card.projectName || view.card.project] : []
+        number: view.card ? view.card.id : ""
+        title: view.card ? view.card.title : ""
+        actionText: view.flow && view.flow.canTalkToCaretaker ? "Porozmawiaj z opiekunem" : ""
+        actionName: "talkToCaretaker"
+        menuItems: view.menuItems
+        tabs: view.tabs
+        currentTab: view.tab
+        onBack: view.backRequested()
+        onActionTriggered: view.caretakerTalkRequested()
+        onMenuTriggered: id => view.menuAction(id)
+        onTabTriggered: id => view.selectTab(id)
+    }
+
     Flickable {
         id: flick
-        anchors.fill: parent
-        anchors.margins: 24
+        objectName: "fullScroll"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: topBar.bottom
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 24
+        anchors.rightMargin: 24
+        anchors.topMargin: 16
+        anchors.bottomMargin: 16
         contentHeight: content.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -524,75 +632,10 @@ Rectangle {
             width: flick.width
             spacing: 18
 
-            // Okruszki: powrót, projekt, gałąź karty, panel karty.
+            // --- Przegląd: cała dzisiejsza strona karty ---------------------------------------------------
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 12
-                Tide.TextButton {
-                    objectName: "fullBack"
-                    text: "← Tablica"
-                    variant: "outline"
-                    Accessible.name: "Wróć do Tablicy (Esc)"
-                    onClicked: view.backRequested()
-                }
-                Text {
-                    text: view.card ? view.card.projectName || view.card.project || "" : ""
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textSecondary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: view.flow ? view.flow.cardBranch || "" : ""
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.lavender
-                    font.family: Tide.Theme.monoFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 0.9
-                    elide: Text.ElideMiddle
-                }
-                Tide.TextButton {
-                    objectName: "fullBranchDiff"
-                    visible: !!(view.flow && view.flow.cardBranch)
-                    text: "Zmiany gałęzi"
-                    variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
-                    onClicked: view.branchDiffRequested()
-                }
-                Tide.TextButton {
-                    objectName: "fullDescription"
-                    text: "Edytuj opis"
-                    variant: "outline"
-                    Accessible.name: "Edytuj opis karty w szufladzie"
-                    onClicked: view.descriptionRequested()
-                }
-                Tide.TextButton {
-                    objectName: "fullSourceIssue"
-                    visible: !!view.card && !!view.card.sourceIssue
-                    text: view.card ? "Raport i dowody " + (view.card.sourceIssue || "") + " · wersja " + (view.card.sourceIssueVersion || 0) : ""
-                    variant: "outline"
-                    onClicked: view.navigateRequested("issues", view.card.sourceIssue)
-                }
-                Tide.TextButton {
-                    id: menuButton
-                    objectName: "fullMenu"
-                    text: "Karta ▾"
-                    variant: "outline"
-                    Accessible.name: "Menu karty: ustawienia i akcje"
-                    onClicked: view.menuOpen = !view.menuOpen
-                }
-            }
-
-            Tide.TextButton {
-                objectName: "talkToCaretaker"
-                visible: !!(view.flow && view.flow.canTalkToCaretaker)
-                text: "Porozmawiaj z opiekunem"
-                variant: "outline"
-                onClicked: view.caretakerTalkRequested()
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
+                visible: view.onOverview
                 spacing: 10
                 Text {
                     text: view.card ? view.card.id : ""
@@ -614,11 +657,25 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
             }
+            // Gałąź karty (dawniej w wierszu okruszków).
+            Text {
+                objectName: "fullBranch"
+                Layout.fillWidth: true
+                Layout.topMargin: -10
+                visible: view.onOverview && view.hasBranch
+                text: view.hasBranch ? "Gałąź karty: " + view.flow.cardBranch : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.lavender
+                font.family: Tide.Theme.monoFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                elide: Text.ElideMiddle
+            }
 
             // Pasek 7 faz.
             RowLayout {
                 objectName: "fullPhases"
                 Layout.fillWidth: true
+                visible: view.onOverview
                 spacing: 8
                 Accessible.role: Accessible.List
                 Accessible.name: "Przebieg karty"
@@ -677,6 +734,7 @@ Rectangle {
             CardStartLine {
                 objectName: "fullStartLine"
                 Layout.fillWidth: true
+                visible: view.onOverview
                 derived: view.derived
                 changeAllowed: view.baseChangeAvailable
                 onChangeRequested: view.baseChangeRequested()
@@ -684,7 +742,7 @@ Rectangle {
             ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
-                visible: view.merged || Boolean(view.mainPhase && view.mainPhase.state === "you")
+                visible: view.onOverview && (view.merged || Boolean(view.mainPhase && view.mainPhase.state === "you"))
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
@@ -696,7 +754,7 @@ Rectangle {
                     font.pointSize: Tide.Tokens.fontSizePt * 0.9
                     wrapMode: Text.Wrap
                 }
-                Tide.TextButton {
+                Tide.Button {
                     objectName: "fullMerge"
                     text: "Scal…"
                     visible: !view.merged
@@ -722,6 +780,7 @@ Rectangle {
             Rectangle {
                 objectName: "fullMove"
                 Layout.fillWidth: true
+                visible: view.onOverview
                 implicitHeight: move.implicitHeight + 40
                 radius: Tide.Tokens.radiusCard
                 color: view.current ? Tide.Theme.alpha(Tide.Tokens.peach, 0.06) : Tide.Tokens.backgroundCard
@@ -767,11 +826,12 @@ Rectangle {
                             elide: Text.ElideRight
                         }
                         Item { Layout.fillWidth: true; visible: !view.current }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "fullAllDecisions"
                             visible: view.pending.length > 1
                             text: "1 z " + view.pending.length + " · wszystkie w oknie decyzji"
-                            variant: "link"
+                            variant: "ghost"
+                            small: true
                             onClicked: view.decisionsRequested()
                         }
                     }
@@ -817,12 +877,13 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: !!view.current
                         Item { Layout.fillWidth: true }
-                        Tide.TextButton {
+                        // Jedyny przycisk główny widoku; pod pytaniem o potwierdzenie główny jest przycisk pytania.
+                        Tide.Button {
                             objectName: "fullChoose"
-                            text: form.chooseLabel + "  ↵"
-                            variant: "filled"
+                            text: form.chooseLabel
+                            kbd: "↵"
+                            variant: view.confirming ? "normal" : "primary"
                             enabled: form.canChoose
-                            opacity: enabled ? 1 : 0.45
                             Accessible.name: form.chooseLabel
                             onClicked: form.choose()
                         }
@@ -832,7 +893,7 @@ Rectangle {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                visible: consentRows.count > 0
+                visible: view.onOverview && consentRows.count > 0
                 spacing: 8
                 Repeater {
                     id: consentRows
@@ -851,9 +912,10 @@ Rectangle {
                             font.family: Tide.Theme.uiFamily
                             font.pointSize: Tide.Tokens.fontSizePt
                         }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "revokeTicketConsent"
                             visible: modelData.canRevoke
+                            small: true
                             text: "Cofnij zgodę dla " + modelData.ticket
                             onClicked: {
                                 view.consentError = ""
@@ -876,8 +938,11 @@ Rectangle {
                 }
             }
 
+            // Plan i „Teraz w tle”: w Przeglądzie obok siebie; zakładka Plan pokazuje sam plan na całą szerokość.
+            // PT-503 zastąpi fale tabelą planu z przypiętą bieżącą falą — w tym miejscu (`fullPlan`).
             RowLayout {
                 Layout.fillWidth: true
+                visible: view.onOverview || view.tab === "plan"
                 spacing: 20
 
                 // Fale ticketów.
@@ -968,6 +1033,7 @@ Rectangle {
                 // Teraz w tle: tylko trwające kroki.
                 ColumnLayout {
                     objectName: "fullNowSection"
+                    visible: view.onOverview
                     Layout.preferredWidth: 340
                     Layout.maximumWidth: 380
                     Layout.alignment: Qt.AlignTop
@@ -1048,11 +1114,10 @@ Rectangle {
                             font.pointSize: Tide.Tokens.fontSizePt * 0.9
                             wrapMode: Text.Wrap
                         }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "fullTransfer"
                             visible: !!view.limitTransfer && view.limitTransfer.available === true
                             text: view.limitTransfer ? view.limitTransfer.text || "" : ""
-                            variant: "outline"
                             enabled: !view.transferSent
                             Accessible.name: text + ". " + (view.limitTransfer ? view.limitTransfer.cost || "" : "")
                             onClicked: view.requestTransfer()
@@ -1120,11 +1185,11 @@ Rectangle {
                                         elide: Text.ElideRight
                                     }
                                 }
-                                Tide.TextButton {
+                                Tide.Button {
                                     objectName: "fullNowEnter"
                                     visible: step.modelData.canEnter === true
                                     text: "Przejmij w Konsoli"  // zatrzymuje pracę w tle i otwiera tę samą sesję (to nie podgląd)
-                                    variant: "outline"
+                                    small: true
                                     Accessible.name: "Wejdź do kroku " + step.label
                                     onClicked: view.enterStepRequested(step.stepId)
                                 }
@@ -1136,7 +1201,7 @@ Rectangle {
 
             ColumnLayout {
                 Layout.fillWidth: true
-                visible: view.noteSteps.length > 0
+                visible: view.onOverview && view.noteSteps.length > 0
                 Text {
                     text: "Uwagi do kroków"
                     textFormat: Text.PlainText
@@ -1161,9 +1226,11 @@ Rectangle {
             }
 
             // Historia ludzkim językiem: bieżące zlecenie na wierzchu, wcześniejsze zwinięte i tylko do odczytu.
+            // Zakładka Historia pokazuje tylko tę sekcję; PT-503 zamknie ją w stałym bloku z własnym przewijaniem.
             ColumnLayout {
                 objectName: "fullHistory"
                 Layout.fillWidth: true
+                visible: view.onOverview || view.tab === "history"
                 spacing: 8
                 Text {
                     text: "Historia"
@@ -1186,11 +1253,11 @@ Rectangle {
                     model: view.currentHistory
                     delegate: HistoryLine { canResume: modelData.canResume === true }
                 }
-                Tide.TextButton {
+                Tide.Button {
                     objectName: "fullHistoryOld"
                     visible: view.oldHistory.length > 0
                     text: (view.oldOpen ? "▾ " : "▸ ") + "Wcześniejsze zlecenia (" + view.oldHistory.length + ")"
-                    variant: "outline"
+                    variant: "ghost"
                     Accessible.name: "Wcześniejsze zlecenia: " + view.oldHistory.length + (view.oldOpen ? ", rozwinięte" : ", zwinięte")
                     onClicked: view.oldOpen = !view.oldOpen
                 }
@@ -1205,6 +1272,7 @@ Rectangle {
                 id: settings
                 objectName: "fullSettings"
                 Layout.fillWidth: true
+                visible: view.onOverview
                 implicitHeight: settingsColumn.implicitHeight + 36
                 radius: Tide.Tokens.radiusCard
                 color: Tide.Tokens.backgroundCard
@@ -1249,7 +1317,7 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
 
-                    // Akcje bez pola (kolumna, odłączenie od zgłoszenia, wstrzymanie, archiwizacja) — z tej samej listy co menu „Karta ▾”.
+                    // Akcje bez pola (kolumna, odłączenie od zgłoszenia, wstrzymanie, archiwizacja) — z tej samej listy co menu ⋯.
                     Repeater {
                         model: view.actions.filter(a => !a.input)
                         delegate: RowLayout {
@@ -1258,12 +1326,11 @@ Rectangle {
                             objectName: "fullSetting"
                             Layout.fillWidth: true
                             spacing: 12
-                            Tide.TextButton {
+                            Tide.Button {
                                 objectName: "settingButton"
                                 Layout.preferredWidth: 220
                                 text: setting.modelData.label
-                                variant: "outline"
-                                textColor: setting.modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textSecondary
+                                variant: setting.modelData.danger ? "danger" : "normal"
                                 Accessible.name: setting.modelData.label
                                 onClicked: view.run(setting.modelData.id)
                             }
@@ -1294,10 +1361,9 @@ Rectangle {
                             onAccepted: view.run("youtrack")
                             onTextChanged: view.settingError = ""
                         }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "settingYoutrackButton"
                             text: view.youtrackButton
-                            variant: "outline"
                             onClicked: view.run("youtrack")
                         }
                         Text {
@@ -1329,10 +1395,9 @@ Rectangle {
                             onAccepted: view.applyMaxTickets()
                             onTextChanged: view.settingError = ""
                         }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "settingMaxTicketsButton"
                             text: "Ustaw tickety naraz"
-                            variant: "outline"
                             onClicked: view.applyMaxTickets()
                         }
                         Text {
@@ -1362,11 +1427,13 @@ Rectangle {
                         }
                         Repeater {
                             model: Settings.PRIORITIES
-                            delegate: Tide.TextButton {
+                            // Bieżący priorytet to zwykły przycisk z obrysem, pozostałe — ciche.
+                            delegate: Tide.Button {
                                 required property string modelData
                                 objectName: "settingPriority_" + modelData
                                 text: Settings.priorityLabel(modelData)
-                                variant: view.storedPriority === modelData ? "filled" : "outline"
+                                small: true
+                                variant: view.storedPriority === modelData ? "normal" : "ghost"
                                 Accessible.name: "Priorytet " + Settings.priorityLabel(modelData).toLowerCase()
                                                  + (view.storedPriority === modelData ? " (teraz)" : "")
                                 onClicked: view.applyPriority(modelData)
@@ -1412,10 +1479,9 @@ Rectangle {
                             Accessible.name: "Gałąź karty (teraz: " + (view.shownBranch || "brak") + ")"
                             onAccepted: view.run("branch")
                         }
-                        Tide.TextButton {
+                        Tide.Button {
                             objectName: "settingBranchButton"
                             text: view.branchButton
-                            variant: "outline"
                             onClicked: view.run("branch")
                         }
                         Text {
@@ -1430,56 +1496,34 @@ Rectangle {
                     }
                 }
             }
-        }
-    }
 
-    // Kliknięcie poza menu „Karta ▾” zamyka je.
-    MouseArea {
-        anchors.fill: parent
-        visible: view.menuOpen
-        z: 4
-        onClicked: view.menuOpen = false
-    }
-
-    // Menu „Karta ▾”: te same akcje co sekcja ustawień, zakotwiczone pod przyciskiem.
-    Rectangle {
-        id: cardMenu
-        objectName: "fullMenuList"
-        visible: view.menuOpen
-        z: 5
-        // Pozycja liczona przy każdym otwarciu (przycisk przewija się razem z treścią).
-        onVisibleChanged: if (visible) {
-            const p = menuButton.mapToItem(view, menuButton.width, menuButton.height)
-            x = Math.max(8, p.x - width)
-            y = p.y + 4
-        }
-        width: 300
-        implicitHeight: menuColumn.implicitHeight + 16
-        height: implicitHeight
-        radius: Tide.Tokens.radiusCard
-        color: Tide.Tokens.backgroundPanel
-        border.width: 1
-        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-        Accessible.role: Accessible.PopupMenu
-        Accessible.name: "Menu karty"
-        ColumnLayout {
-            id: menuColumn
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: 8
-            spacing: 2
-            Repeater {
-                model: view.actions
-                delegate: Tide.TextButton {
-                    required property var modelData
-                    objectName: "fullMenuItem"
+            // --- Opis: opis karty jako dokument (Tide.Prose w trybie Markdown) --------------------------------
+            ColumnLayout {
+                objectName: "fullDescriptionTab"
+                Layout.fillWidth: true
+                visible: view.tab === "description"
+                spacing: 12
+                Tide.Prose {
+                    id: descriptionProse
+                    objectName: "fullDescriptionText"
                     Layout.fillWidth: true
-                    text: modelData.label + (modelData.input || modelData.danger ? "…" : "")
-                    accent: modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textSecondary
-                    textColor: modelData.danger ? Tide.Tokens.rose : Tide.Tokens.textPrimary
-                    Accessible.name: modelData.label
-                    onClicked: modelData.input ? view.focusAction(modelData.id) : view.run(modelData.id)
+                    visible: view.description !== ""
+                    text: view.description
+                    markdown: true
+                    renderer: view.markdownRenderer
+                    surface: Tide.Tokens.backgroundWindow
+                    onLinkClicked: url => view.linkRequested(url)
+                }
+                Text {
+                    objectName: "fullDescriptionEmpty"
+                    Layout.fillWidth: true
+                    visible: view.description === ""
+                    text: "Karta nie ma opisu. Dodasz go z menu ⋯ → „Edytuj opis”."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    wrapMode: Text.Wrap
                 }
             }
         }
@@ -1538,17 +1582,18 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 10
                     Item { Layout.fillWidth: true }
-                    Tide.TextButton {
+                    Tide.Button {
                         objectName: "settingConfirmNo"
-                        text: "Nie zmieniaj (Esc)"
-                        variant: "outline"
+                        text: "Nie zmieniaj"
+                        kbd: "Esc"
+                        Accessible.name: "Nie zmieniaj (Esc)"
                         onClicked: view.confirmNo()
                     }
-                    Tide.TextButton {
+                    // Archiwizacja jest niszcząca (róża); pozostałe potwierdzenia — główny przycisk pytania.
+                    Tide.Button {
                         objectName: "settingConfirmYes"
                         text: view.confirming ? view.confirming.yes : ""
-                        variant: "filled"
-                        accent: view.confirming && view.confirming.kind === "archive" ? Tide.Tokens.rose : Tide.Tokens.accent
+                        variant: view.confirming && view.confirming.kind === "archive" ? "danger" : "primary"
                         onClicked: view.confirmYes()
                     }
                 }

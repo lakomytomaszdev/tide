@@ -5,7 +5,7 @@
   a błąd usługi pokazuje powód (nic nie przechodzi po cichu),
 - archiwizacja i zmiana gałęzi pytają o potwierdzenie opisujące skutek; odmowa (przycisk albo Esc) niczego nie
   wysyła i nie zmienia karty,
-- menu „Karta ▾” ma te same akcje co sekcja ustawień,
+- menu ⋯ paska górnego (dawne „Karta ▾”, PT-502) ma te same akcje co sekcja ustawień,
 - szuflada panelu karty z pełnej karty to tylko opis: „Zapisz opis” wysyła sam opis, Esc anuluje bez zapisu.
 """
 import json
@@ -185,7 +185,8 @@ wait(80)
 out["saved"] = calls()
 out["toast"] = js("page.toast")
 """, data)
-        self.assertEqual(out["initial"], [["Wysoki", "outline"], ["Normalny", "filled"], ["Niski", "outline"]])
+        # PT-502: Tide.Button — bieżący priorytet to wariant „normal” (z obrysem), pozostałe „ghost”.
+        self.assertEqual(out["initial"], [["Wysoki", "ghost"], ["Normalny", "normal"], ["Niski", "ghost"]])
         self.assertEqual(out["sameCalls"], 0, "bieżąca wartość niczego nie wysyła")
         self.assertEqual(out["saved"], [["UpdateCard", "K-8", '{"priority":"high"}']])
         self.assertEqual(out["toast"], "Karta K-8: priorytet wysoki. Zmienia kolejność kroków czekających na "
@@ -203,7 +204,7 @@ click(at(items("settingPriority_normal") + "[0]"))
 wait(80)
 out["saved"] = calls()
 """, data)
-        self.assertEqual(out["variants"], ["outline", "outline", "filled"])
+        self.assertEqual(out["variants"], ["ghost", "ghost", "normal"])
         self.assertEqual(out["saved"], [["UpdateCard", "K-8", '{"priority":"normal"}']])
 
     def test_linked_card_empty_field_only_focuses_and_unlink_is_explicit(self):
@@ -389,7 +390,7 @@ def set_description(text):
     def test_drawer_edits_only_the_description_and_saves_it(self):
         out = self.probe(self.SCENARIO + """
 click(card("K-8"))
-click(named("fullDescription"))
+click(menu_item("fullDescription"))   # PT-502: „Edytuj opis” jest w menu ⋯ paska górnego
 out["drawer"] = drawer()
 set_description("Nowy opis karty")
 out["save"] = drawer()["save"]
@@ -410,12 +411,12 @@ out["after"] = drawer()
     def test_escape_cancels_without_saving(self):
         out = self.probe(self.SCENARIO + """
 click(card("K-8"))
-click(named("fullDescription"))
+click(menu_item("fullDescription"))   # PT-502: „Edytuj opis” jest w menu ⋯ paska górnego
 set_description("Porzucony opis")
 key(Qt.Key.Key_Escape)
 out["calls"] = len(calls())
 out["after"] = drawer()
-click(named("fullDescription"))
+click(menu_item("fullDescription"))
 out["reopened"] = js("(function () { const all = " + ALL + "; const root = (function r(i) { return i.parent ? r(i.parent) : i })(page); "
                      "return all(root, 'cardDescription')[0].text })()")
 """, full_d(self.data))

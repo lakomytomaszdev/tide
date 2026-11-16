@@ -8,7 +8,7 @@ class SourceIssueViewTest(base.ProbeCase):
         data = full_c(self.data)
         card = next(c for c in data['cards'] if c['id'] == 'K-8')
         card.update(sourceIssue='S-7', sourceIssueVersion=4)
-        out = self.probe('''
+        out = self.probe(base.FIND_PY + '''
 navigation = []
 view.navigateRequested.connect(lambda view_id, item: navigation.append([view_id, item]))
 js('page.openCard("K-8")')
@@ -17,8 +17,9 @@ out['panelText'] = obj('cardSourceIssue').property('text')
 obj('cardSourceIssue').clicked.emit()
 js('page.closePanel(); page.openFull("K-8")')
 wait()
-out['fullText'] = obj('fullSourceIssue').property('text')
-obj('fullSourceIssue').clicked.emit()
+# PT-502: „Raport i dowody” jest pozycją menu ⋯ paska górnego (z Repeatera — szukana w drzewie elementów).
+out['fullText'] = js(FIND + "(page.cardFullView, 'fullSourceIssue').text")
+js(FIND + "(page.cardFullView, 'fullSourceIssue').clicked()")
 out['navigation'] = navigation
 ''', data)
         self.assertIn('S-7', out['panelText'])

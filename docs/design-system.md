@@ -89,7 +89,7 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
   - **Worktrees:** „● 2 w pracy · ● 0 do sprzątnięcia (16 GB)” — tym samym językiem co dock, ale zawsze z obiema liczbami (zero wyciszone), link „Otwórz okno” w nagłówku.
   - **Tablica:** nagłówek „Tablica · 11 kart” z linkiem „Otwórz w Tide”, pod nim części jak w docku („● 2 w toku · ● 1 czeka · ● 1 do sprawdzenia”, bez pracy agentów „○ 3 do zrobienia · ○ 12 w backlogu”, bez kart „brak kart”) i do trzech wierszy 26 px: kropka stanu, ID w sky (Geist Mono), opis, postęp albo słowo stanu; czekający wiersz na tle brzoskwini ~0,10. Kliknięcie otwiera okno Tide na karcie.
   - **Limity AI:** dwa wiersze-mierniki (GPT, Claude) z niższym z pozostałych limitów w kolorze poziomu i wyciszonym „tydzień · reset poniedziałek 20:00” pod paskiem; problem z usługą to jedna wyciszona linia.
-  - **Przyciski** to `TextButton` (Qt Quick Templates `AbstractButton`: rola Button, Tab, spacja i Enter): link w kolorze akcentu albo pełny w pastelu stanu („Przejdź”). Mock: artboard „Sidebar” na kanwie.
+  - **Przyciski** to `TextButton` (Qt Quick Templates `AbstractButton`: rola Button, Tab, spacja i Enter): link w kolorze akcentu albo pełny w pastelu stanu („Przejdź”). Mock: artboard „Sidebar” na kanwie. W oknie Tide przyciski to `Tide.Button` (sekcja „Standard interfejsu okna Tide”).
 - **Dock:** pełna szerokość głównego monitora, 64 px. Aplikacje pośrodku; z lewej kafelki systemowe: System i zaraz za nim Docker, z prawej sprawy AI: tablica, agenci, worktrees, Limity AI, modele lokalne.
 - **Kafelek widżetu:** osobna karta 48 px wysokości (dock 64 px) z promieniem `tile` (12 px), tło w pastelu widżetu o kryciu ~0,11 (po najechaniu ~0,2) z ramką w tym pastelu (~0,24), 12 px odstępu między kafelkami. Zawsze dwie linie: etykieta w `text.secondary` (8 pt: „Agenci”, „Worktrees · 5 w pracy”, „System”, „Limity AI”) i wartość słowami (10 pt), liczby w Geist Mono. Kolor mówi o stanie. Wspólne komponenty `DockTile` i `TileMeter`, teksty i liczba mnoga w `Texts`, podgląd: `make preview-widgets`.
   - **Agenci** (teal, brzoskwinia gdy ktoś naprawdę czeka): „● 2 pracują · ● 1 czeka · ○ 2 gotowe”, tylko niezerowe części; skończone sesje mają puste błękitne kółko (`semantic.done`) i nie zmieniają koloru kafelka; bez sesji wyciszone „brak sesji”.
@@ -190,6 +190,66 @@ decyzji i w „Twój ruch” pełnej karty.
   szerokość treści o `Tide.Tokens.scrollbarWidth`.
 - **Wyjątek (K-104):** widok zmian (`apps/common/qml/git/DiffView.qml`, `SyntaxText.qml`, `ModuleHighlighter.qml`)
   zostaje bez zmian; zgranie jego paska z `Tide.ScrollBar` należy do etapu A2 karty K-128.
+
+### Przyciski
+
+`Tide.Button` (`widgets/lib/Button.qml`, makieta S-9 `.btn`) to przycisk okna Tide: Qt Quick Templates `AbstractButton`
+z rolą Button, fokusem z klawiatury (obwódka 2 px w tealu poza obrysem), spacją, Enterem i Returnem; wyłączony ma
+krycie 0,45 i nie reaguje na mysz, klawiaturę ani akcję czytnika ekranu. Promień `radius.small`, wysokość 32 px,
+`small` — 26 px, tekst 13 px/500 (mały 12 px).
+
+| Wariant (`variant`) | Tło | Tekst | Obrys | Użycie |
+| --- | --- | --- | --- | --- |
+| `primary` | akcent (po najechaniu jaśniejszy o 7 %) | `background.window`, 600 | brak | główna akcja widoku — **najwyżej jeden** w widoku |
+| `normal` (domyślny) | tekst ~0,06 (po najechaniu ~0,11) | `text.primary` | tekst o kryciu `opacity.outline` | zwykłe akcje |
+| `ghost` | brak (po najechaniu tekst ~0,06) | `text.secondary` (po najechaniu `text.primary`) | brak | akcje pomocnicze, pozycje menu |
+| `danger` | róża ~0,14 | róża | róża ~0,35 | akcje niszczące (archiwizacja, usunięcie) |
+
+- `iconOnly` — przycisk-ikona (sam znak, np. „⋯”, węższe marginesy), `kbd` — skrót obok tekstu („Wybierz ↵”,
+  „Nie zmieniaj Esc”, Geist Mono, krycie 0,7), `toolTip` — podpowiedź (`PlainToolTip`) i opis dla czytnika ekranu,
+  `tone` — przycisk tonowany kolorem palety (tło ~0,12, obrys ~0,45, tekst w tym kolorze; powrót w pasku górnym).
+- Tekst każdego wariantu ma kontrast co najmniej 4,5:1 względem swojego tła nałożonego na `background.window`
+  i `background.card` (test `widgets/tests/test_button.py`).
+- `TextButton` i `IconButton` zostają dla widżetów Plasmy; usunięcie kopii przycisków w widokach (`PillButton.qml`,
+  `Action.qml`) to ticket kontrakcji karty K-128.
+
+### Pasek górny
+
+`Tide.TopBar` (`widgets/lib/TopBar.qml`, makieta S-9 „Rama i pasek”, wariant B) to stały pasek widoku. Stoi **poza**
+przewijaną treścią: gospodarz kotwiczy `Flickable` pod nim, więc przewijanie go nie przesuwa. Tło `background.window`,
+pod spodem linia tekstu o kryciu `opacity.border`. Wysokość 52 px, z zakładkami 52 + 38 px.
+
+- **Od lewej:** powrót (`backText` — nazwa celu, np. „Tablica”; pusty = bez powrotu) zawsze pierwszy: `Tide.Button`
+  tonowany akcentem, 36 px, tekst „← Tablica”, podpowiedź „Wróć (Esc)”, sygnał `back()`; okruszki (`crumbs`, `text.muted`,
+  „›” o kryciu 0,6); numer (`number`, sky, Geist Mono, 600 — nigdy nie skracany) i tytuł (`title`, `text.primary`, 600,
+  skracany wielokropkiem).
+- **Po prawej:** najwyżej jedna akcja główna (`actionText`, `actionVariant` — domyślnie `normal`, sygnał
+  `actionTriggered()`) i menu ⋯ (`menuItems: [{id, label, danger, enabled, hint, name}]`, sygnał `menuTriggered(id)`,
+  `menuOpen`). Lista menu 300 px na `background.panel`, promień `card`, obrys `opacity.outline`; pozycje to
+  `Tide.Button` `ghost` (niszczące — `danger`), wyrównane do lewej; wyłączona pozycja pokazuje `hint`. Menu zamyka klik
+  pozycji, klik obok i Esc.
+- **Zakładki** (`tabs: [{id, label, enabled, hint}]`, `currentTab`, sygnał `tabTriggered(id)`): tekst `text.muted`,
+  bieżąca `text.primary`/600 z kreską 2 px w akcencie; wyłączona — krycie 0,45 i podpowiedź. Pasek tylko zgłasza
+  wybór: bieżącą zakładkę ustawia gospodarz, a zakładka może otworzyć inny widok zamiast treści.
+- **Klawisze:** Esc przy otwartym menu zamyka menu; inaczej przechodzi do gospodarza, który wraca, gdy nie ma
+  otwartego dialogu.
+
+### Widok karty
+
+Pełna karta (`apps/common/qml/card/CardFullView.qml`, wspólna dla Tablicy i Sesji) ma `Tide.TopBar` z powrotem do
+gospodarza („← Tablica” z Tablicy, „← Sesje” z Sesji — `backText` ustawiają `BoardPage` i `SessionsPage`), projektem
+w okruszkach, numerem i tytułem karty. Akcja główna paska to „Porozmawiaj z opiekunem”, gdy opiekun ma problem karty.
+Menu ⋯: „Zmiany gałęzi” (gdy karta ma gałąź), „Edytuj opis”, „Raport i dowody” (karta ze sprawy) i wszystkie
+ustawienia karty z tej samej listy co sekcja „Ustawienia karty” — z tymi samymi potwierdzeniami (zakończenie,
+archiwizacja, zmiana gałęzi) i z polem, które dostaje fokus. Esc zamyka po kolei: potwierdzenie, menu, kartę.
+
+Zakładki: **Przegląd** (cała strona karty: tytuł, gałąź, fazy, start, „Twój ruch”, plan z „Teraz w tle”, uwagi,
+historia, ustawienia), **Plan** (sam plan) i **Historia** (sama historia) — miejsce na tabelę planu i stały blok
+historii z następnego ticketu K-128 — **Opis** (opis karty w `Tide.Prose` z `markdown: true`; Tablica przekazuje
+`markdownRenderer` = `backend.renderMarkdown`, Sesje nie mają renderera, więc działa tryb Markdown `prose.js`) i
+**Zmiany** (otwiera ten sam widok zmian gałęzi co „Zmiany gałęzi”, `DiffView`; bez gałęzi karty wyłączona
+z podpowiedzią). W widoku jest najwyżej jeden `primary`: „Wybierz ↵” w „Twój ruch”, a przy otwartym pytaniu
+o potwierdzenie — przycisk pytania (archiwizacja jest `danger`).
 
 ## Ikony
 

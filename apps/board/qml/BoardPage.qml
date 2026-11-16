@@ -2097,6 +2097,10 @@ Rectangle {
         onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
+        // Pasek górny (PT-502): „← Tablica” wraca tutaj; opis karty renderuje backend.renderMarkdown Tablicy.
+        backText: "Tablica"
+        markdownRenderer: page.markdownRenderer
+        onLinkRequested: url => page.linkRequested(url)
         // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
         ticketSettingsEnabled: true
         onTicketSettingsRequested: id => page.openTicketSettings(id)

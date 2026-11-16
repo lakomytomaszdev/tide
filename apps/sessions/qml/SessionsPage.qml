@@ -652,6 +652,8 @@ Rectangle {
         z: 35
         visible: page.fullOpen
         card: page.fullOpen ? page.fullCard : null
+        // Pasek górny (PT-502): „← Sesje” wraca do listy. Sesje nie mają renderera Markdown — opis renderuje prose.js.
+        backText: "Sesje"
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendCard("decision", page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.sendCard("fault-preview", page.fullCardId, decisionId, method, params)

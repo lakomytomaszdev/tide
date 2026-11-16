@@ -53,6 +53,13 @@ def full_option(i):
     return at("(function () { const v = page.cardFullView; const all = " + ALL + "; "
               "return all(v, 'decisionOption').sort((a, b) => a.mapToItem(v, 0, 0).y - b.mapToItem(v, 0, 0).y)["
               + str(i) + "] })()")
+
+def menu_item(name):
+    """Punkt pozycji menu ⋯ paska górnego (PT-502); zamknięte menu najpierw otwiera. Pozycje tworzy Repeater,
+    więc szukamy ich w drzewie elementów (ALL), a nie przez obj()."""
+    if not js("page.cardFullView.menuOpen"):
+        click(named("fullMenu"))
+    return at("(" + ALL + ")(page.cardFullView, '" + name + "')[0]")
 '''
 
 MOVE_TAIL = "; następna decyzja będzie Twoja przy domknięciu karty, chyba że któryś krok o coś zapyta."
@@ -483,7 +490,7 @@ out["signed"] = js("(" + ALL + ")(page.cardFullView, 'historyCaretaker').filter(
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
-click(named("fullDescription"))
+click(menu_item("fullDescription"))   # PT-502: „Edytuj opis” jest w menu ⋯ paska górnego
 out["panel"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCardId")]
 js("page.closePanel()")
 js("page.fullOpen = false")
