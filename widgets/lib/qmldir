@@ -32,4 +32,5 @@ ChatView 1.0 ChatView.qml
 Prose 1.0 Prose.qml
 ScrollBar 1.0 ScrollBar.qml
 Button 1.0 Button.qml
+Sheet 1.0 Sheet.qml
 TopBar 1.0 TopBar.qml

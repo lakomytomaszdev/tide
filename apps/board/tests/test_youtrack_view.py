@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 from . import APP_DIR
-from .test_view import GrabTest, ProbeCase
+from .test_view import FIND_PY, GrabTest, ProbeCase
 
 
 class YouTrackLogicTest(unittest.TestCase):
@@ -116,7 +116,7 @@ ISSUES = {"ok": True, "error": "", "issues": [
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class YouTrackViewTest(ProbeCase):
     def test_card_chip_panel_conflict_and_link(self):
-        out = self.probe("""
+        out = self.probe(FIND_PY + """
 out["glyphs"] = [js("page.findCard('K-7').syncGlyph"), js("page.findCard('K-13').syncGlyph"),
                  js("page.findCard('K-12').syncGlyph")]
 click(card("K-7"))
@@ -124,7 +124,8 @@ until(lambda: obj("cardYouTrackBox").property("visible"))
 out["box"] = obj("cardYouTrackBox").property("visible")
 out["state"] = obj("cardYouTrackState").property("text")
 out["text"] = obj("cardYouTrackText").property("text")
-out["field"] = obj("cardYouTrackField").property("text")
+out["mode"] = js("page.cardPanel.mode")   # PT-504: ramka stanu i rozstrzyganie konfliktu są w trybie czytania
+out["readOnly"] = js("page.cardPanel.reading")
 click(named("cardYouTrackTake"))
 until(lambda: calls() and calls()[-1][0] == "ResolveYouTrack" and js("page.cardPanel.notice"))
 out["resolve"] = calls()[-1]
@@ -132,11 +133,15 @@ out["notice"] = js("page.cardPanel.notice")
 click(named("cardYouTrackOpen"))
 until(lambda: calls()[-1][0] == "openLink")
 out["link"] = calls()[-1]
-obj("cardYouTrackField").setProperty("text", "nie klucz")
-click(named("cardSave"))
-until(lambda: js("page.cardPanel.error"))
-out["badKey"] = js("page.cardPanel.error")
-obj("cardYouTrackField").setProperty("text", "log-150")
+click(named("cardYouTrackOverwrite"))
+until(lambda: calls()[-1][0] == "ResolveYouTrack" and calls()[-1][2] == "tide")
+out["overwrite"] = calls()[-1]
+# Formularz nie ma pola klucza i nie wysyła `youtrack` (puste `youtrack` kasuje klucz w usłudze).
+click(at(FIND + "(page.cardPanel, 'cardMode-edit')"))
+until(lambda: js("page.cardPanel.mode") == "edit")
+out["fieldInForm"] = js("(function f(it) { if (it.objectName === 'cardYouTrackField') return true; "
+                        "for (const c of it.children) if (f(c)) return true; return false })(page)")
+obj("cardNote").setProperty("text", "po rozstrzygnięciu")
 click(named("cardSave"))
 until(lambda: calls()[-1][0] == "UpdateCard")
 out["update"] = calls()[-1]
@@ -145,13 +150,14 @@ out["update"] = calls()[-1]
         self.assertTrue(out["box"])
         self.assertEqual(out["state"], "LOG-142 · In Progress")
         self.assertIn("stan zmieniony ręcznie", out["text"])
-        self.assertEqual(out["field"], "LOG-142")
+        self.assertEqual((out["mode"], out["readOnly"]), ("read", True), "konflikt rozstrzyga się w trybie czytania")
         self.assertEqual(out["resolve"], ["ResolveYouTrack", "K-7", "youtrack"])
+        self.assertEqual(out["overwrite"], ["ResolveYouTrack", "K-7", "tide"])
         self.assertEqual(out["notice"], "Zostaje stan z YouTracka.")
         self.assertEqual(out["link"], ["openLink", "http://yt:8111/issue/LOG-142"])
-        self.assertIn("klucz, np. LEGAL-35", out["badKey"])
+        self.assertFalse(out["fieldInForm"], "pola „Zgłoszenie w YouTracku” już nie ma w formularzu")
         self.assertEqual(out["update"][0:2], ["UpdateCard", "K-7"])
-        self.assertEqual(json.loads(out["update"][2]), {"youtrack": "LOG-150"})
+        self.assertEqual(json.loads(out["update"][2]), {"note": "po rozstrzygnięciu"}, "bez klucza youtrack")
 
     def test_header_notes_open_import_and_import_selected(self):
         issues = json.dumps(ISSUES)
