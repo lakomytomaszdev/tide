@@ -33,6 +33,7 @@ FocusScope {
     property bool scrolls: true
     property bool contentTakesEscape: false
     property bool closeOnDim: true
+    property bool showFooter: true             // stopka pokazuje się tylko z elementami i przy `showFooter`
     property real contentPadding: 24
     default property alias content: column.data
     property alias header: headerRow.data
@@ -176,7 +177,7 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            visible: footerRow.children.length > 0
+            visible: sheet.showFooter && footerRow.children.length > 0
             height: visible ? footerRow.implicitHeight + 24 : 0
             Rectangle {
                 anchors.left: parent.left

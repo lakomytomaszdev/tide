@@ -891,7 +891,9 @@ Rectangle {
             cardPanel.error = error
             if (!error) {
                 if (reply.id) selectedId = reply.id
-                panelOpen = false
+                // Zapis istniejącej karty z panelu wraca do czytania (PT-504); nowa karta i szuflada opisu zamykają panel.
+                if (tag.indexOf("update:") === 0 && panelOpen && !descriptionDrawer) cardPanel.setMode("read")
+                else panelOpen = false
                 if (notice) showToast(notice, "butter")
                 Qt.callLater(() => revealCard(selectedId))
             }
@@ -1898,23 +1900,16 @@ Rectangle {
     }
 
     // --- panel karty ----------------------------------------------------------------------------
-    MouseArea {
-        anchors.fill: parent
-        visible: page.panelOpen
-        z: page.descriptionDrawer ? 36 : 0
-        onClicked: page.closePanel()
-        onWheel: wheel => wheel.accepted = false
-    }
+    // Przyciemnienie i szufladę rysuje Tide.Sheet w CardPanel (klik poza szufladą zamyka panel).
     CardPanel {
         onNavigateRequested: (viewId, item) => page.navigateRequested(viewId, item)
         id: cardPanel
         objectName: "cardPanel"
         z: page.descriptionDrawer ? 37 : 0
         descriptionOnly: page.descriptionDrawer
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.margins: 12
+        anchors.fill: parent
+        canLaunch: page.canLaunch
+        onLaunchRequested: cardId => page.openLaunch(cardId, false)
         visible: page.panelOpen
         snapshot: page.snapshot
         card: page.panelOpen ? page.panelCard : null
@@ -2271,7 +2266,7 @@ Rectangle {
             else if (mergeWindow.opened) mergeWindow.close()
             else if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
-            else if (page.panelOpen) page.closePanel()
+            else if (page.panelOpen) cardPanel.handleEscape()   // edycja wraca do czytania, czytanie zamyka panel
             else if (page.fullOpen && !page.managing) page.closeFull()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }
