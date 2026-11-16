@@ -211,6 +211,69 @@ class ExclusiveNeverRunsBesideHeavyTickTest(FlowInProcess):
         self.release("wlasne-po")
         self.release("inne-po")
 
+    def test_heavy_classified_while_the_board_is_busy_still_waits_for_the_running_exclusive(self):
+        """Przyczyna z 13.11 (K-113 PT-468-3, 17:26:20–17:38:39): K-99-PT-395-1 `make test-changed` ruszył 17:32:02
+        obok pomiaru, a sekundę później K-99-PT-401-2 z tym samym poleceniem czekał „wstrzymane: biegnie polecenie
+        wymagające ciszy”. Klasę PT-395-1 pierwszy policzył odczyt prezentacji (decyzja o zgodzie w migawce,
+        `queueview.mark_decisions` → `commands.outside_class`) przy transakcji Tablicy trzymanej przez tick:
+        `BoardBusy` dał „lekkie”, a pamięć klasy trzymała to do końca uruchomienia. Lekkie nie przechodzi przez
+        kolejkę ciężkich, więc cisza go nie wstrzymała."""
+        import threading
+        from tide_daemon.board.store import BoardBusy
+        own = self.now_card(body(QUIET, exclusive=True))
+        other = self.card(description="Testy innej karty.\n\n" + body("make test-changed BASE=inne").replace(
+            "poza-zadane", "poza-na-sygnal"))
+        self.assertTrue(self.start(other)["ok"])
+        quiet = self.first_asked(own)
+        started = wait_until(lambda: [e for e in self.of(other, "step.started") if e.get("kind") == "ticket"],
+                             timeout=30)
+        self.assertTrue(started, self.trouble(other))
+        self.flow.stop()
+        self.engine = self.flow.engine
+        self.engine._read_load = lambda: heavyqueue.Load(1.0, 16)
+        self.allow(own, quiet)
+        self.ticks()
+        self.assertEqual(self.running(), {quiet})
+        # Krok innej karty prosi o `make test-changed` dopiero teraz, gdy pomiar biegnie.
+        with open(os.path.join(started[0]["stepDir"], "out", "release-agent"), "w", encoding="ascii") as fh:
+            fh.write("ok\n")
+
+        def asked():
+            self.engine.tick()
+            st = self.engine.journal.state(other)
+            return next((n for n, d in st.finished.items() if d.get("outside")), None)
+        name = wait_until(asked, timeout=30)
+        self.assertTrue(name, self.trouble(other))
+        # Publikacja migawki (wątek główny, bez czekania na Tablicę) w chwili, gdy transakcję trzyma inny wątek.
+        holding, done = threading.Event(), threading.Event()
+
+        def hold():
+            with self.store.transaction():
+                holding.set()
+                done.wait(10)
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(5))
+            with self.store.without_waiting() as probe, self.engine.journal.presentation():
+                try:
+                    self.engine.derived({"id": other, "column": "progress"})
+                except BoardBusy:
+                    pass        # publikacja odrzuca taką wersję; ważne, co zostaje w pamięci silnika
+            self.assertTrue(probe.busy, "odczyt prezentacji nie trafił na zajętą Tablicę")
+        finally:
+            done.set()
+            holder.join()
+        self.allow(other, name)
+        self.ticks(5)
+        self.assertEqual(self.running(), {quiet}, "ciężkie polecenie innej karty ruszyło obok pomiaru (13.11)")
+        self.assertTrue(self.held_reason(other, name).startswith(HELD_EXCLUSIVE), self.held_reason(other, name))
+        self.release("pomiar")
+        self.wait_finished(own, quiet)
+        self.ticks()
+        self.assertEqual(self.running(), {name})
+        self.release("inne")
+
     def first_asked(self, card: str) -> str:
         def found():
             st = self.flow.engine.journal.state(card)

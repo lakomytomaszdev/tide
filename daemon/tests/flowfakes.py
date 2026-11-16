@@ -18,7 +18,8 @@
   i `cc-obok` — ten zapis i zmiana `.claude/settings.local.json` albo nowy plik obok, potem `escalate`;
   „ATRAPA-CLAUDE-DIR” w opisie każe krokowi ticketu zostawić `.claude/settings.local.json`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
   jest też w dzienniku kroku). PT-482: `poza-zadane` — wynik `outside` z linii „ATRAPA-POZA: {json}” (polecenie,
-  opcjonalne `exclusive`), po wyniku polecenia — `gotowe`.
+  opcjonalne `exclusive`), po wyniku polecenia — `gotowe`; `poza-na-sygnal` — to samo dopiero po pliku
+  `release-agent` w katalogu wyjściowym kroku.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -376,6 +377,14 @@ if word == "poza-uwagi":
             time.sleep(0.05)
         os.unlink(os.path.join(cwd, "release-notes"))
     word = "poza"
+
+if word == "poza-na-sygnal":
+    # PT-482: jak `poza-zadane`, ale pierwsza prośba dopiero po pliku `release-agent` w katalogu wyjściowym kroku.
+    if "uruchomił poza piaskownicą" not in prompt:
+        until = time.monotonic() + 120
+        while not os.path.isfile(os.path.join(out, "release-agent")) and time.monotonic() < until:
+            time.sleep(0.05)
+    word = "poza-zadane"
 
 write("start")
 if word in ("na-sygnal", "blad-local"):
