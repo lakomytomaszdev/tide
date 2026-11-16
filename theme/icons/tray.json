@@ -6,6 +6,8 @@
     "bell-unread": {"glyph": "bell", "color": "lavender", "badge": "lavender", "names": ["notification-active-symbolic"]},
     "bell-off": {"glyph": "bell-off", "color": "lavender", "names": ["notifications-disabled-symbolic"]},
     "clipboard": {"glyph": "clipboard", "color": "text.secondary", "names": ["klipper-symbolic"]},
+    "vault": {"glyph": "vault", "color": "teal", "names": ["plasmavault-symbolic"]},
+    "vault-error": {"glyph": "vault", "color": "teal", "badge": "rose", "names": ["plasmavault_error-symbolic"]},
     "bluetooth": {"glyph": "bluetooth", "color": "sky", "names": ["network-bluetooth-symbolic"]},
     "bluetooth-connected": {"glyph": "bluetooth", "color": "sky", "bright": true, "names": ["network-bluetooth-activated-symbolic"]},
     "bluetooth-off": {"glyph": "bluetooth-off", "color": "sky", "names": ["network-bluetooth-inactive-symbolic"]},
