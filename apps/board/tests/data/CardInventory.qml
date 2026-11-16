@@ -108,6 +108,38 @@ QtObject {
         return e
     }
 
+    // Kontrast: dla każdego widocznego tekstu kolor napisu i warstwy tła od kafelka w dół (prostokąty przodków; przycisk —
+    // jego `fill`, napis przycisku — `ink`/`textColor`). Python nakłada warstwy na tło widoku i liczy kontrast WCAG.
+    function layersOf(it, top) {
+        const layers = []
+        for (let node = it.parent; node; node = node.parent) {
+            if (node.radius !== undefined && node.color !== undefined) layers.unshift(colorOf(node.color))
+            if (node === top) break
+        }
+        return layers
+    }
+
+    function contrastWalk(it, top, rows) {
+        for (let i = 0; i < it.children.length; i++) {
+            const child = it.children[i]
+            if (!child.visible) continue
+            if (isButton(child)) {
+                rows.push({text: String(child.text || ""), fg: colorOf(child.ink !== undefined ? child.ink : child.textColor),
+                           layers: layersOf(child, top).concat([colorOf(child.fill)])})
+                continue
+            }
+            if (typeof child.text === "string" && child.text !== "" && child.font !== undefined && child.color !== undefined)
+                rows.push({text: child.text, fg: colorOf(child.color), layers: layersOf(child, top)})
+            contrastWalk(child, top, rows)
+        }
+    }
+
+    function contrast(top) {
+        const rows = []
+        contrastWalk(top, top, rows)
+        return JSON.stringify(rows)
+    }
+
     function dump(top, withOpacity) {
         const items = []
         const rects = []

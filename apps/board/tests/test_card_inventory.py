@@ -36,6 +36,7 @@ wait(600)
 ids = js("page.cards.filter(c => (c.boardColumn || c.column) !== 'archived').map(c => c.id)")
 out["ids"] = ids
 out["cards"] = {i: json.loads(js("walker.dump(page.findCard('%%s'))" %% i)) for i in ids}
+out["contrast"] = {i: json.loads(js("walker.contrast(page.findCard('%%s'))" %% i)) for i in ids}
 
 # Stany: czekająca (K-8 z danych), zaznaczona i fokus, najechana, przeciągana, duch.
 states = {}
@@ -96,6 +97,30 @@ def normalise(entry: dict, names: dict) -> str:
 def color_rgb(value: str) -> str:
     value = str(value).lower().lstrip("#")
     return value[-6:] if len(value) in (6, 8) else value
+
+
+def rgba(value: str) -> tuple:
+    """„#rrggbb” albo „#aarrggbb” (jak String(color) w QML) → (r, g, b, a) w 0…1."""
+    value = str(value).lstrip("#")
+    alpha = int(value[:2], 16) / 255 if len(value) == 8 else 1.0
+    value = value[-6:]
+    return tuple(int(value[i:i + 2], 16) / 255 for i in (0, 2, 4)) + (alpha,)
+
+
+def over(layer: tuple, below: tuple) -> tuple:
+    a = layer[3]
+    return tuple(layer[i] * a + below[i] * (1 - a) for i in range(3)) + (1.0,)
+
+
+def luminance(color: tuple) -> float:
+    def lin(c):
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * lin(color[0]) + 0.7152 * lin(color[1]) + 0.0722 * lin(color[2])
+
+
+def contrast_ratio(fg: tuple, bg: tuple) -> float:
+    high, low = sorted((luminance(over(fg, bg)), luminance(bg)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
 
 
 def pastel_names() -> dict:
@@ -261,6 +286,26 @@ class CardInventoryTest(ProbeCase):
         ghost = self.raw["states"]["ghost"]
         self.assertEqual([e for e in ghost["items"] if e.get("kind") == "button"], [], "duch bez przycisków")
         self.assertTrue(any(e.get("text") == "K-11" for e in ghost["items"]))
+
+    # --- kontrast tekstu na kafelku -------------------------------------------------------------
+
+    def test_every_text_on_the_tile_has_contrast_of_at_least_4_5(self):
+        with open(os.path.join(REPO, "theme", "palette", "mist.json"), encoding="utf-8") as fh:
+            view = rgba(json.load(fh)["background"]["view"])
+        checked = 0
+        for card_id, rows in self.raw["contrast"].items():
+            for row in rows:
+                if len(row["text"].strip()) <= 1:
+                    continue  # znaczki („●”, „✓”) są dekoracją przy tekście; ich sens czyta się ze słów obok
+                background = view
+                for layer in row["layers"]:
+                    background = over(rgba(layer), background)
+                ratio = contrast_ratio(rgba(row["fg"]), background)
+                self.assertGreaterEqual(ratio, 4.5, f"{card_id}: „{row['text']}” {row['fg']} na {row['layers']}: {ratio:.2f}")
+                checked += 1
+        self.assertGreater(checked, 100,"sprawdzone teksty wszystkich kart, przycisków i linków")
+        names = {row["text"] for rows in self.raw["contrast"].values() for row in rows}
+        self.assertTrue({"Gotowe", "Uruchom agenta…", "Przejdź do agenta", "Zmiany gałęzi"} <= names)
 
     # --- ta sama lista przed i po zmianie wyglądu -----------------------------------------------
 

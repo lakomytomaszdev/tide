@@ -1,10 +1,14 @@
-// Karta tablicy (mock zatwierdzony 27.10.2026): ID w Geist Mono (sky), projekt, opcjonalny znacznik
-// YouTracka (ze stanem synchronizacji, PT-7), tytuł, tagi z kropkami, notatka, a gdy kartę prowadzi koordynator (derived, PT-5) —
-// pasek postępu, „● Claude · koordynator · 3 z 10” i akcja kolumny (Otwórz w Sesjach, Przejdź do
-// agenta, Gotowe). W Gotowych zwarta wersja (compact): „K-10 · projekt” i tytuł.
-// Czekająca — brzoskwiniowe tło; zaznaczona — tealowa obwódka; przeciągana — przygaszona.
+// Karta tablicy według standardu okna Tide (makieta S-9, `.bcard`, karta K-128 / PT-505): wiersz meta — numer
+// w Geist Mono (sky), projekt, pastylki dodatkowych projektów i znacznik YouTracka (ze stanem synchronizacji, PT-7),
+// tytuł 13 px/600, tagi jako pastylki z kropkami, niżej znacznik fali, pasek ticketów, notatka, a gdy kartę prowadzi
+// koordynator (derived, PT-5) — pasek postępu, „● Claude · koordynator · 3 z 10” i akcje kolumny w `Tide.Button`
+// (Uruchom agenta…, Przejdź do agenta, Zmiany gałęzi, Gotowe) oraz linki (Przejdź do agenta, Otwórz w Sesjach).
+// W Gotowych zwarta wersja (compact): „K-10 · projekt” i tytuł (3 linie).
+// Czekająca — brzoskwiniowe tło i ramka; zaznaczona i z fokusem — obwódka akcentu z poświatą; najechana —
+// jaśniejsze tło i obrys `outline`; przeciągana — krycie 0,35; duch przeciągania — bez przycisków.
 // Kartę w kolumnie ręcznej da się przeciągnąć (dragHost: strona tablicy z duchem karty).
-// Teksty to dane: zawsze Text.PlainText.
+// Test inwentarza (tests/test_card_inventory.py) pilnuje, żeby odświeżenie wyglądu nie zgubiło żadnego elementu,
+// podpowiedzi ani opisu dla czytnika ekranu. Teksty to dane: zawsze Text.PlainText.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -47,14 +51,15 @@ Rectangle {
     }
 
     implicitHeight: (compact ? compactBody.implicitHeight + 16 : body.implicitHeight + 20)
-    radius: compact ? 10 : 12
+    radius: compact ? 10 : Tide.Tokens.radiusTile
     color: compact ? Tide.Theme.alpha(Tide.Tokens.backgroundCard, area.containsMouse ? 0.95 : 0.7)
          : waiting ? Tide.Theme.tinted(Tide.Tokens.backgroundCard, Tide.Tokens.peach, area.containsMouse ? 0.11 : 0.08)
          : area.containsMouse && !ghost ? Qt.lighter(Tide.Tokens.backgroundCard, 1.06) : Tide.Tokens.backgroundCard
     border.width: compact && !selected && !activeFocus ? 0 : 1
     border.color: selected || activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
                 : waiting ? Tide.Theme.alpha(Tide.Tokens.peach, 0.32)
-                : ghost ? Tide.Theme.alpha(Tide.Tokens.accent, 0.45) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
+                : ghost ? Tide.Theme.alpha(Tide.Tokens.accent, 0.45)
+                : Tide.Theme.alpha(Tide.Tokens.textPrimary, area.containsMouse ? Tide.Tokens.opacityOutline : Tide.Tokens.opacityBorder)
     opacity: dragged ? 0.35 : 1
     activeFocusOnTab: !ghost
     Component.onCompleted: if (!ghost) Logic.noteCardDelegate()   // licznik pomiarowy (PT-323), duch karty się nie liczy
@@ -145,12 +150,16 @@ Rectangle {
         anchors.leftMargin: 11
         anchors.rightMargin: 11
         anchors.topMargin: 10
-        spacing: 7
+        spacing: 6
 
-        RowLayout {
+        // Wiersz meta (`.bcard .meta`): numer, projekt, pastylki dodatkowych projektów i znacznik YouTracka. Zawija się
+        // do drugiej linii w wąskiej kolumnie, zamiast ściskać nazwę projektu albo wystawać poza kafelek.
+        Flow {
+            id: meta
             Layout.fillWidth: true
             spacing: 6
             Text {
+                id: idText
                 text: root.c.id || ""
                 textFormat: Text.PlainText
                 color: Tide.Tokens.sky
@@ -159,8 +168,8 @@ Rectangle {
                 font.weight: Font.DemiBold
             }
             Text {
-                Layout.fillWidth: (root.c.extraProjects || []).length === 0
-                Layout.maximumWidth: (root.c.extraProjects || []).length ? implicitWidth : -1
+                visible: text !== ""
+                width: Math.min(implicitWidth, Math.max(40, meta.width - idText.implicitWidth - meta.spacing))
                 text: root.c.projectName || ""
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textMuted
@@ -189,10 +198,6 @@ Rectangle {
                         font.pixelSize: 10
                     }
                 }
-            }
-            Item {
-                Layout.fillWidth: true
-                visible: (root.c.extraProjects || []).length > 0
             }
             // Znacznik YouTracka ze stanem synchronizacji (PT-7): ✓ / ⟳ / ⚠; podpowiedź mówi resztę.
             Rectangle {
@@ -399,36 +404,30 @@ Rectangle {
             }
         }
 
-        // Akcje kolumny.
-        PillButton {
+        // Akcje kolumny (Tide.Button; nazwa i opis dla czytnika ekranu bez zmian względem dawnych PillButton).
+        Tide.Button {
             Layout.fillWidth: true
             visible: root.column === "todo" && root.canLaunch && !root.ghost
-            implicitHeight: 30
-            pillRadius: Tide.Tokens.radiusSmall
-            pixelSize: 12
-            strong: true
-            // Po starcie karta czeka w Do zrobienia, aż koordynator ruszy (PT-5) — wtedy „ponownie”.
-            text: (root.c.launched || "") !== "" ? "Uruchom ponownie…" : "Uruchom agenta…"
-            outline: (root.c.launched || "") !== ""
-            fill: Tide.Tokens.accent
-            textColor: (root.c.launched || "") !== "" ? Tide.Tokens.accent : Tide.Tokens.backgroundDesktop
+            small: true
+            // Po starcie karta czeka w Do zrobienia, aż koordynator ruszy (PT-5) — wtedy „ponownie” (przycisk tonowany).
+            readonly property bool relaunch: (root.c.launched || "") !== ""
+            text: relaunch ? "Uruchom ponownie…" : "Uruchom agenta…"
+            variant: relaunch ? "normal" : "primary"
+            tone: relaunch ? Tide.Tokens.accent : "transparent"
             onClicked: root.launchRequested()
         }
-        PillButton {
+        Tide.Button {
             objectName: "agentButton"
             Layout.fillWidth: true
             visible: root.waiting && root.derived !== null && Logic.agentSession(root.c) !== "" && !root.ghost
-            implicitHeight: 30
-            pillRadius: Tide.Tokens.radiusSmall
-            pixelSize: 12
-            strong: true
+            small: true
             text: "Przejdź do agenta"
-            fill: Tide.Tokens.peach
-            textColor: Tide.Tokens.backgroundDesktop
+            tone: Tide.Tokens.peach
             onClicked: root.agentRequested(Logic.agentSession(root.c))
         }
-        // Dwa osobne linki: okno agenta (Konsola, wątek Codexa) i koordynator w widoku Sesje okna Tide.
-        RowLayout {
+        // Dwa osobne linki: okno agenta (Konsola, wątek Codexa) i koordynator w widoku Sesje okna Tide. Zawijają się
+        // w wąskiej kolumnie.
+        Flow {
             Layout.fillWidth: true
             visible: (root.column === "progress" || root.waiting) && root.derived !== null && !root.ghost
                      && Logic.agentSession(root.c) !== ""
@@ -472,32 +471,25 @@ Rectangle {
                 }
             }
         }
-        RowLayout {
+        // Do sprawdzenia: dwa przyciski obok siebie, a gdy brakuje miejsca — jeden pod drugim.
+        Flow {
             Layout.fillWidth: true
             visible: root.column === "review" && !root.ghost
             spacing: 6
-            PillButton {
-                Layout.fillWidth: true
+            Tide.Button {
                 objectName: "cardTileDiff"
                 visible: root.canDiff && !!(root.c.derived && root.c.derived.flow && root.c.derived.flow.cardBranch)
-                implicitHeight: 30
-                pillRadius: Tide.Tokens.radiusSmall
-                pixelSize: 12
-                strong: true
-                outline: true
+                small: true
                 text: "Zmiany gałęzi"
                 onClicked: root.diffRequested()
             }
-            PillButton {
-                Layout.fillWidth: true
-                implicitHeight: 30
-                pillRadius: Tide.Tokens.radiusSmall
-                pixelSize: 12
-                strong: true
+            Tide.Button {
+                small: true
                 text: "Gotowe"
-                fill: Tide.Theme.alpha(Tide.Tokens.mint, 0.16)
-                textColor: Tide.Tokens.mint
+                tone: Tide.Tokens.mint
                 toolTip: "Przenieś kartę do Gotowych"
+                Accessible.name: "Przenieś kartę do Gotowych"   // jak dawny PillButton: podpowiedź zamiast napisu
+                Accessible.description: ""
                 onClicked: root.moveRequested("done")
             }
         }
