@@ -17,7 +17,8 @@
   poprawny `escalate`; PT-317: `cc-writes` — zapis Claude Code w `.claude/.cc-writes`, `cc-ustawienia`
   i `cc-obok` — ten zapis i zmiana `.claude/settings.local.json` albo nowy plik obok, potem `escalate`;
   „ATRAPA-CLAUDE-DIR” w opisie każe krokowi ticketu zostawić `.claude/settings.local.json`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
-  jest też w dzienniku kroku).
+  jest też w dzienniku kroku). PT-482: `poza-zadane` — wynik `outside` z linii „ATRAPA-POZA: {json}” (polecenie,
+  opcjonalne `exclusive`), po wyniku polecenia — `gotowe`.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -541,6 +542,14 @@ elif word == "poza-kolejne":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
                    "reason": "kolejna prośba ticketu"}, fh)
+elif word == "poza-zadane":
+    # PT-482: prośba outside z linii „ATRAPA-POZA: {json}” (polecenie i opcjonalne `exclusive`); po wyniku — gotowe.
+    if "uruchomił poza piaskownicą" in prompt:
+        finish("done")
+    else:
+        asked = json.loads(re.search(r"^ATRAPA-POZA: (.+)$", prompt, re.MULTILINE).group(1))
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "outside", "reason": "atrapa prosi o polecenie", **asked}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")
