@@ -147,7 +147,7 @@ class InventoryTest(unittest.TestCase):
                     if not choice:
                         self.engine._advance("K-38", fold(self.journal.read("K-38")))
                     spawn.assert_called_once()
-                    self.assertEqual(spawn.call_args.args[0][-1], "echo ordinary-test")
+                    self.assertEqual(Path(spawn.call_args.args[0][-1]).read_text(), "echo ordinary-test\n")  # PT-479: plik polecenia
 
     def test_conflicting_start_identity_blocks_outside_and_procedure_across_restart(self):
         self.project()
