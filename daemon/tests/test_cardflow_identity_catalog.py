@@ -146,7 +146,11 @@ class WriterCatalog(unittest.TestCase):
                          "box/packs.py", "box/runner.py"):
             self.assertIn(expected, paths)
         kinds = {w.kind for w in self.catalog.writes}
-        self.assertTrue({"outside.started", "outside.finished", "step.entered", "box.use"} <= kinds)
+        # K-109 PT-483: `outside.started` jest już tylko historyczne (próba testów po scaleniu zapisuje `command.*`);
+        # `outside.finished` kończy przebiegi dawnej drogi w toku.
+        self.assertTrue({"command.intent", "command.started", "command.finished", "outside.finished", "step.entered",
+                         "box.use"} <= kinds)
+        self.assertNotIn("outside.started", kinds)
 
     def test_removing_any_event_or_field_from_a_model_copy_fails(self):
         """Kontrola mutacyjna: kompletność nie zależy od generatora ani od tabeli autora."""
@@ -523,9 +527,11 @@ EFFECT_SCOPE = {
     ("cardflow/engine.py", "FlowEngine._start_outside", "start polecenia"):
         ("outside", "direct", {"_outside_history"}, _LOCK),
     ("tasks/runner.py", "HostRunner.run_command", "Popen"):
-        ("outside", [("cardflow/engine.py", "FlowEngine._start_outside", {"_outside_history"})], None, False),
-    # K-109 PT-484: start próby testów po scaleniu w commands.py (`ports.merge_check_history` pod `journal.lock`).
-    ("cardflow/commands.py", "merge_check_start", "Popen"):
+        ("outside", [("cardflow/engine.py", "FlowEngine._start_outside", {"_outside_history"}),
+                     ("cardflow/commands.py", "merge_check_start", {"merge_check_history"})], None, False),
+    # K-109 PT-484, PT-483: start próby testów po scaleniu w commands.py przez `Runner.run_command`
+    # (`ports.merge_check_history` pod `journal.lock`, przed zapisem zamiaru).
+    ("cardflow/commands.py", "merge_check_start", "start polecenia"):
         ("outside", "direct", {"merge_check_history"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "Konsola"): ("step-launch", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._enter_step", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),

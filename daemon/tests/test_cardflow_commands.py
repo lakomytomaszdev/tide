@@ -21,8 +21,8 @@ OUTSIDE_METHODS = (
     "_outside_remembered", "_outside_history", "_outside_ready", "_outside_collect", "_outside_stopped",
     "_outside_recheck", "_outside_recheck_rules", "_outside_busy", "_outside_heavy_state", "_outside_quiet_state",
     "_outside_heavy_of", "_outside_quiet_of", "_outside_class", "_outside_describe", "_outside_behind",
-    "_outside_log", "_outside_exit", "_outside_still_allowed", "_outside_launch",
-    "_outside_recover")     # K-109 PT-485: odzyskiwanie zamiaru bez startu
+    "_outside_log", "_outside_exit", "_outside_still_allowed",
+    "_outside_recover")     # K-109 PT-485: odzyskiwanie zamiaru bez startu; `_outside_launch` usunięte w PT-483
 # K-109 PT-484: 12 metod próby testów po scaleniu — logika w commands.py, w silniku wrappery.
 MERGE_CHECK_METHODS = (
     "_merge_checks", "_merge_check_waiting", "_merge_check_step", "_merge_check_history", "_merge_check_run",
@@ -164,11 +164,21 @@ class MergeCheckTest(unittest.TestCase):
     def test_still_allowed_drops_a_refused_check_from_the_given_queue(self):
         st = types.SimpleNamespace(merge_checks={"PT-1": {"requested": {"check": "PT-1:1"}, "finished": None}},
                                    step_decisions={"merge-check-PT-1-1": {"choice": "deny"}}, outside_launched=set(),
-                                   paused=False, card_finished=None)
+                                   outside_started={}, paused=False, card_finished=None)
         state = commands.CommandsState(waiting={"merge-check-PT-1-1": ("K-1", "p", 0.0, 0.0, True)})
         step = {"step": "merge-check-PT-1-1", "ticket": "PT-1", "check": "PT-1:1", "command": "make test"}
         self.assertFalse(commands.merge_check_still_allowed(ports(journal=FakeJournal(st)), state, "K-1", step))
         self.assertEqual(state.waiting, {})
+
+    def test_still_allowed_refuses_a_check_with_an_intent_before_start(self):
+        """K-109 PT-483: zamiar bez startu (`outside_started`) zamyka drugi start tej samej próby."""
+        st = types.SimpleNamespace(merge_checks={"PT-1": {"requested": {"check": "PT-1:1"}, "finished": None}},
+                                   step_decisions={"merge-check-PT-1-1": {"choice": "run"}}, outside_launched=set(),
+                                   outside_started={"merge-check-PT-1-1": {"type": "command.intent"}},
+                                   paused=False, card_finished=None)
+        state = commands.CommandsState()
+        step = {"step": "merge-check-PT-1-1", "ticket": "PT-1", "check": "PT-1:1", "command": "make test"}
+        self.assertFalse(commands.merge_check_still_allowed(ports(journal=FakeJournal(st)), state, "K-1", step))
 
     def test_head_uses_the_given_git_and_plan_commit_rule(self):
         calls = []
@@ -299,20 +309,26 @@ class CollectTest(unittest.TestCase):
         systemctl.assert_called_once_with("stop", "tide-outside-s.scope")
 
 
-class LaunchTest(unittest.TestCase):
-    def test_launch_argv_uses_given_unit_runner_and_weights(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            unit, log, exit_file, argv, env = commands.outside_launch(
-                "K-1-PT-1-1", tmp, "", "make test", systemd_run="/x/systemd-run", cpu_weight=40, old_jobs=4)
-            self.assertTrue(os.path.isdir(os.path.join(tmp, "outside", "in")))
-        self.assertEqual(unit, "tide-outside-K-1-PT-1-1")
-        self.assertEqual(argv[:6], ["/x/systemd-run", "--user", "--scope", "--collect", "--quiet",
-                                    "--unit=tide-outside-K-1-PT-1-1"])
-        self.assertIn("CPUWeight=40", argv)
-        self.assertEqual(argv[-3:], ["/bin/sh", "-c", "make test"])
-        self.assertEqual((log, exit_file), (os.path.join(tmp, "outside", "outside.log"),
-                                            os.path.join(tmp, "outside", "in", "exit-code")))
-        self.assertEqual(env["QML_DISABLE_DISK_CACHE"], os.environ.get("QML_DISABLE_DISK_CACHE", "1"))
+class MergeCheckRequestTest(unittest.TestCase):
+    """K-109 PT-483: próba testów po scaleniu to prośba `Runner.run_command` — moduł nie składa argv jednostki."""
+
+    def test_request_has_the_attempt_timeout_weights_and_today_environment(self):
+        step = {"step": "merge-check-PT-1-1", "command": "make test-changed BASE=abc", "worktree": "/w/card",
+                "stepDir": "/w/card.merge-check-PT-1-1.step"}
+        request = commands.merge_check_request(step, attempt="a1b2", timeout=5400, cpu_weight=40, old_jobs=4)
+        self.assertEqual((request.command, request.folder, request.cwd, request.timeout, request.cpu_weight,
+                          request.attempt),
+                         ("make test-changed BASE=abc", "/w/card.merge-check-PT-1-1.step", "/w/card", 5400, 40,
+                          "a1b2"))
+        self.assertEqual(request.env["QML_DISABLE_DISK_CACHE"], os.environ.get("QML_DISABLE_DISK_CACHE", "1"))
+
+    def test_module_builds_no_unit_argv(self):
+        source = (CARDFLOW / "commands.py").read_text(encoding="utf-8")
+        # Dawna droga (`.scope`) zostaje tylko do zatrzymania i odczytu przebiegów sprzed zmiany, bez argv startu.
+        self.assertNotIn('"--scope"', source)
+        self.assertNotIn("subprocess.Popen", source)
+        self.assertNotIn("import subprocess", source)
+        self.assertFalse(hasattr(commands, "outside_launch"))
 
 
 if __name__ == "__main__":

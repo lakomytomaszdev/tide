@@ -377,15 +377,23 @@ class RestartRecoveryTest(_flow_case()):
     def legacy_start(self, engine):
         """Start polecenia dawną drogą sprzed PT-479 (historia `outside.started`, jednostka `--scope`
         `tide-outside-<krok>`): od PT-479 prośba kroku zapisuje `command.*`, a ten test utrwala odzyskiwanie
-        przebiegów zapisanych przed przełączeniem. argv z `commands.outside_launch` (ta sama funkcja co przed PT-479,
-        dziś używana jeszcze przez merge-check)."""
+        przebiegów zapisanych przed przełączeniem. argv to dawne `commands.outside_launch` (usunięte w PT-483, gdy
+        merge-check przeszedł na `Runner.run_command`) — tu jako fixture dawnej drogi."""
         import subprocess
+        from tide_daemon.tasks import agentcmd
 
         def start(card, step, command):
             name = step.get("step") or ""
             worktree = step.get("worktree") or ""
-            unit, log, exit_file, argv, env = engine._outside_launch(name, step.get("stepDir") or "", worktree,
-                                                                     command)
+            folder = os.path.join(step.get("stepDir") or "", "outside")
+            os.makedirs(os.path.join(folder, "in"), exist_ok=True)
+            exit_file, log, unit = os.path.join(folder, "in", "exit-code"), os.path.join(folder, "outside.log"), \
+                f"tide-outside-{name}"
+            env = commands.outside_env(worktree, old_jobs=4)
+            argv = [engine.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet",
+                    f"--unit={unit}", "-p", "CPUWeight=40", "-p", "IOWeight=40", "--",
+                    "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
+                    exit_file, "/bin/sh", "-c", command]
             with open(log, "ab") as out, engine.journal.lock:
                 subprocess.Popen(argv, cwd=worktree or None, env=env, stdin=subprocess.DEVNULL, stdout=out,
                                  stderr=subprocess.STDOUT, start_new_session=True)

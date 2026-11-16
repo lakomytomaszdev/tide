@@ -11,8 +11,10 @@ Jawne wejścia zamiast wspólnego `self`:
   wrappery `_outside*` i `_merge_check*`, więc podmiana wrappera w teście działa tak jak przed wydzieleniem.
 - limity (`OUTSIDE_TIMEOUT`, `OUTSIDE_PER_PROJECT`…) przychodzą w argumentach z wrappera silnika.
 
-Moduł nie importuje `engine`. Zdarzenia (`outside.finished`, `merge.check-*`), jednostka i argv, kolejka i odmowy są
-te same co przed wydzieleniem.
+Moduł nie importuje `engine`. Zdarzenia decyzji (`merge.check-*`), kolejka i odmowy są te same co przed wydzieleniem.
+Wykonanie polecenia — prośby kroku (PT-479, PT-485) i próby testów po scaleniu (PT-483) — idzie jednym protokołem:
+`command.intent` → `Runner.run_command` → `command.started` → `command.finished`; argv jednostki składa wyłącznie
+runner. Przebiegi dawnej drogi (`outside.*`, jednostka `tide-outside-<krok>`) są tylko odczytywane i kończone.
 
 Widok przebiegów (K-109 PT-481): historię przebiegów obu rodzin (`outside.*` i `command.*`) czyta się wyłącznie przez
 adapter `commandruns` (`phase`, `runs`, `pending`, `Run`), udostępniony tu pod tymi samymi nazwami. Adapter leży
@@ -21,11 +23,10 @@ w osobnym liściu, bo czytają go moduły importowane przez ten (`state`, `proce
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..tasks import agentcmd, stepstop
+from ..tasks import stepstop
 from ..tasks import runner as runner_mod
 from . import boxstep, commandruns, consent, heavyqueue, mergecheck, processidentity, testpolicy, trialhold
 from .commandruns import FINISHES, INTENTS, PHASES, STARTS, Run, family, pending, phase, runs  # noqa: F401 — widok
@@ -107,7 +108,7 @@ class Ports:
     outside_stopped: Callable
     outside_exit: Callable
     outside_recheck_rules: Callable
-    # Próba testów po scaleniu (PT-484): git i Tablica silnika, a nazwy `merge_check_*`/`outside_launch` jak funkcje
+    # Próba testów po scaleniu (PT-484): git i Tablica silnika, a nazwy `merge_check_*` jak funkcje
     # tego modułu — silnik podaje w nich swoje wrappery `_merge_check*` (punkty patchowania testów).
     record_check_automatic: Callable  # (karta, pseudokrok, polecenie, próba) → automatyczna zgoda z polem `check`
     git: object                     # FlowGit: `run(katalog, *argumenty)` → wynik z `ok`/`out`
@@ -115,7 +116,6 @@ class Ports:
     card_repo: Callable             # karta → repozytorium projektu karty (`_repo`)
     request_check: Callable         # (karta, stan, ticket, wynik scalenia) → próba albo None (`_request_merge_check`)
     plan_commits_only: Callable     # (repo, stan, start, przed) → bool (`_only_tide_plan_commits`)
-    outside_launch: Callable
     merge_check_waiting: Callable
     merge_check_step: Callable
     merge_check_history: Callable
@@ -134,6 +134,8 @@ class Ports:
     unit_abandon: Callable = None      # (plik exit-code) → True: polecenie nigdy nie wystartuje; False: wystartowało
     unit_state: Callable = None        # (jednostka) → `active`, `gone` albo `unknown`
     outside_recover: Callable = None
+    # K-109 PT-483: start próby testów po scaleniu tą samą drogą co prośba kroku (`Runner.run_command`).
+    runner: object = None              # runner silnika (`HostRunner`): `run_command(CommandRequest)` → CommandHandle
 
 
 def queue_heavy(entry) -> bool:
@@ -311,11 +313,20 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
     if collected is None:
         return None
     code, tail = collected
+    record_finished(ports, card, name, step.get("ticket") or "", started, code, tail)
+    # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+    # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+    return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                  f"Koniec wyniku:\n{tail}"}
+
+
+def record_finished(ports, card: str, name: str, ticket: str, started: dict, code, tail: str) -> None:
+    """Zapis końca przebiegu w rodzinie jego startu — wspólny dla prośby kroku i próby testów po scaleniu."""
     if family(started.get("type")) == "command":
         # Ten sam przebieg kończy się w swojej rodzinie (K-109 PT-479); pola przebiegu z jego startu,
         # obciążenie maszyny z chwili końca.
         load = ports.machine_load()
-        ports.journal.append(card, "command.finished", step=name, ticket=step.get("ticket") or "",
+        ports.journal.append(card, "command.finished", step=name, ticket=ticket,
                              command=started.get("command") or "", exit=code, tail=tail,
                              **{"attempt": started.get("attempt") or "", "executor": started.get("executor") or "",
                                 "isolation": started.get("isolation") or "", "class": started.get("class") or "",
@@ -324,16 +335,13 @@ def outside_ready(ports,state: CommandsState, card: str, step: dict, done: dict,
                                 "loadavg": load.avg1, "cores": load.cores,
                                 "source": started.get("source") or ""})
     else:
-        # Przebieg rozpoczęty dawną drogą (`outside.started` sprzed PT-479) kończy się w swojej rodzinie.
-        ports.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+        # Przebieg rozpoczęty dawną drogą (`outside.started` sprzed PT-479, a próby testów po scaleniu sprzed
+        # PT-483) kończy się w swojej rodzinie.
+        ports.journal.append(card, "outside.finished", step=name, ticket=ticket,
                              command=started.get("command") or "", exit=code, tail=tail)
-    # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
-    # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
-    return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
-                                  f"Koniec wyniku:\n{tail}"}
 
 
-def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: dict) -> str:
+def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: dict, *, history=None) -> str:
     """Odzyskiwanie zamiaru `command.intent` bez startu (K-109 PT-485, ADR-1 pkt 5). Nigdy nie uruchamia polecenia.
 
     Rozstrzyga wyłącznie znacznik próby (`O_EXCL`, `Runner.abandon_command`), nie samo zapytanie o jednostkę:
@@ -345,10 +353,12 @@ def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: 
       brak pliku po końcu jednostki → `zatrzymane`); stan nieznany — czekanie do kolejnego ticku.
 
     Świeży odczyt historii, znacznik i zapis pod jedną blokadą dziennika (jak start w `_start_outside`). Zwraca
-    `not-started`, `started` albo "" (bez rozstrzygnięcia)."""
+    `not-started`, `started` albo "" (bez rozstrzygnięcia). `history` — świeży odczyt historii procesu, gdy nie jest
+    to prośba kroku (pseudokrok próby testów po scaleniu nie jest krokiem karty; K-109 PT-483)."""
     name = step.get("step") or ""
     with ports.journal.lock:
-        attempt = commandruns.attempt_of(ports.outside_history(card, step), name)
+        events = history() if history is not None else ports.outside_history(card, step)
+        attempt = commandruns.attempt_of(events, name)
         if attempt is None or not attempt.pending or attempt.intent.get("seq") != intent.get("seq"):
             return ""       # historia zmieniła się po odczycie z pamięci: kolejny tick od nowa
         intent = attempt.intent
@@ -506,23 +516,14 @@ def outside_still_allowed(ports,state: CommandsState, card: str, step: dict) -> 
     return True
 
 
-def outside_launch(name: str, step_dir: str, worktree: str, command: str, *, systemd_run: str, cpu_weight: int,
-                   old_jobs: int):
-    """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko próby testów po scaleniu (jednostka
-    `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`; PT-329). Prośba kroku idzie od PT-479 przez
-    `Runner.run_command` (argv składa runner); merge-check przechodzi na nią w PT-483. Start i jego zapis należą
-    do wywołującego."""
-    folder = os.path.join(step_dir, "outside")
-    os.makedirs(os.path.join(folder, "in"), exist_ok=True)
-    exit_file = os.path.join(folder, "in", "exit-code")
-    log = os.path.join(folder, "outside.log")
-    unit = f"tide-outside-{name}"
-    env = outside_env(worktree, old_jobs=old_jobs)
-    argv = [systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
-            "-p", f"CPUWeight={cpu_weight}", "-p", f"IOWeight={cpu_weight}", "--",
-            "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
-            exit_file, "/bin/sh", "-c", command]
-    return unit, log, exit_file, argv, env
+def merge_check_request(step: dict, *, attempt: str, timeout: int, cpu_weight: int, old_jobs: int):
+    """Prośba `Runner.run_command` dla próby testów po scaleniu (K-109 PT-483): ten sam kształt co prośba kroku —
+    katalog pseudokroku, worktree gałęzi karty jako katalog roboczy, dzisiejsze środowisko, limit czasu polecenia jako
+    RuntimeMaxSec i trwały identyfikator próby z zamiaru. argv składa runner (dawniej `systemd-run --scope` tutaj)."""
+    worktree = step.get("worktree") or ""
+    return runner_mod.CommandRequest(command=step.get("command") or "", folder=step.get("stepDir") or "",
+                                     cwd=worktree, env=outside_env(worktree, old_jobs=old_jobs),
+                                     timeout=int(timeout), cpu_weight=cpu_weight, attempt=attempt)
 
 
 def step_request(step: dict, command: str, *, timeout: int, cpu_weight: int, old_jobs: int):
@@ -829,7 +830,10 @@ def merge_check_history(ports, card: str, *, fresh: bool = False, starting: str 
         events = trialhold.read_process_history(ports.journal, card, fresh=fresh or bool(starting))
         if starting:
             run_state, started, finished = processidentity.outside_run(events, starting)
-            if run_state != "ok" or started is not None or finished is not None:
+            # K-109 PT-483: jedna decyzja próby = jeden zamiar; także zamiar rozstrzygnięty `not-started`
+            # wyklucza drugi start (ponowienie to nowa próba z nowym pseudokrokiem).
+            if run_state != "ok" or started is not None or finished is not None or \
+                    starting in commandruns.intended(events):
                 raise ValueError("próba ma już uruchomienie w historii — start odmówiony")
         return events
     except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -837,16 +841,21 @@ def merge_check_history(ports, card: str, *, fresh: bool = False, starting: str 
 
 
 def merge_check_run(ports, state: CommandsState, card: str, step: dict, entry: dict, decision: dict) -> None:
-    """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
-    `outside.finished` pseudokroku i `merge.check-finished` z tym samym `exit` (liczba, „zatrzymane”,
-    „przekroczony czas”). Odpowiednik `outside_ready` bez wznawiania kroku.
+    """Zgoda na próbę: start raz w kolejce outside (limit, zamiar, `Runner.run_command`), a po końcu zapis końca
+    przebiegu pseudokroku (`command.finished`, dla prób sprzed PT-483 `outside.finished`) i `merge.check-finished`
+    z tym samym `exit` (liczba, „zatrzymane”, „przekroczony czas”). Odpowiednik `outside_ready` bez wznawiania kroku.
+
+    K-109 PT-483 (ADR-1 pkt 5): zamiar bez startu rozstrzyga odzyskiwanie (`outside_recover`, znacznik próby), nigdy
+    ponowny start; zamiar zakończony `not-started` daje wynik próby `zatrzymane` (porażka, nie udana próba) — bramka
+    czeka na ponowienie albo akceptację, jak po każdym innym wyniku różnym od 0.
 
     K-105 PT-415: czekanie (kolejka, trwająca próba) z pamięci historii; każdy skutek — wynik z zapisanego
     zakończenia, start (pod blokadą w `merge_check_start`), zatrzymanie jednostki i zapis wyniku — dopiero po
     świeżym odczycie i tej samej redukcji na nim."""
     ports.trial_check(step)
     name = step["step"]
-    run_state, started, finished = processidentity.outside_run(ports.merge_check_history(card), name)
+    events = ports.merge_check_history(card)
+    run_state, started, finished = processidentity.outside_run(events, name)
     if run_state != "ok":
         raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
 
@@ -855,6 +864,18 @@ def merge_check_run(ports, state: CommandsState, card: str, step: dict, entry: d
         if run[0] != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
         return run
+    attempt = commandruns.attempt_of(events, name)
+    if attempt is not None and attempt.started is None:
+        if attempt.pending:
+            ports.outside_recover(card, step, attempt.intent,
+                                  history=lambda: ports.merge_check_history(card, fresh=True))
+            return
+        attempt = commandruns.attempt_of(ports.merge_check_history(card, fresh=True), name)
+        if attempt is not None and attempt.not_started:
+            # Restart między zamiarem a startem (albo przed zapisem wyniku próby): polecenie nigdy nie ruszyło.
+            ports.merge_check_finish(card, step, entry, attempt.finished.get("exit"),
+                                     attempt.intent.get("log") or "")
+        return
     if finished:
         _, started, finished = fresh_run()
     if finished:
@@ -892,8 +913,7 @@ def merge_check_run(ports, state: CommandsState, card: str, step: dict, entry: d
     if collected is not None:
         code, tail = collected
         with ports.journal.lock:
-            ports.journal.append(card, "outside.finished", step=name, ticket=step["ticket"],
-                                 command=started.get("command") or "", exit=code, tail=tail)
+            record_finished(ports, card, name, step["ticket"], started, code, tail)
             ports.merge_check_finish(card, step, entry, code, started.get("log") or "")
 
 
@@ -913,8 +933,10 @@ def merge_check_still_allowed(ports, state: CommandsState, card: str, step: dict
     name = step["step"]
     item = current.merge_checks.get(step["ticket"]) or {}
     decision = current.step_decisions.get(name) or {}
+    # Zamiar (także trwający przed startem, K-109 PT-483) jest w `outside_started`, start — w `outside_launched`.
     if (item.get("requested") or {}).get("check") != step["check"] or item.get("finished") is not None or \
-            name in current.outside_launched or current.paused or current.card_finished or \
+            name in current.outside_launched or name in current.outside_started or current.paused or \
+            current.card_finished or \
             decision.get("choice") not in consent.RUN:
         state.waiting.pop(name, None)
         return False
@@ -938,9 +960,13 @@ def merge_check_head(ports, card: str, step: dict) -> str:
     return head if ports.plan_commits_only(repo, st, after, head) else ""
 
 
-def merge_check_start(ports, state: CommandsState, card: str, step: dict, entry: dict) -> None:
-    """Start próby: jednostka i argv z `outside_launch`, świeża historia i kontrola zgody pod blokadą dziennika
-    przed Popen, zapis `outside.started` z HEAD worktree. Bez startu, gdy worktree gałęzi karty nie stoi na `after`."""
+def merge_check_start(ports, state: CommandsState, card: str, step: dict, entry: dict, *, timeout: int,
+                      cpu_weight: int, old_jobs: int) -> None:
+    """Start próby protokołem jednego wykonania (K-109 PT-483, ADR-1): trwały identyfikator próby, pod blokadą
+    dziennika świeża historia i kontrola zgody, zapis `command.intent` (`source: merge-check`, rezerwacja miejsca
+    i kolejki ciężkich), `Runner.run_command` (przejściowa usługa `tide-cmd-<attempt>`, `RuntimeMaxSec`, plik
+    `exit-code`; argv składa runner) i zapis `command.started` z HEAD worktree. Bez startu, gdy worktree gałęzi
+    karty nie stoi na `after`."""
     name, command, worktree = step["step"], step["command"], step["worktree"]
     head = ports.merge_check_head(card, step)
     if not head:
@@ -948,21 +974,36 @@ def merge_check_start(ports, state: CommandsState, card: str, step: dict, entry:
         return
     # Pełne polecenie zawsze w całości: ponowienie samych padniętych modułów (testrerun) nie dotyczy próby,
     # bo udane ponowienie nie może zastąpić porażki (zasady wyjątków od testów).
-    unit, log, exit_file, argv, env = ports.outside_launch(name, step["stepDir"], worktree, command)
+    attempt = runner_mod.new_attempt()
+    request = merge_check_request(step, attempt=attempt, timeout=timeout, cpu_weight=cpu_weight, old_jobs=old_jobs)
+    files = runner_mod.command_files(request.folder, attempt)
     journal = ports.journal
-    with open(log, "ab") as out, journal.lock:
-        # K-105 PT-415: świeży ścisły odczyt pod blokadą przed Popen (jak `_start_outside`): uruchomienie dopisane
-        # z zewnątrz po ticku (odczyt z pamięci) zamyka start.
+    with journal.lock:
+        # K-105 PT-415: świeży ścisły odczyt pod blokadą przed startem (jak `_start_outside`): uruchomienie albo
+        # zamiar dopisany z zewnątrz po ticku (odczyt z pamięci) zamyka start.
         ports.merge_check_history(card, fresh=True, starting=name)
         if not ports.merge_check_still_allowed(card, step):
             return
-        subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
-                         stderr=subprocess.STDOUT, start_new_session=True)
-        journal.append(card, "outside.started", step=name, ticket=step["ticket"], command=command,
-                       unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head)
-    if state.active is None:
-        state.active = {}
-    state.active[name] = (card, unit)
+        try:
+            # Miejsce projektu w rezerwacji jest informacją (zajętość liczy `outside_busy` z karty).
+            place = ports.project(card)[1].slug
+        except Exception:
+            place = ""
+        fields = {"step": name, "ticket": step["ticket"], "command": command, "unit": files.unit, "log": files.log,
+                  "exitFile": files.exit_file, "worktree": worktree, "head": head, "rerunOf": "", "attempt": attempt,
+                  "executor": runner_mod.EXECUTOR, "isolation": runner_mod.ISOLATION, "consentVersion": "",
+                  "source": mergecheck.KIND, "class": ""}
+        # Próba testów po scaleniu jest zawsze ciężka i nie wymaga ciszy (`outside_class`).
+        journal.append(card, "command.intent", **fields, heavy=True, exclusive=False, project=place)
+        if state.active is None:
+            state.active = {}
+        state.active[name] = (card, files.unit)
+        # Awaria między zamiarem a zapisem startu: odzyskiwanie (`outside_recover` z `merge_check_run`) rozstrzyga
+        # próbę znacznikiem `O_EXCL`, nigdy nie uruchamia jej drugi raz.
+        handle = ports.runner.run_command(request)
+        load = ports.machine_load()
+        journal.append(card, "command.started", **fields, loadavg=load.avg1, cores=load.cores)
+    state.active[name] = (card, handle.unit)
 
 
 def merge_check_repo(ports, card: str, st, ticket: str) -> str:

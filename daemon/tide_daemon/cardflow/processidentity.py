@@ -175,6 +175,13 @@ def _reader(event):
                  "reader", event.dynamic, event.start)
 
 
+def _historical_event(event):
+    """Zdarzenie, którego kod już nie zapisuje, a historia dzienników nadal je zawiera (źródło `historical` dla
+    zdarzenia i każdego pola; role i reguły pól bez zmian)."""
+    fields = MappingProxyType({name: replace(spec, source="historical") for name, spec in event.fields.items()})
+    return Event(event.role, fields, event.reason, "historical", event.dynamic, event.start)
+
+
 def _reader_fields(event, names):
     """Zdarzenie zapisywane w kodzie, którego pola `names` są dopiero rozpoznawane przed zapisem (źródło `reader`)."""
     fields = MappingProxyType({name: replace(spec, source="reader") if name in names else spec
@@ -238,13 +245,14 @@ EVENTS = MappingProxyType({
         extra={"outside": Field("discriminator", "bool", domain="outside",
                                 note="prośba o polecenie outside tego kroku")}),
         start="process"),
-    # K-109 PT-479: prośba kroku zapisuje już `command.started`; `outside.started` zapisuje tylko próba testów po
-    # scaleniu (do PT-483), bez `rerunOf` — pole zostaje w historii przebiegów kroków sprzed przełączenia.
-    "outside.started": Event("outside-start", _trace(
+    # K-109 PT-479 i PT-483: prośba kroku i próba testów po scaleniu zapisują już `command.*`; `outside.started`
+    # i `outside.finished` zostają w historii przebiegów sprzed przełączenia (odczyt, odzyskiwanie i koniec przebiegu
+    # w toku przez `commands.record_finished`, którego gałąź dawnej rodziny kończy tylko takie przebiegi).
+    "outside.started": _historical_event(Event("outside-start", _trace(
         writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log"),
         extra={"unit": OUTSIDE_UNIT_OWN,
                "rerunOf": Field("neutral", note="ponowienie padniętych modułów (prośba kroku sprzed PT-479)",
-                                source="historical")})),
+                                source="historical")}))),
     "outside.finished": Event("outside-finish", _trace(
         writer=("ticket",), neutral=("command", "exit", "tail"), extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),

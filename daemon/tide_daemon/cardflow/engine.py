@@ -7048,7 +7048,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return commands.merge_check_head(self._commands_ports(), card, step)
 
     def _merge_check_start(self, card: str, step: dict, entry: dict) -> None:
-        return commands.merge_check_start(self._commands_ports(), self._commands(), card, step, entry)
+        return commands.merge_check_start(self._commands_ports(), self._commands(), card, step, entry,
+                                          timeout=OUTSIDE_TIMEOUT, cpu_weight=STEP_CPU_WEIGHT,
+                                          old_jobs=OLD_RUNNER_JOBS)
 
     def resolve_merge_check(self, card: str, request: dict) -> dict:
         """Decyzja użytkownika o próbie testów po scaleniu (pytanie o zgodę w panelu): `run`, `run-always` (zapamiętuje
@@ -7078,7 +7080,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             command = step["command"]
             prior = st.step_decisions.get(name)
             if prior is not None:
-                if name in st.outside_launched:
+                # Zamiar przed startem (K-109 PT-483) też: polecenie mogło już ruszyć, wynik rozstrzygnie odzyskiwanie.
+                if name in st.outside_launched or name in st.outside_started:
                     raise FlowError("already-started", "testy po scaleniu już się uruchomiły — działają dalej")
                 if prior.get("choice") == choice and not prior.get("auto"):
                     return {"ok": True, "id": card, "step": name, "choice": choice, "already": True}
@@ -7344,7 +7347,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             outside_exit=self._outside_exit, outside_recheck_rules=self._outside_recheck_rules,
             git=getattr(self, "git", None), store=getattr(self, "store", None), card_repo=self._repo,
             request_check=self._request_merge_check, plan_commits_only=self._only_tide_plan_commits,
-            outside_launch=self._outside_launch, merge_check_waiting=self._merge_check_waiting,
+            merge_check_waiting=self._merge_check_waiting,
             merge_check_step=self._merge_check_step, merge_check_history=self._merge_check_history,
             merge_check_run=self._merge_check_run, merge_check_finish=self._merge_check_finish,
             merge_check_still_allowed=self._merge_check_still_allowed, merge_check_head=self._merge_check_head,
@@ -7354,10 +7357,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             machine_load=lambda: self._load_reader()(),
             unit_abandon=lambda exit_file: self.runner.abandon_command(exit_file),
             unit_state=lambda unit: self.runner.command_state(unit, timeout=OUTSIDE_STATE_TIMEOUT),
-            outside_recover=self._outside_recover)
+            outside_recover=self._outside_recover, runner=getattr(self, "runner", None))
 
-    def _outside_recover(self, card: str, step: dict, intent: dict) -> str:
-        return commands.outside_recover(self._commands_ports(), self._commands(), card, step, intent)
+    def _outside_recover(self, card: str, step: dict, intent: dict, *, history=None) -> str:
+        return commands.outside_recover(self._commands_ports(), self._commands(), card, step, intent,
+                                        history=history)
 
     def _command_result(self, started: dict):
         """Wynik przebiegu `command.*` z pliku `exit-code` przez runner (K-109 PT-479); None — trwa."""
@@ -7882,10 +7886,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _outside_still_allowed(self, card: str, step: dict) -> bool:
         return commands.outside_still_allowed(self._commands_ports(), self._commands(), card, step)
-
-    def _outside_launch(self, name: str, step_dir: str, worktree: str, command: str):
-        return commands.outside_launch(name, step_dir, worktree, command, systemd_run=self.systemd_run,
-                                       cpu_weight=STEP_CPU_WEIGHT, old_jobs=OLD_RUNNER_JOBS)
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         self._trial_check(step)

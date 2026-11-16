@@ -3414,8 +3414,11 @@ uruchamia polecenia; ponowne uruchomienie wymaga nowej decyzji (nowego kroku) i 
 w `test_runner_command.py`, wyścig z prawdziwym `systemd-run --user` (przypadek `f`) w `test_runner_command_systemd.py`.
 
 Próba testów po scaleniu
-(merge-check) zostaje przy `outside.*` i `--scope` do PT-483; krok w pudełku nadal dostaje `box-outside`. Test
-z prawdziwym menedżerem użytkownika: `daemon/tests/test_runner_command_systemd.py` (w piaskownicy kroku pomijany).
+(merge-check) od PT-483 idzie tym samym protokołem (`commands.merge_check_start`: zamiar z `source: merge-check`,
+`heavy: true`, `Runner.run_command`, start; odzyskiwanie `commands.outside_recover` z historią pseudokroku). Silnik ani
+`commands.py` nie składają już argv startu; `--scope` zostaje tylko przy zatrzymaniu i odczycie przebiegów `outside.*`
+sprzed zmiany. Krok w pudełku nadal dostaje `box-outside`. Test z prawdziwym menedżerem użytkownika:
+`daemon/tests/test_runner_command_systemd.py` (w piaskownicy kroku pomijany).
 
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
@@ -6578,15 +6581,23 @@ zgoda ticketu, `outsideAuto` bez polecenia ryzykownego — i z regułami PT-311:
 tickecie i wstrzymana karta odbierają zgodę automatyczną (`outside.auto-skipped`). Bez pasującej reguły panel karty
 pokazuje zwykłe pytanie o zgodę (`permission`: „Zawsze w projekcie”, „Uruchom raz”, „Nie uruchamiaj”, odpowiedź
 `ResolveCardStep {choice, step}`); zgoda dotyczy tylko tej próby, a ponowienie z PT-318 ma nowy pseudokrok i wymaga
-nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, jednostka `tide-outside-…`,
-plik kodu wyjścia, rozliczenie zatrzymanej jednostki z PT-315, limit czasu) w worktree gałęzi karty, gdy jego HEAD to
-`after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości, bez ponowienia samych
-padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje
-`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba,
-`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed
-startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
-Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
-`outside.finished` a `merge.check-finished` usługa dopisuje raz.
+nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, kolejka ciężkich) w worktree
+gałęzi karty, gdy jego HEAD to `after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości,
+bez ponowienia samych padniętych modułów. Od K-109 PT-483 wykonanie to protokół jednego wykonania jak prośba kroku:
+`command.intent` (`source: merge-check`, rezerwacja miejsca i kolejki ciężkich) → `Runner.run_command` (usługa
+`tide-cmd-<attempt>`, `RuntimeMaxSec`, plik `exit-code`) → `command.started` → `command.finished`. Wstrzymana karta nie
+startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje `command.finished` pseudokroku i
+`merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba, `"zatrzymane"`, `"przekroczony czas"`;
+`log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed startem — unieważnia ją) daje problem karty
+`merge-check-denied` z tym samym wyjściem co porażka (ponowienie); po zapisie zamiaru odmowa jest odrzucana
+(`already-started`). Po restarcie usługi próba nie startuje drugi raz: zamiar bez startu rozstrzyga znacznik próby
+(`O_EXCL`) — polecenie nigdy nie ruszyło (`command.finished` z `reason: not-started`, wynik próby `"zatrzymane"`, czyli
+porażka, nie udana próba) albo ruszyło (odzyskany start, wynik z `exit-code`); start i koniec z dziennika, a wynik
+zapisany między końcem przebiegu a `merge.check-finished` usługa dopisuje raz. Próby uruchomione dawną drogą
+(`outside.started`, jednostka `tide-outside-…` `--scope`, `<krok>/outside/in/exit-code`, rozliczenie zatrzymanej
+jednostki z PT-315) usługa po zmianie tylko odzyskuje i kończy `outside.finished`, bez ponownego uruchomienia.
+Testy: `daemon/tests/test_cardflow_merge_check_command.py` (restart w każdej fazie przez `FlowEngine.tick`),
+`test_cardflow_merge_check_run.py` (historyczna próba w toku).
 
 **„Akceptuj mimo porażki” (K-88, PT-320).** Problem karty `merge-check-failed`, `merge-check-denied` albo
 `merge-check-unavailable` ma w panelu karty (Tablica i Sesje) dwa wyjścia: „Ponów próbę” (polecane, PT-318) i

@@ -2,7 +2,9 @@
 
 Próbę z poleceniem zakłada PT-318 (`merge.check-requested`). Tu: pseudokrok `merge-check-<ticket>-<n>`, zgoda tą
 samą ścieżką co prośba `outside` kroku (reguły projektu, PT-311), start w kolejce outside w worktree gałęzi karty,
-zapis `merge.check-finished` i problem `merge-check-denied` po odmowie.
+zapis `merge.check-finished` i problem `merge-check-denied` po odmowie. Od K-109 PT-483 przebieg próby to protokół
+jednego wykonania (`command.intent` → `command.started` → `command.finished`, `source: merge-check`); restarty
+w każdej fazie: test_cardflow_merge_check_command.py.
 
 `MergeCheckRunTest` — silnik bez wątku przepływu, dziennik ułożony ręcznie, prawdziwe `make` i atrapa
 `systemd-run` (biegnie w piaskownicy kroku). `MergeCheckRunFlowTest` — pełny przepływ z prawdziwym gitem; test
@@ -15,12 +17,14 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tide_daemon.cardflow import commandruns
 from tide_daemon.cardflow import engine as engine_mod
 from tide_daemon.cardflow import mergecheck
 from tide_daemon.cardflow import trialhold
 from tide_daemon.cardflow.decisions import build_decisions
 from tide_daemon.cardflow.engine import FlowError
 from tide_daemon.cardflow.state import derived, fold, ticket_of
+from tide_daemon.tasks import runner as runner_mod
 from tide_daemon.tasks import stepstop
 
 from .privatebus import wait_until
@@ -95,7 +99,7 @@ class MergeCheckRunTest(FlowInProcess):
         return [e for e in self.of("step.decision") if e.get("step") == name]
 
     def starts(self, name):
-        return [e for e in self.of("outside.started") if e.get("step") == name]
+        return [e for e in self.of(commandruns.STARTED) if e.get("step") == name]
 
     def finished(self):
         return self.of(mergecheck.FINISHED)
@@ -160,8 +164,10 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertFalse(self.consent_decisions(name), "po decyzji panel nie pyta drugi raz")
         self.run_to_end()
         self.assertEqual([(e["ticket"], e["check"], e["exit"]) for e in self.finished()], [(TICKET, f"{TICKET}:1", 0)])
-        self.assertTrue(self.finished()[0]["log"].endswith(os.path.join(f".{name}.step", "outside", "outside.log")))
         started = self.starts(name)[0]
+        self.assertEqual(self.finished()[0]["log"], os.path.join(
+            self.repo + f".{name}.step", "outside", "tide-cmd-" + started["attempt"], "outside.log"))
+        self.assertEqual((started["source"], started["unit"]), ("merge-check", "tide-cmd-" + started["attempt"]))
         self.assertEqual((started["worktree"], started["head"], started["command"]),
                          (self.repo, self.head, f"make test-changed BASE={START}"))
         with open(started["log"], encoding="utf-8") as fh:
@@ -224,7 +230,8 @@ class MergeCheckRunTest(FlowInProcess):
         self.run_to_end()
         # `make` kończy się kodem 2, gdy przepis padł (tu `exit 3`); liczba różna od 0 trafia do wyniku bez zmian.
         self.assertEqual([e["exit"] for e in self.finished()], [2])
-        self.assertEqual([e["exit"] for e in self.of("outside.finished")], [2])
+        self.assertEqual([e["exit"] for e in self.of(commandruns.FINISHED)], [2])
+        self.assertFalse(self.of(commandruns.LEGACY_FINISHED))
         with open(self.finished()[0]["log"], encoding="utf-8") as fh:
             self.assertIn("test PT-1 pada", fh.read())
         self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")])
@@ -284,7 +291,7 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertFalse(self.decisions(second), "zgoda pierwszej próby nie przechodzi na kolejną")
         self.assertFalse(self.starts(second))
         self.assertEqual(len(self.consent_decisions(second)), 1)
-        self.assertEqual(len(self.of("outside.started")), 1)
+        self.assertEqual(len(self.of(commandruns.STARTED)), 1)
 
     def test_human_denial_after_auto_consent_before_start_wins(self):
         self.remember_rule()
@@ -374,6 +381,86 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertEqual([e["exit"] for e in self.finished()], ["zatrzymane"])
         self.assertEqual([e["exit"] for e in self.of("outside.finished")], ["zatrzymane"])
         self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")], "zatrzymane nie jest wynikiem 0")
+        self.assert_history_ok()
+
+    # --- historyczna próba w toku sprzed K-109 PT-483 (fixture dziennika dawnej drogi) -----------------
+
+    def legacy_run_in_progress(self):
+        """Dziennik i pliki próby uruchomionej dawną drogą przed zmianą (`outside.started`, jednostka
+        `tide-outside-<pseudokrok>.scope`, `<krok>/outside/in/exit-code`), której jednostka nadal żyje; zwraca
+        (pseudokrok, katalog `outside`, proces jednostki)."""
+        self.tick()
+        name = self.name()
+        self.engine.resolve_step(self.card_id, {"choice": "run", "step": name})
+        step_dir = self.of(mergecheck.STEP)[0]["stepDir"]
+        folder = os.path.join(step_dir, "outside")
+        os.makedirs(os.path.join(folder, "in"))
+        log = os.path.join(folder, "outside.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write("przebieg sprzed zmiany\n")
+        unit = f"tide-outside-{name}"
+        proc = subprocess.Popen(["sleep", "120"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        units = os.path.join(os.environ["XDG_RUNTIME_DIR"], "fake-units")
+        os.makedirs(units, exist_ok=True)
+        with open(os.path.join(units, unit + ".pid"), "w", encoding="utf-8") as fh:
+            fh.write(str(proc.pid))
+        self.engine.journal.append(self.card_id, "outside.started", step=name, ticket=TICKET,
+                                   command=f"make test-changed BASE={START}", unit=unit, log=log,
+                                   exitFile=os.path.join(folder, "in", "exit-code"), worktree=self.repo,
+                                   head=self.head)
+        return name, folder, proc
+
+    def assert_no_new_run(self, name):
+        kinds = [e["type"] for e in self.events() if e.get("step") == name and commandruns.phase(e)]
+        self.assertNotIn(commandruns.INTENT, kinds, "historyczna próba uruchomiona drugi raz nową drogą")
+        self.assertEqual(kinds.count(commandruns.LEGACY_STARTED), 1)
+        self.assertFalse([f for f in os.listdir(os.path.join(os.environ["XDG_RUNTIME_DIR"], "fake-units"))
+                          if f.startswith(runner_mod.COMMAND_PREFIX)])
+
+    def test_historical_check_in_progress_is_recovered_without_running_it_again(self):
+        name, folder, proc = self.legacy_run_in_progress()
+        self.fresh_engine()
+        for _ in range(5):
+            self.tick()
+        self.assertFalse(self.finished(), "jednostka żyje: bez wyniku")
+        self.assertEqual(self.held(), [(f"{TICKET}:1", "pending")], "bramka czeka na wynik historycznej próby")
+        self.assertEqual([c["phase"] for c in derived(self.state(), {"column": "progress"})["flow"]["mergeChecks"]],
+                         ["running"])
+        self.assertIn(name, self.engine._outside_active)
+        self.assert_no_new_run(name)
+        # Opakowanie dawnej drogi zapisuje kod wyjścia, jednostka się kończy.
+        with open(os.path.join(folder, "in", "exit-code"), "w", encoding="utf-8") as fh:
+            fh.write("0\n")
+        proc.kill()
+        proc.wait()
+        self.fresh_engine()
+        self.tick()
+        self.assertEqual([(e["check"], e["exit"]) for e in self.finished()], [(f"{TICKET}:1", 0)])
+        self.assertEqual([e["exit"] for e in self.of(commandruns.LEGACY_FINISHED)], [0],
+                         "przebieg dawnej drogi kończy się w swojej rodzinie")
+        self.assertEqual(self.held(), [])
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(len(self.finished()), 1)
+        self.assert_no_new_run(name)
+        self.assertNotIn(name, self.engine._outside_active)
+        self.assert_history_ok()
+
+    def test_historical_check_finished_before_its_result_writes_the_result_once(self):
+        name, folder, proc = self.legacy_run_in_progress()
+        proc.kill()
+        proc.wait()
+        # Restart sprzed zmiany między `outside.finished` pseudokroku a `merge.check-finished`.
+        self.engine.journal.append(self.card_id, "outside.finished", step=name, ticket=TICKET,
+                                   command=f"make test-changed BASE={START}", exit=3, tail="test PT-1 pada\n")
+        self.fresh_engine()
+        self.tick()
+        self.tick()
+        self.assertEqual([e["exit"] for e in self.finished()], [3])
+        self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")])
+        self.assert_no_new_run(name)
         self.assert_history_ok()
 
     # --- restart usługi -------------------------------------------------------------------------
@@ -502,7 +589,7 @@ class MergeCheckRunTest(FlowInProcess):
                     self.tick()
                 except RuntimeError:
                     pass
-                return self.of("outside.finished")
+                return self.of(commandruns.FINISHED)
             self.assertTrue(wait_until(outside_done, timeout=20), self.events())
         self.assertFalse(self.finished())
         self.assertTrue(callable(real))
@@ -613,7 +700,7 @@ class MergeCheckRunFlowTest(FlowInProcess):
         decision = next(e for e in self.of(card, "step.decision")
                         if e.get("step") == mergecheck.step_name(check["check"]))
         self.assertEqual((decision["choice"], decision.get("auto"), decision["check"]), ("run", True, check["check"]))
-        started = next(e for e in self.of(card, "outside.started")
+        started = next(e for e in self.of(card, commandruns.STARTED)
                        if e.get("step") == mergecheck.step_name(check["check"]))
         card_worktree = ticket_of(self.state(card), second["key"])["cardWorktree"]
         self.assertEqual((started["worktree"], started["command"]),
@@ -669,7 +756,7 @@ class MergeCheckRunFlowTest(FlowInProcess):
                         self.flow_view(card))
         self.restart()
         self.settle()
-        self.assertFalse([e for e in self.of(card, "outside.started") if e.get("step") == name])
+        self.assertFalse([e for e in self.of(card, commandruns.INTENT) if e.get("step") == name])
         self.assertFalse(self.finished_checks(card))
         self.assertFalse(self.ticket_starts(card, mapping["#3"]))
         self.assertEqual(len([e for e in self.of(card, mergecheck.STEP) if e["step"] == name]), 1)
