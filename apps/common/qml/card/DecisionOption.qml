@@ -1,6 +1,11 @@
-// Możliwość w oknie decyzji: karta z tytułem i jednym zdaniem skutku, jak odpowiedź w czacie.
-// Zaznaczenie trzyma okno (`checked`); karta tylko zgłasza wybór (klik, Spacja). Polecona ma plakietkę
-// „polecane” — o tym, która jest polecona, decyduje usługa (`recommended`), nie okno.
+// Możliwość w oknie decyzji: karta z tytułem i jednym zdaniem skutku, jak odpowiedź w czacie (makieta S-9 `.opt`,
+// obszar „Prośba o zgodę”, wariant A). Zaznaczenie trzyma okno (`checked`); karta tylko zgłasza wybór (klik,
+// Spacja). Polecona ma plakietkę „polecane” — o tym, która jest polecona, decyduje usługa (`recommended`), nie okno.
+//
+// Jedno zalecenie (K-128, PT-506): oznaczenia opiekuna liczy decision.js (`optionAdvice`), karta je tylko rysuje —
+// `caretakerBadge` (plakietka „opiekun”, lawenda), `note` z `tone` ("agree" — teal, "differ" — masło) i przycisk
+// `link` rozwijający komentarz opiekuna (`noteOpen`, sygnał `noteToggled()`; treść komentarza wstawia formularz
+// jako dziecko karty — `detail`).
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide
@@ -12,7 +17,15 @@ Rectangle {
     property string effect: ""
     property bool recommended: false
     property bool checked: false
+    property string caretakerBadge: ""
+    property string note: ""
+    property string tone: ""
+    property string link: ""
+    property bool noteOpen: false
+    default property alias detail: detailHolder.data
+    readonly property color noteColor: tone === "differ" ? Tide.Tokens.butter : Tide.Tokens.teal
     signal picked()
+    signal noteToggled()
 
     implicitHeight: column.implicitHeight + 24
     radius: Tide.Tokens.radiusTile
@@ -20,15 +33,28 @@ Rectangle {
          : area.containsMouse ? Qt.lighter(Tide.Tokens.backgroundCard, 1.06) : Tide.Tokens.backgroundCard
     border.width: 1
     border.color: checked || activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
-                                         : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+                : recommended ? Tide.Theme.alpha(Tide.Tokens.teal, 0.35)
+                : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
     activeFocusOnTab: true
 
     Accessible.role: Accessible.RadioButton
-    Accessible.name: recommended ? title + " (polecane)" : title
+    Accessible.name: title + (recommended ? " (polecane)" : "") + (caretakerBadge !== "" ? " (poleca opiekun)" : "")
     Accessible.description: effect
     Accessible.checked: checked
     Accessible.onPressAction: picked()
     Keys.onSpacePressed: picked()
+
+    // Pod treścią: klik w dowolne miejsce karty wybiera; przyciski i tekst komentarza nad nią mają własną obsługę.
+    MouseArea {
+        id: area
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: {
+            option.forceActiveFocus()
+            option.picked()
+        }
+    }
 
     ColumnLayout {
         id: column
@@ -61,25 +87,17 @@ Rectangle {
                 font.weight: Font.DemiBold
                 wrapMode: Text.Wrap
             }
-            Rectangle {
+            OptionBadge {
                 objectName: "decisionRecommended"
                 visible: option.recommended
-                implicitWidth: recommendedText.implicitWidth + 14
-                implicitHeight: recommendedText.implicitHeight + 6
-                radius: Tide.Tokens.radiusSmall
-                color: Tide.Theme.alpha(Tide.Tokens.positive, 0.14)
-                border.width: 1
-                border.color: Tide.Theme.alpha(Tide.Tokens.positive, 0.4)
-                Text {
-                    id: recommendedText
-                    anchors.centerIn: parent
-                    text: "polecane"
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.positive
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                    font.weight: Font.Medium
-                }
+                label: "polecane"
+                tint: Tide.Tokens.teal
+            }
+            OptionBadge {
+                objectName: "decisionCaretakerBadge"
+                visible: option.caretakerBadge !== ""
+                label: option.caretakerBadge
+                tint: Tide.Tokens.lavender
             }
         }
         Text {
@@ -93,16 +111,41 @@ Rectangle {
             font.pointSize: Tide.Tokens.fontSizePt
             wrapMode: Text.Wrap
         }
-    }
-
-    MouseArea {
-        id: area
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: {
-            option.forceActiveFocus()
-            option.picked()
+        // Dopisek opiekuna: „✓ Polecane — opiekun karty też to poleca · uzasadnienie opiekuna” albo
+        // „◆ Opiekun poleca tę opcję · dlaczego?”.
+        RowLayout {
+            objectName: "decisionAdviceNote"
+            Layout.fillWidth: true
+            Layout.leftMargin: 23
+            visible: option.note !== ""
+            spacing: 6
+            readonly property string text: option.note
+            Text {
+                objectName: "decisionAdviceText"
+                Layout.fillWidth: true
+                Layout.maximumWidth: Math.ceil(implicitWidth) + 1
+                text: option.note + " ·"
+                textFormat: Text.PlainText
+                color: option.noteColor
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                wrapMode: Text.Wrap
+            }
+            Tide.Button {
+                objectName: "decisionAdviceToggle"
+                text: (option.noteOpen ? "▾ " : "▸ ") + option.link
+                small: true
+                tone: option.noteColor
+                Accessible.name: option.noteOpen ? "Zwiń komentarz opiekuna" : "Pokaż komentarz opiekuna"
+                onClicked: option.noteToggled()
+            }
+            Item { Layout.fillWidth: true }
+        }
+        ColumnLayout {
+            id: detailHolder
+            Layout.fillWidth: true
+            Layout.leftMargin: 23
+            visible: option.note !== "" && option.noteOpen
         }
     }
 }

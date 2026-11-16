@@ -33,3 +33,4 @@ Prose 1.0 Prose.qml
 ScrollBar 1.0 ScrollBar.qml
 Button 1.0 Button.qml
 TopBar 1.0 TopBar.qml
+CodeBlock 1.0 CodeBlock.qml

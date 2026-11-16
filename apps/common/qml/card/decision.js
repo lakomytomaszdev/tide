@@ -210,17 +210,112 @@ function keepsPending(params) {
     return !!params && params.baseDecision === "change"
 }
 
-// Blok „Opiekun poleca” (K-37, PT-157): pole `caretaker{summary, recommendation, tried[], optionId, failed}` liczy
-// usługa (caretaker.annotate). Okno tylko je formatuje: nie przestawia możliwości i niczego nie wybiera (D10).
+// Pole `caretaker{summary, recommendation, tried[], optionId, failed}` (K-37, PT-157) liczy usługa
+// (caretaker.annotate). Okno tylko je formatuje (reguła jednego zalecenia niżej, `advice`): nie przestawia
+// możliwości i niczego nie wybiera (D10). Decyzja z opiekunem nie łączy się w grupę zgód (`consentKey`).
 function hasCaretaker(decision) {
     var care = decision && decision.caretaker
     return !!care && typeof care === "object" && !!(care.recommendation || care.summary)
 }
 
-// Nagłówek bloku: „Opiekun poleca: <rekomendacja>”; bez rekomendacji (opiekun nie poradził sobie) — samo oddanie decyzji.
-function caretakerTitle(care) {
-    var recommendation = care && care.recommendation ? String(care.recommendation) : ""
-    return recommendation ? "Opiekun poleca: " + recommendation : "Opiekun oddaje decyzję"
+// --- Jedno zalecenie (K-128, PT-506) -----------------------------------------------------------------------------
+//
+// Prośba o zgodę i każda decyzja kroku mają jedno zalecenie: plakietkę „polecane” przy opcji z `recommended: true`
+// (z usługi). Zamiast osobnego bloku „Opiekun poleca” zdanie opiekuna stoi przy opcji albo pod możliwościami.
+// Reguła czyta wyłącznie istniejące pola (`options[].recommended`, `caretaker{optionId, recommendation, summary,
+// failed, tried}`), niczego nie zaznacza (D10) i nie zmienia możliwości ani żądań (granica K-109).
+//
+// Tryby (`mode`):
+// - "agree"  — `caretaker.optionId` to opcja polecana: dopisek „✓ Polecane — opiekun karty też to poleca” przy niej,
+// - "differ" — `caretaker.optionId` to inna istniejąca opcja: plakietka „opiekun” i „◆ Opiekun poleca tę opcję”,
+// - "note"   — opiekun nie wskazał opcji (pusty albo nieznany `optionId`), ale ma rekomendację, streszczenie albo
+//              nie poradził sobie (`failed`): jedno zdanie pod możliwościami,
+// - "none"   — decyzja bez opiekuna.
+function advice(decision) {
+    var options = decision && Array.isArray(decision.options) ? decision.options : []
+    var recommendedId = ""
+    for (var i = 0; i < options.length; i++) {
+        if (options[i] && options[i].recommended === true) {
+            recommendedId = String(options[i].id || "")
+            break
+        }
+    }
+    var out = { mode: "none", recommendedId: recommendedId, caretakerId: "", sentence: "" }
+    var care = decision && decision.caretaker && typeof decision.caretaker === "object" ? decision.caretaker : null
+    if (!care) return out
+    var failed = care.failed === true
+    if (!failed && !care.recommendation && !care.summary) return out
+    var pick = care.optionId ? String(care.optionId) : ""
+    var known = false
+    for (var j = 0; j < options.length; j++) if (options[j] && options[j].id === pick) known = true
+    if (!failed && known && pick === recommendedId) {
+        out.mode = "agree"
+        out.caretakerId = pick
+    } else if (!failed && known) {
+        // TODO(K-128 etap B): dziś caretaker.annotate_escalation nadpisuje `recommended` wyborem opiekuna, więc
+        // rozbieżności nie da się wiarygodnie wykryć z danych usługi — gałąź działa tylko na danych testowych,
+        // a etap B może zmienić znaczenie „polecane” (docs/agents/plans/followups/etap-b-silnik.md).
+        out.mode = "differ"
+        out.caretakerId = pick
+    } else {
+        out.mode = "note"
+        out.sentence = failed ? "Opiekun nie poradził sobie z problemem i oddaje decyzję Tobie."
+                     : care.recommendation ? "Opiekun poleca: " + text(care.recommendation)
+                     : "Opiekun oddaje decyzję Tobie."
+    }
+    return out
+}
+
+// Oznaczenia jednej opcji według reguły: `badge` — plakietka opiekuna ("opiekun" albo ""), `note` — dopisek pod
+// opisem, `tone` — "agree" (teal) albo "differ" (masło), `link` — podpis przycisku rozwijającego komentarz opiekuna.
+// Plakietkę „polecane” daje sama opcja (`recommended` z usługi), nie ta funkcja.
+function optionAdvice(rule, optionId) {
+    var none = { badge: "", note: "", tone: "", link: "" }
+    if (!rule || !optionId || rule.caretakerId !== optionId) return none
+    if (rule.mode === "agree")
+        return { badge: "", note: "✓ Polecane — opiekun karty też to poleca", tone: "agree",
+                 link: "uzasadnienie opiekuna" }
+    if (rule.mode === "differ")
+        return { badge: "opiekun", note: "◆ Opiekun poleca tę opcję", tone: "differ", link: "dlaczego?" }
+    return none
+}
+
+// Rozwijany komentarz opiekuna: rekomendacja (gdy nie stoi już w zdaniu trybu "note") i streszczenie.
+function adviceDetail(rule, care) {
+    if (!care) return { recommendation: "", summary: "" }
+    var withRecommendation = !rule || rule.mode !== "note"
+    return { recommendation: withRecommendation ? text(care.recommendation) : "", summary: text(care.summary) }
+}
+
+// Podpis przełącznika szczegółów zdania opiekuna w trybie "note".
+function noteToggleLabel(open) {
+    return (open ? "▾ " : "▸ ") + "Szczegóły opiekuna"
+}
+
+// --- Tytuł jako pytanie (K-128, PT-506) --------------------------------------------------------------------------
+// Prośba o zgodę ma w tytule pytanie złożone z istniejących pól (`kind`, `happened`, `technical.command`); zdanie
+// usługi (`happened`) zostaje pod nim. Inne decyzje mają pytanie, gdy `happened` już nim jest (np. pytanie kroku),
+// a bez tego — dzisiejszy tytuł. Grupa zgód i znak przyjęcia zostają z tytułem grupy. Pusty napis — bez pytania.
+function questionTitle(decision) {
+    if (!decision || decision.group === true || decision.kind !== "permission") return ""
+    var tech = decision.technical || {}
+    var command = typeof tech.command === "string" ? tech.command.trim() : ""
+    if (command === "" || command.indexOf("network:") === 0) return ""
+    var short = command.length <= SHORT_COMMAND && command.indexOf("\n") < 0
+    if (text(decision.happened).indexOf("poza piaskownicą") >= 0)
+        return short ? "Uruchomić " + command + " poza piaskownicą?" : "Uruchomić polecenie poza piaskownicą?"
+    if (Array.isArray(decision.commands) && decision.commands.length > 1)
+        return "Zezwolić na polecenia z łańcucha?"
+    return short ? "Zezwolić na " + command + "?" : "Zezwolić na polecenie spoza listy dozwolonych?"
+}
+
+// Podgląd skryptu (K-128, PT-506): pole `decision.script = {path, language, text, lineCount, truncated}` dostarczy
+// etap B (dziś usługa go nie podaje). Bez pola albo bez tekstu — null, czyli brak bloku.
+function script(decision) {
+    var s = decision && decision.script
+    if (!s || typeof s !== "object" || typeof s.text !== "string") return null
+    return { path: text(s.path), language: text(s.language) || "bash", text: s.text,
+             lineCount: typeof s.lineCount === "number" ? s.lineCount : 0, truncated: s.truncated === true }
 }
 
 var TRIED_ACTIONS = { "escalate": "Oddanie decyzji" }
