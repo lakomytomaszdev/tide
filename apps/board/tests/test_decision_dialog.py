@@ -103,6 +103,8 @@ class PackageTest(unittest.TestCase):
 
     def test_no_hardcoded_colors_fonts_or_choice_logic(self):
         for name in os.listdir(CARD_DIR):
+            if not os.path.isfile(os.path.join(CARD_DIR, name)):
+                continue   # np. katalog `.claude` piaskownicy kroku
             with open(os.path.join(CARD_DIR, name), encoding="utf-8") as fh:
                 source = fh.read()
             self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
