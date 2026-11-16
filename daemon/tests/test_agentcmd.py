@@ -177,8 +177,9 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertEqual(sandbox, {
             "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
+            # PT-480: haki i konfiguracja wspólnego `.git` z manifestu ścieżek kroku tylko do odczytu.
             "filesystem": {"denyRead": ["~"], "allowRead": [self.worktree, self.repo + "/.git", inp, out],
-                           "allowWrite": [out]},
+                           "allowWrite": [out], "denyWrite": [self.repo + "/.git/hooks", self.repo + "/.git/config"]},
             "network": {"allowedDomains": []}})
 
     def test_read_only_directories_are_denied_for_shell_writes_too(self):
@@ -266,7 +267,7 @@ class BackgroundEnvironmentTest(BackgroundBase):
         self.assertIn("IdentityAgent=none", env["GIT_SSH_COMMAND"])
         self.assertIn("BatchMode=yes", env["GIT_SSH_COMMAND"])
         pairs = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
-        self.assertEqual(pairs, {"credential.helper": "", "core.askPass": ""})
+        self.assertEqual(pairs, {"credential.helper": "", "core.askPass": "", "gc.auto": "0", "maintenance.auto": "false"})
         self.assertEqual(env["GH_CONFIG_DIR"], os.path.join(self.step_dir, "in", "gh"))
         self.assertNotEqual(env["DBUS_SESSION_BUS_ADDRESS"], DIRTY_ENV["DBUS_SESSION_BUS_ADDRESS"])
         self.assertFalse(os.path.exists(env["DBUS_SESSION_BUS_ADDRESS"].partition("=")[2]))

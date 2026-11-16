@@ -74,14 +74,14 @@ class OutsideDenyWinsTest(FlowInProcess):
         self.assertEqual(self.skipped(card, "s4"), ["denied-before"])
         st = self.state(card)
         eng._outside_ready(card, later, st.finished["s4"], {"choice": "run", "auto": True})
-        self.assertEqual(self.of(card, "outside.started"), [])
+        self.assertEqual(self.of(card, "command.started"), [])
         # Prośba czeka na człowieka: ręczne „run” nadal uruchamia polecenie.
         self.assertTrue(self.call({"choice": "run", "step": "s4"}, card)["ok"])
         st = self.state(card)
         with mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
             eng._outside_ready(card, later, st.finished["s4"], st.step_decisions["s4"])
         self.assertEqual(popen.call_count, 1)
-        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s4"])
+        self.assertEqual([e["step"] for e in self.of(card, "command.started")], ["s4"])
 
     def test_deny_in_another_ticket_or_by_tide_does_not_block_auto_consent(self):
         card, eng, steps = self.seeded()
@@ -124,7 +124,7 @@ class OutsideDenyWinsTest(FlowInProcess):
             eng._outside_ready(card, steps[1], st.finished["s2"], granted)
             eng._outside_ready(card, later, self.state(card).finished["s4"], {"choice": "run", "auto": True})
         self.assertEqual(popen.call_count, 0)
-        self.assertEqual(self.of(card, "outside.started"), [])
+        self.assertEqual(self.of(card, "command.started"), [])
         self.assertEqual([(e["step"], e["reason"]) for e in self.of(card, "outside.decision-invalidated")],
                          [("s2", "denied-before")])
 
@@ -175,7 +175,7 @@ class OutsideDenyWinsTest(FlowInProcess):
             eng._outside_ready(card, steps[0], st.finished["s1"], granted)
             eng._start_outside(card, steps[0], COMMAND)
         self.assertEqual(popen.call_count, 0)
-        self.assertEqual(self.of(card, "outside.started"), [])
+        self.assertEqual(self.of(card, "command.started"), [])
 
     def test_auto_consent_queued_before_a_deny_in_another_step_does_not_start(self):
         card, eng, steps = self.seeded()
@@ -195,12 +195,12 @@ class OutsideDenyWinsTest(FlowInProcess):
         self.recheck(card, steps[0])
         st = self.state(card)
         eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
-        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1"])
+        self.assertEqual([e["step"] for e in self.of(card, "command.started")], ["s1"])
         self.assertEqual(self.call({"choice": "deny", "step": "s1"}, card)["error"], "already-started")
         self.assertEqual(self.of(card, "outside.decision-invalidated"), [])
         self.assertTrue(wait_until(lambda: eng._outside_ready(card, steps[0], st.finished["s1"],
                                                             st.step_decisions["s1"]) is not None, timeout=10))
-        self.assertEqual(self.of(card, "outside.finished")[0]["exit"], 0)
+        self.assertEqual(self.of(card, "command.finished")[0]["exit"], 0)
 
     def test_manual_run_before_start_stays_decided(self):
         card, eng, steps = self.seeded()

@@ -64,7 +64,8 @@ def install_controls(folder, runtime, prefix):
                           "for arg in sys.argv[1:]:\n"
                           "    if arg.startswith('--unit=tide-'):\n"
                           f"        arg='--unit='+{prefix!r}+arg[len('--unit='):]\n"
-                          "    elif arg.startswith(('tide-step-', 'tide-outside-')) and arg.endswith('.scope'):\n"
+                          "    elif arg.startswith(('tide-step-', 'tide-outside-', 'tide-cmd-')) and "
+                          "arg.endswith(('.scope', '.service')):\n"
                           f"        arg={prefix!r}+arg\n"
                           "    args.append(arg)\n"
                           f"os.execve('/usr/bin/{name}', ['{name}', *args], env)\n")

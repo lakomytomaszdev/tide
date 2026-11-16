@@ -13,6 +13,8 @@ import re
 import shlex
 import subprocess
 
+from . import commandruns
+
 VALUE = r"[A-Za-z0-9_./:@+-]+"
 # Po `make` tylko parametry doboru, które ponowienie odtwarza (BASE, JOBS); inne zmienne Make (np. LC_ALL=C)
 # zmieniałyby recepturę, więc taki przebieg idzie w całości (review Astry 06.11, runda 2).
@@ -167,9 +169,11 @@ def substitute(events: list[dict], worktree: str, command: str) -> tuple[str, st
     sha = head(worktree)
     if not sha:
         return command, "", ""
-    finished = {e.get("step"): e for e in events if e.get("type") == "outside.finished"}
+    # Przebiegi obu rodzin zapisu (`outside.*`, `command.*`) z widoku `commandruns` (PT-481); pola startu i końca
+    # (`worktree`, `command`, `head`, `log`, `exit`) mają w obu rodzinach te same klucze.
+    finished = {e.get("step"): e for e in events if commandruns.phase(e) == "finished"}
     for event in reversed(events):
-        if event.get("type") != "outside.started" or event.get("worktree") != worktree \
+        if commandruns.phase(event) != "started" or event.get("worktree") != worktree \
                 or not is_full_test(event.get("command") or ""):
             continue
         done = finished.get(event.get("step"))

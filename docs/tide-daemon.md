@@ -2038,6 +2038,35 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
     `/tmp` i `$TMPDIR` programu — tylko gdy krok ich nie wyklucza (`exclude_slash_tmp`, `exclude_tmpdir_env_var`:
     krok opiekuna, katalogi tylko do odczytu, profil odczytu); kolizja liczy się z faktycznych ustawień kroku,
   - zawsze repozytorium Tablicy (dokumenty AI i Konsola piszą w nim; dokłada je `approval_for_step`).
+- **Manifest ścieżek kroku (PT-480, K-109).** `WriteAreas` jest częścią `PathManifest`, który buduje jedna funkcja
+  `agentcmd.path_manifest` (w `background()` i `step_path_manifest`/`step_write_areas`). Z manifestu, i tylko z niego,
+  powstają argumenty piaskownicy kroku: zapis (`read_write`), jawny zakaz zapisu (`read_only` → `denyWrite` Claude;
+  u Codexa żaden katalog zapisu ich nie obejmuje) i ukrycie (`hidden` → `denyRead` Claude obok `~`). Zawartość:
+  - zapis: worktree kroku, jego `out`, techniczny tmp (`tmp`: `CLAUDE_CODE_TMPDIR`, katalogi programu, `/tmp`
+    i `$TMPDIR` Codexa), własny `.git/worktrees/<wt>`; `.git/objects|refs|logs` (Codex) albo wspólny `.git`
+    dawany przez Claude CLI sam (bez `.git/worktrees` innych kroków) — jak przed PT-480,
+  - tylko do odczytu: `out` wcześniejszych kroków ticketu i wykonawcy dla recenzenta (`context_dirs`), katalogi
+    do odczytu, skille, `.git/hooks` i `.git/config` (nowe `denyWrite` w ustawieniach Claude, także w pudełku,
+    które dziedziczy `denyWrite` hosta),
+  - ukryte: `.git/worktrees/<inne>` (Claude). Codex czyta cały dysk — `limits` manifestu zapisuje to wprost;
+    ukrycie u Codexa daje dopiero jednostka hosta albo pudełko (etap 2 K-109),
+  - techniczny `HOME` (`home`) bez zapisu; narzędzia projektów piszą pamięci podręczne w `out`.
+  Manifest jest nieustalony (`ManifestError`, podklasa `StepError`: krok nie startuje), gdy granica zapisu (bez
+  katalogów tmp) obejmuje `in` kroku, katalog zbiorczy worktree albo kroków (to otworzyłoby `out` innych kroków),
+  `.git/worktrees`, Tablicę, dziennik kart (`$XDG_STATE_HOME/tide`) albo `~/.claude`, `~/.codex`, `~/.config`,
+  `~/.local/share/tide`, oraz gdy którykolwiek poziom — katalog zbiorczy worktree, worktree, katalog kroków, katalog
+  kroku, `out`, `in`, `.git`, `.git/worktrees`, `.git/worktrees/<wt>`, katalogi zapisu Codexa w `.git` — jest
+  dowiązaniem (sprawdzenie `lstat`, bez podążania) albo nie jest katalogiem. Każdy poziom jest przypięty do i-węzła;
+  `Background.prepare()` i `Background.start()` sprawdzają je ponownie tuż przed zapisem plików kroku i przed
+  `Popen`: podmiana (dowiązanie albo inny katalog pod tą samą nazwą) to odmowa startu. Okno między tym sprawdzeniem
+  a montowaniem w piaskownicy programu (bwrap Claude CLI/Codexa) zostaje; zamyka je dopiero wykonawca z etapu 2.
+  Krok w pudełku (`BoxRunner`) nie woła `prepare()`/`start()` (ma własne sprawdzenia dowiązań w `StepDir`), więc
+  tam manifest jest sprawdzany tylko przy budowie; ponowne sprawdzenie w pudełku daje etap 2.
+  W kroku `gc.auto=0` i `maintenance.auto=false` (`GIT_CONFIG_*`), a `git gc`, `git worktree prune`,
+  `git maintenance` (zadanie `gc` biegnie bez `--auto`, więc `gc.auto=0` go nie zatrzymuje), `git prune`
+  i `git repack` są zakazane w każdym projekcie (`board.commands.STEP_DENIED`, całe podpolecenie, także z opcjami
+  gita przed nim i poza piaskownicą): wpisy innych kroków są w kroku ukryte, więc one i ich obiekty wyglądałyby
+  na porzucone.
 - **Pochodzenie wywołania.** `UpsertProject` z polem `tests` ustala PID nadawcy z magistrali
   (`GetConnectionUnixProcessID`, `QDBusConnectionInterface.servicePid`) i czyta `/proc/<pid>/cgroup`
   (`daemon/tide_daemon/call_origin.py`). Proces w jednostce kroku (segment `tide-step-*`, także podgrupa jednostki
@@ -3463,7 +3492,7 @@ startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dzien
 Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
 
 **Obciążenie maszyny w zdarzeniach outside (K-100, PT-423).** `outside.started` i `outside.finished` (prośba
-kroku i próba testów po scaleniu) mają `loadavg: [l1, l5, l15]` (średnie obciążenie z chwili zapisu, dwa miejsca po
+kroku i próba testów po scaleniu), a od K-109 `command.started` i `command.finished`, mają `loadavg: [l1, l5, l15]` (średnie obciążenie z chwili zapisu, dwa miejsca po
 przecinku) i `cores` — liczbę rdzeni dostępnych usłudze (`sched_getaffinity`, inaczej `cpu_count`). Błąd odczytu
 daje `null` w danym polu; nigdy nie zatrzymuje polecenia ani zapisu zdarzenia. Pola są wyłącznie diagnostyczne
 (miernik porażek pod obciążeniem): nie zmieniają kolejki, zgód, wznowień ani modelu tożsamości procesów (pola
@@ -3553,6 +3582,90 @@ karty przez `SetCardPaused`).
   `running`/`waiting` mają `exclusive`.
 - *Restart*: znacznik ciszy odtwarza się z `step.finished.exclusive` i bieżących `quietCommands` (dla trwających
   i czekających); klasa jest pamiętana do końca uruchomienia polecenia, więc zmiana wzorców dotyczy nowych zgłoszeń.
+- *Błąd klasyfikacji* (K-109 PT-482): pamiętana jest tylko klasa policzona bez błędu (i znacznik kroku `exclusive`).
+  Błąd odczytu projektu, kontraktu albo ustawień — np. `BoardBusy` w odczycie prezentacji przy transakcji Tablicy
+  trzymanej przez tick — daje „lekkie” tylko dla tego wywołania; start w ticku liczy klasę od nowa. 13.11 taki błąd
+  zapamiętał `make test-changed` K-99-PT-395-1 jako lekkie i polecenie ruszyło obok pomiaru K-113-PT-468-3
+  (regresja: `daemon/tests/test_cardflow_exclusive_tick.py`).
+
+**Jeden widok przebiegów poleceń** (K-109 PT-481, `cardflow/commandruns.py`, udostępniony też w `commands.py`).
+Przebieg polecenia poza piaskownicą zapisuje dziś para `outside.started` → `outside.finished`; protokół jednego
+wykonania (ADR-1) zapisze go jako `command.intent` → `command.started` → `command.finished` (PT-479/PT-485). Wszyscy
+czytający historię przebiegów — `state.fold` (`outside_started`, `outside_launched`, a przez nie kolejka, zgody,
+`mergecheck`, `rest`, liczniki w migawce), model tożsamości `processidentity` (role `outside-start`/`outside-finish`,
+zamiar jako ślad), strażnik opiekuna `guard.runs`, ponowienie padniętych modułów `testrerun.substitute`, inwentarz prób
+`trialhold` i `tools/coordinator/metrics.py` — pytają adapter o fazę zdarzenia (`phase`) albo czytają gotowe przebiegi
+(`runs`), bez porównywania nazw. Pola wspólne mają w obu rodzinach te same klucze (`step`, `ticket`, `command`, `unit`,
+`log`, `exitFile`, `worktree`, `head`, `rerunOf`; w końcu `exit`, `tail`), a `command.*` dokłada `attempt`, `executor`,
+`isolation`, `class`, `consentVersion`, `source`. Koniec może być z innej rodziny niż start (przebieg zaczęty przed
+przełączeniem zapisu). Adapter tylko czyta: nie przepisuje dziennika i niczego nie zapisuje; od PT-485
+udostępnia też los ostatniego zamiaru kroku (`attempt_of`) i kroki z zamiarem (`intended`). Odzyskiwanie niezakończonego `outside.started` po restarcie działa jak
+dotąd: jednostka `tide-outside-<krok>`, wynik z pliku `exit-code`, bez ponownego uruchomienia.
+
+**Polecenie kroku na hoście przez `Runner.run_command`** (K-109 PT-479, ADR-1; `tasks/runner.py`). Prośba `outside`
+kroku po zgodzie nie składa już argv w silniku: `commands.step_request` podaje polecenie, katalog kroku, worktree,
+dzisiejsze środowisko (`outside_env`) i limit czasu, a `HostRunner.run_command` uruchamia przejściową usługę
+`systemd-run --user --wait --collect --unit=tide-cmd-<attempt>` (nigdy `--scope`) z `-p RuntimeMaxSec=<OUTSIDE_TIMEOUT>`
+i opakowaniem `box/tide-step --command <exit-code> <wynik> <znacznik> -- /bin/sh <plik polecenia>`. `attempt` to losowy
+identyfikator próby; każda próba ma własny katalog `<krok>/outside/tide-cmd-<attempt>/` (`command`, `outside.log`,
+`exit-code`), więc stary plik wyniku nie jest wynikiem nowej próby. Treść polecenia leży w pliku, bo systemd rozwija
+`${…}` w argumentach usługi; środowisko przechodzi przez `--setenv=NAZWA` bez wartości (wartości nie trafiają do argv),
+bez zmiennych menedżera usług (`INVOCATION_ID`, `NOTIFY_SOCKET`…). Etap 1: `isolation: none`.
+
+Opakowanie zapisuje `exit-code` atomowo (`.tmp` i `mv`): kod polecenia przy zwykłym końcu, a przy SIGTERM
+(zatrzymanie jednostki, przekroczony `RuntimeMaxSec`) od razu `zatrzymane`; potem przekazuje sygnał poleceniu i czeka
+na jego koniec (wczesny zapis chroni wynik przed SIGKILL po `TimeoutStopSec`). `zatrzymane` z pliku jest wynikiem
+końcowym dopiero, gdy jednostki już nie ma (`gone`): dopóki procesy polecenia żyją (`active`/`deactivating`) albo stan
+jest nieznany, silnik czeka — nie zwalnia miejsca w kolejce i nie wznawia kroku (jak PT-315 na dawnej drodze).
+Tak samo zajętość miejsc projektu/łączna i zbiór trwających ciężkich poleceń (`outside_busy`, port `unit_gone`
+= `HostRunner.command_state(…) == "gone"`): wpis jednostki `tide-cmd-*` z plikiem `zatrzymane` zostaje zajęty
+w każdym ticku, także innych kart, dopóki jednostka nie zniknie — kolejka ciężkich nie wpuści obok niej `exclusive`.
+Wynik pochodzi wyłącznie z tego pliku (`HostRunner.command_result`: liczba albo `zatrzymane`, `OUTSIDE_STOPPED`);
+klient `systemd-run --wait` jest tylko obserwatorem — jego kod wyjścia i śmierć (np. restart usługi Tide) nie są
+wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTSIDE_STOP_GRACE` od startu →
+`zatrzymane`; nieznany stan systemctl → czekanie. Zapora: `COMMAND_STOP_MARGIN` s po limicie bez wyniku silnik raz,
+po świeżym odczycie dziennika, zatrzymuje jednostkę (`systemctl --user stop --no-block`); wynik i tak przychodzi
+z pliku.
+
+Zapis: `command.started` po uzyskaniu uchwytu i `command.finished`, oba z `attempt`, `executor: host-isolated`,
+`isolation: none`, `class` i `consentVersion` (puste do etapu 2), `unit`, `exitFile`, `loadavg`, `cores` (odczyt
+obciążenia z chwili zapisu w kształcie K-100 PT-423: `[l1, l5, l15]` i rdzenie, `FlowEngine.machine_load`), `source: step`. Nowa droga nie zapisuje `outside.*`; przebieg rozpoczęty przed
+przełączeniem kończy się w swojej rodzinie (`outside.finished`). Odzyskiwanie po restarcie dla `command.started` bez
+wyniku: jednostka żyje → czekanie, zakończona → wynik z `exit-code`, bez ponownego startu.
+
+**Trwały zamiar przed startem i dowód braku procesu** (K-109 PT-485, ADR-1 pkt 1, 2 i 5). `_start_outside` pod
+blokadą dziennika, po świeżej kontroli zgody, nadaje trwały `attempt` (`runner.new_attempt`), wyznacza z niego jednostkę
+i pliki próby (`runner.command_files`) i **jednym zapisem** `command.intent` utrwala polecenie, `attempt`, `executor`,
+`isolation`, `class`/`consentVersion` (puste do etapu 2), `unit`, `log`, `exitFile`, `worktree`, `head`, `rerunOf`,
+`source` i rezerwację budżetu z bieżącej decyzji kolejki: `heavy`, `exclusive` (klasa policzona przy przyjęciu
+w `outside_ready`) i `project` (miejsce projektu). Dopiero potem `run_command` startuje `tide-cmd-<attempt>`; innej
+drogi startu jednostki polecenia kroku nie ma. Zamiar zajmuje krok w stanie karty (`outside_started`) i miejsce
+w `outside_busy`/kolejce ciężkich (także po restarcie: `commandruns.pending`, klasa z pól zamiaru w `_started_heavy`)
+aż do `command.finished`; ta sama decyzja nie dostaje drugiego zamiaru (`outside_history` odmawia startu kroku
+z jakimkolwiek zamiarem, także rozstrzygniętym).
+
+O tym, czy polecenie w ogóle biegnie, rozstrzyga jednorazowy **znacznik próby** `attempt-marker` w katalogu próby
+(obok `exit-code`, katalog `0700` usługi), zakładany przez `open(O_CREAT|O_EXCL)`: opakowanie `tide-step --command`
+przed startem polecenia zakłada go z treścią `run` (`set -C`); gdy już istnieje, kończy się kodem 125 bez polecenia
+i zapisuje `exit-code` = `zatrzymane`. Odzyskiwanie zamiaru bez startu (`commands.outside_recover`, z `outside_ready`
+w ticku, pod blokadą dziennika po świeżym odczycie) zakłada ten sam znacznik z treścią `abandoned`
+(`HostRunner.abandon_command`): sukces (albo znacznik `abandoned` z wcześniejszego odzyskiwania) — polecenie nigdy nie
+wystartuje, także gdy jednostka powstanie później → `command.finished` z `exit: zatrzymane`, `reason: not-started`,
+zwolnienie rezerwacji i wznowienie kroku z tym wynikiem; porażka (`run` albo niepełny zapis opakowania) — polecenie
+wystartowało → dopiero wtedy stan `tide-cmd-<attempt>`: żyje albo skończona/zebrana → `command.started` z `recovered:
+true` i wynik jak zwykle z `exit-code` (brak pliku po końcu jednostki → `zatrzymane`); stan nieznany albo błąd zapisu
+znacznika → czekanie do kolejnego ticku. Samo „brak jednostki” niczego nie rozstrzyga. Nazwa jednostki i katalog próby
+z `attempt` są drugą zaporą: ponowny `run_command` z tym samym `attempt` kończy się kolizją. Odzyskiwanie nigdy nie
+uruchamia polecenia; ponowne uruchomienie wymaga nowej decyzji (nowego kroku) i nowego zamiaru. Testy: restart przez
+`FlowEngine.tick` w `daemon/tests/test_cardflow_command_host.py`, opakowanie i znacznik z prawdziwymi procesami
+w `test_runner_command.py`, wyścig z prawdziwym `systemd-run --user` (przypadek `f`) w `test_runner_command_systemd.py`.
+
+Próba testów po scaleniu
+(merge-check) od PT-483 idzie tym samym protokołem (`commands.merge_check_start`: zamiar z `source: merge-check`,
+`heavy: true`, `Runner.run_command`, start; odzyskiwanie `commands.outside_recover` z historią pseudokroku). Silnik ani
+`commands.py` nie składają już argv startu; `--scope` zostaje tylko przy zatrzymaniu i odczycie przebiegów `outside.*`
+sprzed zmiany. Krok w pudełku nadal dostaje `box-outside`. Test z prawdziwym menedżerem użytkownika:
+`daemon/tests/test_runner_command_systemd.py` (w piaskownicy kroku pomijany).
 
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
@@ -6730,20 +6843,31 @@ zgoda ticketu, `outsideAuto` bez polecenia ryzykownego — i z regułami PT-311:
 tickecie i wstrzymana karta odbierają zgodę automatyczną (`outside.auto-skipped`). Bez pasującej reguły panel karty
 pokazuje zwykłe pytanie o zgodę (`permission`: „Zawsze w projekcie”, „Uruchom raz”, „Nie uruchamiaj”, odpowiedź
 `ResolveCardStep {choice, step}`); zgoda dotyczy tylko tej próby, a ponowienie z PT-318 ma nowy pseudokrok i wymaga
-nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, jednostka `tide-outside-…`,
-plik kodu wyjścia, rozliczenie zatrzymanej jednostki z PT-315, limit czasu) w worktree gałęzi karty, gdy jego HEAD to
-`after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości, bez ponowienia samych
-padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje
-`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` z tym
-samym `exit` (liczba, `"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). `failedModules` i `failedTests`
-(K-100, PT-423) to moduły z `returncode` różnym od 0 i nazwy ich testów (`failures`, `errors`,
-`unexpected_successes`, najwyżej 200) z `summary.json` uruchamiacza testów, którego katalog wskazuje pierwszy
-nagłówek `Moduły: N, JOBS=…, logi: <katalog>` w `log`. Brak lub błąd dziennika, nagłówka albo raportu (np. przebieg
-ucięty, inny program testów) daje puste listy bez błędu; pola są diagnostyczne i nie zmieniają bramki, a wyniki
-sprzed zmiany, bez nich, czyta się jak dotąd. Odmowa zgody (także po zgodzie automatycznej, przed
-startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
-Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
-`outside.finished` a `merge.check-finished` usługa dopisuje raz.
+nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, kolejka ciężkich) w worktree
+gałęzi karty, gdy jego HEAD to `after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości,
+bez ponowienia samych padniętych modułów. Od K-109 PT-483 wykonanie to protokół jednego wykonania jak prośba kroku:
+`command.intent` (`source: merge-check`, rezerwacja miejsca i kolejki ciężkich) → `Runner.run_command` (usługa
+`tide-cmd-<attempt>`, `RuntimeMaxSec`, plik `exit-code`) → `command.started` → `command.finished`. Wstrzymana karta nie
+startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje `command.finished` pseudokroku i
+`merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` z tym samym `exit` (liczba,
+`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). `failedModules` i `failedTests` (K-100, PT-423) to moduły
+z `returncode` różnym od 0 i nazwy ich testów (`failures`, `errors`, `unexpected_successes`, najwyżej 200)
+z `summary.json` uruchamiacza testów, którego katalog wskazuje pierwszy nagłówek `Moduły: N, JOBS=…, logi: <katalog>`
+w `log`. Brak lub błąd dziennika, nagłówka albo raportu (np. przebieg ucięty, inny program testów) daje puste listy bez
+błędu; pola są diagnostyczne i nie zmieniają bramki, a wyniki sprzed zmiany, bez nich, czyta się jak dotąd.
+`command.started` i `command.finished` (także odzyskane i `not-started`) oraz dawne `outside.finished` niosą
+obciążenie maszyny w chwili zapisu: `loadavg` (1/5/15 min) i `cores` (rdzenie dostępne usłudze), błąd odczytu daje
+`null` w tym polu (K-100, PT-423). Odmowa zgody (także po zgodzie automatycznej, przed startem — unieważnia ją) daje
+problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie); po zapisie zamiaru odmowa jest
+odrzucana (`already-started`). Po restarcie usługi próba nie startuje drugi raz: zamiar bez startu rozstrzyga znacznik
+próby (`O_EXCL`) — polecenie nigdy nie ruszyło (`command.finished` z `reason: not-started`, wynik próby
+`"zatrzymane"`, czyli porażka, nie udana próba) albo ruszyło (odzyskany start, wynik z `exit-code`); start i koniec
+z dziennika, a wynik zapisany między końcem przebiegu a `merge.check-finished` usługa dopisuje raz. Próby uruchomione
+dawną drogą (`outside.started`, jednostka `tide-outside-…` `--scope`, `<krok>/outside/in/exit-code`, rozliczenie
+zatrzymanej jednostki z PT-315) usługa po zmianie tylko odzyskuje i kończy `outside.finished`, bez ponownego
+uruchomienia. Testy: `daemon/tests/test_cardflow_merge_check_command.py` (restart w każdej fazie przez
+`FlowEngine.tick`), `test_cardflow_merge_check_run.py` (historyczna próba w toku), `test_cardflow_event_load.py`
+(pola K-100).
 
 **„Akceptuj mimo porażki” (K-88, PT-320).** Problem karty `merge-check-failed`, `merge-check-denied` albo
 `merge-check-unavailable` ma w panelu karty (Tablica i Sesje) dwa wyjścia: „Ponów próbę” (polecane, PT-318) i

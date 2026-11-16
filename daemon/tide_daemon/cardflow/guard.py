@@ -44,7 +44,8 @@ Wyjątek: polecenie Tide w worktree pod strażą (K-39, PT-372). W worktree moż
 piaskownicą na zgodę kroku ticketu (`make test-changed`, skrypt pomiaru) albo próba testów po scaleniu
 (pseudokrok `merge-check-*` w worktree gałęzi karty, K-88). Jego `build/`, `__pycache__` i wyniki testów to zapisy
 Tide, nie opiekuna. Opiekun nie ma kontraktu `outside`, więc sam takiego polecenia nie uruchomi. Zasada:
-- uruchomienie (`runs`) to para `outside.started` → `outside.finished` tego samego kroku z dziennika karty; jego
+- uruchomienie (`runs`) to para start → koniec przebiegu tego samego kroku z dziennika karty (widok `commandruns`:
+  historyczne `outside.*` albo `command.*`, PT-481); jego
   worktree pochodzi z pola `worktree` startu, dla próby testów po scaleniu — z pseudokroku (`merge.check-step`).
   Start bez `worktree` niczego nie wyłącza;
 - uruchomienie liczy się (`active`), gdy jego start jest w dzienniku przed sprawdzeniem (dziennik czytany przed
@@ -59,7 +60,7 @@ Tide, nie opiekuna. Opiekun nie ma kontraktu `outside`, więc sam takiego polece
 - ta sama reguła działa w sprawdzeniu przed działaniem Tide, w przeliczeniu stanu po nim (krok niezamrożony)
   i w werdykcie, żeby zmiana pominięta w jednym miejscu nie wróciła jako `wrote` w drugim.
 Granica: zapis opiekuna w drzewie worktree z trwającym poleceniem jest w tym oknie nieodróżnialny od zapisu polecenia
-i przechodzi. Uruchomienie bez `outside.finished` (np. utracone po awarii) wyłącza drzewo do końca kroku opiekuna.
+i przechodzi. Uruchomienie bez końca (np. utracone po awarii) wyłącza drzewo do końca kroku opiekuna.
 """
 from __future__ import annotations
 
@@ -67,6 +68,7 @@ import hashlib
 import os
 import stat
 
+from . import commandruns
 from .caretaker import WROTE  # noqa: F401 — kod nieudanego działania (jedna definicja w rejestrze opiekuna)
 
 EVENT = "caretaker.guard"
@@ -76,7 +78,6 @@ CLAUDE_DIR, CC_WRITES = ".claude", ".claude/.cc-writes"
 MISSING = {"": "brak"}                                  # drzewo worktree, którego nie ma
 # Wyjątek dla polecenia Tide w worktree (PT-372): `cause` zdarzenia i zdarzenia dziennika, z których się bierze.
 OUTSIDE = "outside"
-OUTSIDE_STARTED, OUTSIDE_FINISHED = "outside.started", "outside.finished"
 MERGE_CHECK_STEP = "merge.check-step"                   # mergecheck.STEP — pseudokrok próby testów po scaleniu
 
 
@@ -195,19 +196,11 @@ def where(path) -> str:
 
 def runs(events) -> list[dict]:
     """Uruchomienia poza piaskownicą z dziennika karty: `{step, worktree, started, finished}` (`seq` startu i końca,
-    `finished` None — bez końca). Worktree próby testów po scaleniu z jej pseudokroku."""
+    `finished` None — bez końca). Przebiegi obu rodzin zapisu z widoku `commandruns.runs` (PT-481). Worktree próby
+    testów po scaleniu z jej pseudokroku."""
     pseudo = {e.get("step"): e.get("worktree") for e in events if e.get("type") == MERGE_CHECK_STEP}
-    found, running = [], {}
-    for e in events:
-        kind, name = e.get("type"), e.get("step") or ""
-        if kind == OUTSIDE_STARTED:
-            run = {"step": name, "worktree": where(pseudo[name] if name in pseudo else e.get("worktree")),
-                   "started": e.get("seq"), "finished": None}
-            found.append(run)
-            running[name] = run
-        elif kind == OUTSIDE_FINISHED and name in running:
-            running.pop(name)["finished"] = e.get("seq")
-    return found
+    return [{"step": run.step, "worktree": where(pseudo[run.step] if run.step in pseudo else run.worktree),
+             "started": run.started_seq, "finished": run.finished_seq} for run in commandruns.runs(events)]
 
 
 def active(base: dict, found: list[dict], step: str = "") -> dict:

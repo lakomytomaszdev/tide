@@ -1,4 +1,7 @@
-"""K-100, PT-423: obciążenie maszyny w `outside.started`/`outside.finished` i padnięte moduły w `merge.check-finished`.
+"""K-100, PT-423: obciążenie maszyny w zdarzeniach przebiegu i padnięte moduły w `merge.check-finished`.
+
+Od K-109 (PT-479, PT-483) prośba kroku i próba testów po scaleniu zapisują przebieg w rodzinie `command.*`; pola
+obciążenia mają tam ten sam kształt (`loadavg` 1/5/15, `cores`). Dawne `outside.*` zostają w historii dzienników.
 
 Pola są wyłącznie diagnostyczne (miernik K-100 #6): błąd odczytu loadavg albo `summary.json` nigdy nie przerywa
 polecenia, próby ani zapisu zdarzenia, a dzienniki sprzed zmiany (bez tych pól) czyta się jak dotąd — stan karty,
@@ -13,7 +16,7 @@ import unittest
 from unittest import mock
 
 from tide_daemon.cardflow import engine as engine_mod
-from tide_daemon.cardflow import mergecheck
+from tide_daemon.cardflow import commandruns, mergecheck
 from tide_daemon.cardflow import processidentity as pi
 from tide_daemon.cardflow.state import derived, fold
 
@@ -171,8 +174,8 @@ class StepOutsideLoadTest(FlowInProcess):
         self.assertIsNone(ready())
         self.assertTrue(wait_until(lambda: ready() is not None, timeout=10))
         events = eng.journal.read(card)
-        return ([e for e in events if e["type"] == "outside.started"],
-                [e for e in events if e["type"] == "outside.finished"])
+        return ([e for e in events if e["type"] == commandruns.STARTED],
+                [e for e in events if e["type"] == commandruns.FINISHED])
 
     def test_start_and_finish_of_a_step_command_record_the_machine_load(self):
         card, eng, step = self.step()

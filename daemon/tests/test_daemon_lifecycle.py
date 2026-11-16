@@ -248,8 +248,8 @@ class SystemdRestartTest(ShutdownTest):
         self.assertEqual([s["kind"] for s in self.of(background, "step.started")], ["ticket", "review", "close"])
         self.assertEqual([s["kind"] for s in self.of(outside, "step.started")],
                          ["ticket", "ticket", "review", "close"])
-        self.assertEqual(len(self.of(outside, "outside.started")), 1)
-        self.assertEqual(len(self.of(outside, "outside.finished")), 1)
+        self.assertEqual(len(self.of(outside, "command.started")), 1)
+        self.assertEqual(len(self.of(outside, "command.finished")), 1)
         self.assertEqual(len(self.of(outside, "step.decision")), 1)
         for card in (background, outside):
             self.assertEqual(len(self.results(card, "merge")), 1)

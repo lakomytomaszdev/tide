@@ -12,6 +12,12 @@ DEFAULT_ALLOWED = ("git status *", "git diff *", "git log *", "git show *", "git
                    "python3 -m unittest *", "python3 -m pytest *", "pytest *", "make test", "make lint",
                    "npm test", "npm run build", "dotnet test *", "dotnet build *", "go test *", "cargo test *")
 TIDE_DENIED = ("make install",)
+# Zakazane w każdym kroku każdego projektu, niezależnie od jego listy (PT-480): `git worktree prune` usuwa wpisy
+# `.git/worktrees` innych kroków (w kroku są ukryte, więc wyglądają na porzucone), a `git gc` przycina obiekty
+# osiągalne tylko z nich. Ten sam skutek mają `git maintenance` (zadanie `gc` to zwykłe `git gc`, bez `--auto`,
+# więc `gc.auto=0` go nie zatrzymuje), `git prune` (luźne obiekty) i `git repack` (`-a -d`: obiekty z paczek) —
+# zakaz obejmuje całe podpolecenie. `git worktree *` z listy domyślnej nie obejmuje tych podpoleceń.
+STEP_DENIED = ("git worktree prune", "git gc", "git maintenance", "git prune", "git repack")
 # Polecenia tylko do czytania, dozwolone w każdym projekcie niezależnie od jego listy: krok i tak działa
 # w piaskownicy (bez sieci, bez katalogu domowego), a bez nich agenci stawali na `cd … && ls … | head`.
 # Zakazy projektu mają pierwszeństwo (Claude CLI stosuje reguły deny przed allow).
@@ -65,15 +71,37 @@ def forbidding_rule(command: str, denied: list[str]) -> str | None:
     argv = _argv(command)
     if argv is None:
         return ""
-    argv = _without_locale(argv)      # `LC_ALL=x make install` jest tym samym zakazanym `make install`
-    for rule in denied:
+    return _denying_rule(_without_locale(argv), denied)  # `LC_ALL=x make install` to wciąż `make install`
+
+
+def _denying_rule(argv: list[str], denied) -> str | None:
+    """Pierwsza reguła zakazu projektu albo `STEP_DENIED` pasująca do argv (bez zmiennych locale)."""
+    for rule in (*denied, *STEP_DENIED):
         rule_argv = _argv(rule)
-        if rule_argv is None:
+        if not rule_argv:
             continue
         prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
         if argv[:len(prefix)] == prefix:
             return rule
+    # `git -C <katalog> gc`, `git -c k=v worktree prune` — te same zakazane podpolecenia z opcjami gita przed nimi.
+    plain = _git_without_globals(argv)
+    for rule in STEP_DENIED:
+        if plain[:len(rule.split())] == rule.split():
+            return rule
     return None
+
+
+GIT_GLOBAL_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
+
+
+def _git_without_globals(argv: list[str]) -> list[str]:
+    """argv gita bez opcji globalnych przed podpoleceniem (`git -C x -c k=v --no-pager gc` → `git gc`)."""
+    if not argv or os.path.basename(argv[0]) != "git":
+        return argv
+    rest, i = argv[1:], 0
+    while i < len(rest) and rest[i].startswith("-"):
+        i += 2 if rest[i] in GIT_GLOBAL_WITH_VALUE else 1
+    return ["git", *rest[i:]]
 
 
 def single_command(command: str) -> bool:
@@ -166,7 +194,7 @@ def claude_tools(allowed: list[str], denied: list[str],
             grants.append(f"Bash({rule})")
     grants.extend(step_reads(step_dir))
     bans = []
-    for rule in denied:
+    for rule in dict.fromkeys((*denied, *STEP_DENIED)):
         bans.extend((f"Bash({rule})", f"Bash({rule} *)"))
     return tuple(grants), tuple(bans)
 
@@ -251,14 +279,7 @@ def outside_allowed(command: str, denied: list[str], roots=()) -> bool:
         return False
     # Zakazy projektu porównujemy na gotowych argumentach (`is_forbidden` przepuszcza tekst przez `_argv`, który
     # odrzuca np. argument `;` z `find -exec … \;` — i wtedy każde takie polecenie wyglądało na zakazane).
-    program = _without_locale(argv)
-    for rule in denied:
-        rule_argv = _argv(rule)
-        if rule_argv:
-            prefix = rule_argv[:-1] if rule_argv[-1] == "*" else rule_argv
-            if program[:len(prefix)] == prefix:
-                return False
-    return True
+    return _denying_rule(_without_locale(argv), denied) is None
 
 
 def outside_pattern(command: str) -> str:

@@ -17,11 +17,14 @@
   poprawny `escalate`; PT-317: `cc-writes` — zapis Claude Code w `.claude/.cc-writes`, `cc-ustawienia`
   i `cc-obok` — ten zapis i zmiana `.claude/settings.local.json` albo nowy plik obok, potem `escalate`;
   „ATRAPA-CLAUDE-DIR” w opisie każe krokowi ticketu zostawić `.claude/settings.local.json`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
-  jest też w dzienniku kroku).
+  jest też w dzienniku kroku). PT-482: `poza-zadane` — wynik `outside` z linii „ATRAPA-POZA: {json}” (polecenie,
+  opcjonalne `exclusive`), po wyniku polecenia — `gotowe`; `poza-na-sygnal` — to samo dopiero po pliku
+  `release-agent` w katalogu wyjściowym kroku.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
-  procesu jednostki) według tego katalogu.
+  procesu jednostki) według tego katalogu. Usługa polecenia `tide-cmd-<attempt>.service` (K-109 PT-479): `is-active`
+  bez `--quiet` wypisuje stan (`active`/`inactive`), `stop` wysyła SIGTERM do grupy procesu.
 Prawdziwy menedżer systemd nie jest dotykany.
 - PT-417: przy `TIDE_TEST_SLOW` (powolny silnik, `tests/slowengine.py`) `install` wkleja do atrap `claude`/`codex`,
   `systemd-run` i `systemctl` deterministyczne opóźnienia (start procesu, zapis `result.json`, odpowiedź);
@@ -379,6 +382,14 @@ if word == "poza-uwagi":
         os.unlink(os.path.join(cwd, "release-notes"))
     word = "poza"
 
+if word == "poza-na-sygnal":
+    # PT-482: jak `poza-zadane`, ale pierwsza prośba dopiero po pliku `release-agent` w katalogu wyjściowym kroku.
+    if "uruchomił poza piaskownicą" not in prompt:
+        until = time.monotonic() + 120
+        while not os.path.isfile(os.path.join(out, "release-agent")) and time.monotonic() < until:
+            time.sleep(0.05)
+    word = "poza-zadane"
+
 write("start")
 if word in ("na-sygnal", "blad-local"):
     until = time.monotonic() + 120
@@ -544,6 +555,14 @@ elif word == "poza-kolejne":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
                    "reason": "kolejna prośba ticketu"}, fh)
+elif word == "poza-zadane":
+    # PT-482: prośba outside z linii „ATRAPA-POZA: {json}” (polecenie i opcjonalne `exclusive`); po wyniku — gotowe.
+    if "uruchomił poza piaskownicą" in prompt:
+        finish("done")
+    else:
+        asked = json.loads(re.search(r"^ATRAPA-POZA: (.+)$", prompt, re.MULTILINE).group(1))
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump({"result": "outside", "reason": "atrapa prosi o polecenie", **asked}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")
@@ -592,8 +611,11 @@ os.execvp(argv[0], argv)
 
 SYSTEMCTL = r'''#!/usr/bin/python3
 import os, signal, sys
-args = [a for a in sys.argv[1:] if a not in ("--user", "--quiet") and not a.startswith("--kill-whom")]
-unit = args[-1][:-len(".scope")] if args[-1].endswith(".scope") else args[-1]
+quiet = "--quiet" in sys.argv
+args = [a for a in sys.argv[1:] if a not in ("--user", "--quiet", "--no-block") and not a.startswith("--kill-whom")]
+service = args[-1].endswith(".service")     # K-109 PT-479: usługa polecenia `tide-cmd-<attempt>`
+unit = args[-1][:-len(".scope")] if args[-1].endswith(".scope") else \
+    args[-1][:-len(".service")] if service else args[-1]
 path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/nonexistent"), "fake-units", unit + ".pid")
 try:
     pid = int(open(path).read())
@@ -608,7 +630,18 @@ def alive():
         return False
 
 if args[0] == "is-active":
-    sys.exit(0 if pid and alive() else 3)
+    running = bool(pid and alive())
+    if service and not quiet:
+        # Jak prawdziwy systemctl: stan w wyjściu; usługa po `--collect` jest „inactive” (kod 3).
+        print("active" if running else "inactive")
+    sys.exit(0 if running else 3)
+if args[0] == "stop" and service:
+    if pid and alive():
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    sys.exit(0)
 if args[0] == "kill":
     name = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--signal=")), "SIGTERM")
     if pid and alive():

@@ -396,12 +396,20 @@ class ProcessMemoryTickTest(TickFixture):
 
     @contextlib.contextmanager
     def merge_check_launch(self, sha):
-        log = os.path.join(self.base, "merge-check.log")
+        """K-109 PT-483: start próby przez `Runner.run_command` (atrapa runnera zamiast Popen)."""
+        from tide_daemon.cardflow import heavyqueue
+        from tide_daemon.tasks import runner as runner_mod
+
+        def run(request):
+            files = runner_mod.command_files(request.folder, request.attempt)
+            return runner_mod.CommandHandle(request.attempt, files.unit, files.log, files.exit_file, ("true",))
+        runner = mock.Mock()
+        runner.run_command.side_effect = run
         with mock.patch.object(self.engine, "_merge_check_head", return_value=sha), \
-                mock.patch.object(self.engine, "_outside_launch",
-                                  return_value=("unit-m", log, "/nonexistent/in/exit-code", ["true"], {})), \
-                mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
-            yield popen
+                mock.patch.object(self.engine, "runner", runner, create=True), \
+                mock.patch.object(self.engine, "_load_reader", create=True,
+                                  return_value=lambda: heavyqueue.Load(0.5, 8)):
+            yield runner.run_command
 
     def test_merge_check_start_reads_fresh_under_the_lock_before_popen(self):
         name, step, entry, sha = self.merge_check()
@@ -411,6 +419,9 @@ class ProcessMemoryTickTest(TickFixture):
         popen.assert_called_once()
         self.assertEqual(count.reads[0], self.card_id, "start próby po świeżym pełnym odczycie")
         self.assertIn(name, self.journal.state(self.card_id).outside_launched)
+        kinds = [e["type"] for e in self.journal.read(self.card_id) if e.get("step") == name and
+                 e["type"].startswith("command.")]
+        self.assertEqual(kinds, ["command.intent", "command.started"])
 
     def test_merge_check_start_is_refused_after_an_external_outside_start_despite_a_memory_hit(self):
         name, step, entry, sha = self.merge_check()

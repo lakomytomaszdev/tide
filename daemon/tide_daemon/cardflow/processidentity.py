@@ -9,13 +9,14 @@ braku tej roli, a dla zdarzeń procesu — rolę, typ, niepustość, poprzednika
 tożsamości i regułę zgodności każdego pola. Reduktor i walidatory (dziennik karty,
 dziennik pudełka) czytają wyłącznie tę tabelę; konsumenci nie mają własnych reguł pól.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from types import MappingProxyType
 
 from .. import trialpolicy
 from ..box import profile as bp, state as bs
 from ..coordination.numbering import ticket_key
+from . import commandruns
 
 CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
                              "plan-amend", "plan-revise", "close", "interactive",
@@ -49,7 +50,9 @@ class Field:
     type: str | bool | int | any.  nonempty: wymagany tekst niepusty po strip() i bez otaczających znaków białych.
     domain: step | console | outside | resource | card.
     rule: match | ticket | kind | resource | slug | box (nazwa pudełka projektu dziennika pudełka).
-    source: writer (zapis w kodzie usługi) albo historical (starszy format, sonda lub ślad jawnie wstrzyknięty).
+    source: writer (zapis w kodzie usługi), historical (starszy format, sonda lub ślad jawnie wstrzyknięty) albo
+            reader (rozpoznawane przed zapisem — krok „rozszerz” widoku przebiegów `commandruns`, K-109 PT-481;
+            zapis włączy PT-479/PT-485 i zmieni źródło na writer).
     """
     role: str
     type: str = "any"
@@ -158,8 +161,36 @@ CONSOLE_INHERITED = Field(
 OUTSIDE_UNIT_OWN = Field("own", "str", True, domain="outside", rule="match",
                          note="jednostka osobnego procesu outside; nie dziedziczy z kroku")
 OUTSIDE_UNIT_INHERITED = Field(
-    "inherited", "str", True, predecessor="outside.started", domain="outside", rule="match", source="historical",
-    note="brak dziedziczy z kompletnego outside.started; jawna wartość musi być zgodna (runda 10)")
+    "inherited", "str", True, predecessor="outside-start", domain="outside", rule="match", source="historical",
+    note="brak dziedziczy z kompletnego startu przebiegu (rola outside-start: outside.started albo "
+         "command.started); jawna wartość musi być zgodna (runda 10)")
+
+
+def _reader(event):
+    """Zdarzenie rodziny `command.*` rozpoznawane przed zapisem (PT-481): ta sama rola i te same reguły pól co
+    odpowiednik `outside.*`, źródło `reader` dla zdarzenia i każdego pola (żadne miejsce w kodzie go jeszcze nie
+    zapisuje)."""
+    fields = MappingProxyType({name: replace(spec, source="reader") for name, spec in event.fields.items()})
+    return Event(event.role, fields, event.reason or "przebieg polecenia (protokół jednego wykonania, ADR-1)",
+                 "reader", event.dynamic, event.start)
+
+
+def _historical_event(event):
+    """Zdarzenie, którego kod już nie zapisuje, a historia dzienników nadal je zawiera (źródło `historical` dla
+    zdarzenia i każdego pola; role i reguły pól bez zmian)."""
+    fields = MappingProxyType({name: replace(spec, source="historical") for name, spec in event.fields.items()})
+    return Event(event.role, fields, event.reason, "historical", event.dynamic, event.start)
+
+
+def _reader_fields(event, names):
+    """Zdarzenie zapisywane w kodzie, którego pola `names` są dopiero rozpoznawane przed zapisem (źródło `reader`)."""
+    fields = MappingProxyType({name: replace(spec, source="reader") if name in names else spec
+                               for name, spec in event.fields.items()})
+    return Event(event.role, fields, event.reason, event.source, event.dynamic, event.start)
+
+
+COMMAND_NEUTRAL = commandruns.COMMAND_ONLY
+COMMAND_LATER = ("recovered", "reason")     # pola odzyskiwania zamiaru bez startu (PT-485)
 
 EVENTS = MappingProxyType({
     # --- kontekst i procesy -------------------------------------------------------------
@@ -214,14 +245,40 @@ EVENTS = MappingProxyType({
         extra={"outside": Field("discriminator", "bool", domain="outside",
                                 note="prośba o polecenie outside tego kroku")}),
         start="process"),
+    # K-109 PT-479 i PT-483: prośba kroku i próba testów po scaleniu zapisują już `command.*`; `outside.started`
+    # i `outside.finished` zostają w historii przebiegów sprzed przełączenia (odczyt, odzyskiwanie i koniec przebiegu
+    # w toku przez `commands.record_finished`, którego gałąź dawnej rodziny kończy tylko takie przebiegi).
     # `loadavg`/`cores` (K-100, PT-423): obciążenie maszyny w chwili zapisu, bez roli dowodowej; wpisy bez nich legalne.
-    "outside.started": Event("outside-start", _trace(
-        writer=("ticket", "worktree"), neutral=("command", "cores", "exitFile", "head", "loadavg", "log", "rerunOf"),
-        extra={"unit": OUTSIDE_UNIT_OWN})),
+    "outside.started": _historical_event(Event("outside-start", _trace(
+        writer=("ticket", "worktree"), neutral=("command", "cores", "exitFile", "head", "loadavg", "log"),
+        extra={"unit": OUTSIDE_UNIT_OWN,
+               "rerunOf": Field("neutral", note="ponowienie padniętych modułów (prośba kroku sprzed PT-479)",
+                                source="historical")}))),
     "outside.finished": Event("outside-finish", _trace(
         writer=("ticket",), neutral=("command", "cores", "exit", "loadavg", "tail"),
         extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),
+    # K-109 PT-481: nowa rodzina przebiegu (zamiar → start → wynik), czytana przez widok `commandruns` razem
+    # z `outside.started`/`outside.finished`. Zamiar jest śladem procesu bez startu jednostki; od PT-485 zapisuje
+    # go `_start_outside` przed `run_command` (jednostka i pliki próby, rezerwacja budżetu: `heavy`, `exclusive`,
+    # `project`).
+    commandruns.INTENT: Event("outside-trace", _trace(
+        writer=("ticket", "worktree"),
+        neutral=("command", "exitFile", "head", "log", "rerunOf", "unit",
+                 *(name for name in COMMAND_NEUTRAL if name not in ("loadavg", "cores", *COMMAND_LATER)),
+                 *commandruns.INTENT_BUDGET)),
+        reason="zamiar przed startem polecenia (protokół jednego wykonania, ADR-1 pkt 1–2)"),
+    # K-109 PT-479: start i wynik zapisuje prośba `outside` kroku (`_start_outside`, `commands.outside_ready`);
+    # pola odzyskiwania zamiaru zapisuje `commands.outside_recover` (PT-485): `recovered` w starcie, `reason`
+    # (`not-started`) w końcu. Drugie z pól w drugim zdarzeniu jest tylko rozpoznawane (źródło `reader`).
+    commandruns.STARTED: _reader_fields(Event("outside-start", _trace(
+        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf", *COMMAND_NEUTRAL),
+        extra={"unit": OUTSIDE_UNIT_OWN}), reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"),
+        ("reason",)),
+    commandruns.FINISHED: _reader_fields(Event("outside-finish", _trace(
+        writer=("ticket",), neutral=("command", "exit", "exitFile", "tail", *COMMAND_NEUTRAL),
+        extra={"unit": replace(OUTSIDE_UNIT_INHERITED, source="writer")}),
+        reason="przebieg polecenia (protokół jednego wykonania, ADR-1)"), ("recovered",)),
     "intent": Event("action"),
     "result": Event("action"),
     # --- metadane karty: zdarzenia bez roli dowodowej ------------------------------------
@@ -630,8 +687,8 @@ def outside_evidence(event):
         return bool(event.get("outside"))
     if kind == "step.decision":
         return isinstance(event.get("choice"), str) and event["choice"] in OUTSIDE_CHOICES
-    # Nieznany typ outside.* nie jest metadanymi: zachowujemy go jako ślad outside.
-    return isinstance(kind, str) and kind.startswith("outside.") and kind not in EVENTS
+    # Nieznany typ rodziny przebiegu (`outside.*`, `command.*`) nie jest metadanymi: zachowujemy go jako ślad outside.
+    return bool(commandruns.family(kind)) and kind not in EVENTS
 
 
 def evidence_errors(event, fields, identity, domain=None):
@@ -682,7 +739,7 @@ def evidence_errors(event, fields, identity, domain=None):
 def _predecessor_value(identity, spec, name, domain):
     if spec.predecessor == "step.entered|step.started":
         return (identity.consoles.get(domain) or {}).get(name)
-    if spec.predecessor == "outside.started":
+    if spec.predecessor == "outside-start":
         return identity.outside_units.get(domain)
     return None
 
@@ -845,6 +902,17 @@ def process_identities(events):
                     else:
                         identity.outside_units[domain] = unit
                         identity.outside_runs.setdefault(domain, {"started": dict(event), "finished": None})
+            elif kind == commandruns.INTENT and not unknown:
+                # K-109 PT-485: zamiar ustala jednostkę próby przed startem — start musi ją powtórzyć, a koniec
+                # zamiaru rozstrzygniętego bez startu (`reason: not-started`) dziedziczy ją z zamiaru. Uruchomienia
+                # (`outside_runs`) zamiar nie otwiera.
+                unit = event.get("unit")
+                if canonical_text(unit, True):
+                    previous = identity.outside_units.get(domain)
+                    if previous is not None and previous != unit:
+                        identity.worsen("inconsistent")
+                    else:
+                        identity.outside_units[domain] = unit
             elif role == "outside-finish":
                 # Zakończenie należy do uruchomienia tej samej domeny; pierwsze zakończenie wygrywa.
                 run = identity.outside_runs.get(domain)
@@ -883,7 +951,7 @@ def outside_runs(events):
         if open_run is not None:
             out[key] = open_run["started"]
         elif identity.held and identity.has_outside_start and not identity.has_outside_finish:
-            out[key] = next(e for e in identity.outside if e.get("type") == "outside.started")
+            out[key] = next(e for e in identity.outside if commandruns.phase(e) == "started")
     return out
 
 

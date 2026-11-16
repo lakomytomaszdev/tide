@@ -146,7 +146,11 @@ class WriterCatalog(unittest.TestCase):
                          "box/packs.py", "box/runner.py"):
             self.assertIn(expected, paths)
         kinds = {w.kind for w in self.catalog.writes}
-        self.assertTrue({"outside.started", "outside.finished", "step.entered", "box.use"} <= kinds)
+        # K-109 PT-483: `outside.started` jest już tylko historyczne (próba testów po scaleniu zapisuje `command.*`);
+        # `outside.finished` kończy przebiegi dawnej drogi w toku.
+        self.assertTrue({"command.intent", "command.started", "command.finished", "outside.finished", "step.entered",
+                         "box.use"} <= kinds)
+        self.assertNotIn("outside.started", kinds)
 
     def test_removing_any_event_or_field_from_a_model_copy_fails(self):
         """Kontrola mutacyjna: kompletność nie zależy od generatora ani od tabeli autora."""
@@ -409,25 +413,27 @@ BARRIERS = {
         denial="FlowError process-history / k38-trial-held", effect="końcowa kontrola operacji przed skutkiem",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_process_check_returns_current_state_for_the_same_identity"]),
     "outside": dict(
-        consumers=[("cardflow/engine.py", "FlowEngine._outside_history"),
-                   ("cardflow/engine.py", "FlowEngine._outside_recheck"),
+        # K-109 PT-478: logika `_outside*` w cardflow/commands.py; wrappery silnika są delegacjami (DELEGATIONS).
+        consumers=[("cardflow/commands.py", "outside_history"),
+                   ("cardflow/commands.py", "outside_recheck"),
                    ("cardflow/engine.py", "FlowEngine._consent_recheck"),
                    # Bieżące uruchomienie outside ze wspólnego wyniku (M4/M7 review 2).
-                   ("cardflow/engine.py", "FlowEngine._outside_ready"),
+                   ("cardflow/commands.py", "outside_ready"),
                    # K-105 PT-415: ponowna redukcja na świeżym odczycie przed skutkiem (wynik, zapis zakończenia).
-                   ("cardflow/engine.py", "FlowEngine._outside_ready.fresh_run"),
-                   ("cardflow/engine.py", "FlowEngine._outside_busy"),
-                   ("cardflow/engine.py", "FlowEngine._outside_exit"),
+                   ("cardflow/commands.py", "outside_ready.fresh_run"),
+                   ("cardflow/commands.py", "outside_busy"),
+                   ("cardflow/commands.py", "outside_exit"),
                    ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
                    # PT-373: klasa trwającego polecenia po restarcie z tego samego wspólnego wyniku (outside_runs).
                    ("cardflow/engine.py", "FlowEngine._started_heavy"),
                    # PT-329: przebieg próby testów po scaleniu (pseudokrok `merge-check-…`) — ta sama historia
-                   # i ten sam wspólny wynik redukcji co prośba outside kroku.
-                   ("cardflow/engine.py", "FlowEngine._merge_check_history"),
-                   ("cardflow/engine.py", "FlowEngine._merge_check_run"),
-                   # K-105 PT-415 (review 1, MAJOR 2): jak `_outside_ready.fresh_run` — ponowna redukcja na świeżym
+                   # i ten sam wspólny wynik redukcji co prośba outside kroku. K-109 PT-484: logika `_merge_check*`
+                   # w cardflow/commands.py; wrappery silnika są delegacjami (DELEGATIONS).
+                   ("cardflow/commands.py", "merge_check_history"),
+                   ("cardflow/commands.py", "merge_check_run"),
+                   # K-105 PT-415 (review 1, MAJOR 2): jak `outside_ready.fresh_run` — ponowna redukcja na świeżym
                    # odczycie przed skutkiem próby (wynik z zakończenia, zatrzymanie jednostki, zapis wyniku).
-                   ("cardflow/engine.py", "FlowEngine._merge_check_run.fresh_run")],
+                   ("cardflow/commands.py", "merge_check_run.fresh_run")],
         denial="_outside_history pod journal.lock przed Popen; _outside_ready: stan outside_run ≠ ok → FlowError",
         effect="Popen niezależnego outside; zaakceptowanie zakończenia bieżącej próby; zajętość i kolejka miejsc",
         negative=NEG + [f"{M}:Review10OutsideCompletionUnit.test_explicit_wrong_completion_unit_denies_every_barrier_across_restart",
@@ -516,9 +522,17 @@ BARRIERS = {
 # przed skutkiem. Strażnik pośredni: wskazane funkcje wywołujące mają kontrolę przed wywołaniem.
 _LOCK = True
 EFFECT_SCOPE = {
-    ("cardflow/engine.py", "FlowEngine._start_outside", "Popen"): ("outside", "direct", {"_outside_history"}, _LOCK),
-    ("cardflow/engine.py", "FlowEngine._merge_check_start", "Popen"):
-        ("outside", "direct", {"_merge_check_history"}, _LOCK),
+    # K-109 PT-479: start polecenia kroku przez `Runner.run_command` pod blokadą dziennika po świeżej kontroli;
+    # sam Popen klienta jednostki leży w HostRunner i woła go wyłącznie `_start_outside`.
+    ("cardflow/engine.py", "FlowEngine._start_outside", "start polecenia"):
+        ("outside", "direct", {"_outside_history"}, _LOCK),
+    ("tasks/runner.py", "HostRunner.run_command", "Popen"):
+        ("outside", [("cardflow/engine.py", "FlowEngine._start_outside", {"_outside_history"}),
+                     ("cardflow/commands.py", "merge_check_start", {"merge_check_history"})], None, False),
+    # K-109 PT-484, PT-483: start próby testów po scaleniu w commands.py przez `Runner.run_command`
+    # (`ports.merge_check_history` pod `journal.lock`, przed zapisem zamiaru).
+    ("cardflow/commands.py", "merge_check_start", "start polecenia"):
+        ("outside", "direct", {"merge_check_history"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "Konsola"): ("step-launch", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._enter_step", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch.launch", "start kroku"): ("step-launch", "direct", {"_process_check"}, _LOCK),
@@ -652,7 +666,6 @@ DELEGATIONS = {
     # PT-330: nowe review w Konsoli po nieukończonej próbie startuje przez _launch_full_planning.
     ("cardflow/engine.py", "FlowEngine._enter_review_console"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
-    ("cardflow/engine.py", "FlowEngine._outside_behind"): "outside",
     ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_launch"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_result"): "step-launch",
@@ -665,12 +678,22 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
     # K-105 PT-415: świeża bramka historii outside przed każdym zapisem sprawdzenia reguł (recheck co tick z pamięci).
-    ("cardflow/engine.py", "FlowEngine._outside_recheck.gate"): "outside",
+    ("cardflow/commands.py", "outside_recheck.gate"): "outside",
+    # K-109 PT-478: kolejka i zbieranie wyniku w commands.py; cienkie wrappery `_outside*` silnika delegują do nich.
+    ("cardflow/commands.py", "outside_behind"): "outside",
+    ("cardflow/commands.py", "outside_collect"): "outside",
+    # K-109 PT-485: odzyskiwanie zamiaru bez startu — świeży `outside_history` pod journal.lock przed znacznikiem
+    # próby i zapisem (`command.finished` not-started albo `command.started` recovered); nigdy Popen.
+    ("cardflow/commands.py", "outside_recover"): "outside",
+    **{("cardflow/engine.py", f"FlowEngine._outside_{name}"): "outside" for name in (
+        "behind", "busy", "collect", "exit", "history", "ready", "recheck", "recover")},
     # PT-329: przebieg pod zgodą próby testów po scaleniu (kolejka outside, wynik) i decyzja z panelu.
-    ("cardflow/engine.py", "FlowEngine._merge_checks"): "outside",
-    ("cardflow/engine.py", "FlowEngine._merge_check_waiting"): "outside",
-    ("cardflow/engine.py", "FlowEngine._merge_check_start"): "outside",
-    ("cardflow/engine.py", "FlowEngine._outside_collect"): "outside",
+    # K-109 PT-484: logika w commands.py; cienkie wrappery `_merge_check*` silnika delegują do niej.
+    ("cardflow/commands.py", "merge_checks"): "outside",
+    ("cardflow/commands.py", "merge_check_waiting"): "outside",
+    ("cardflow/commands.py", "merge_check_start"): "outside",
+    **{("cardflow/engine.py", f"FlowEngine.{name}"): "outside" for name in (
+        "_merge_checks", "_merge_check_waiting", "_merge_check_start", "_merge_check_history", "_merge_check_run")},
     # PT-373: kolejka ciężkich poleceń — zajętość z żywego zbioru i klasa trwających po restarcie.
     ("cardflow/engine.py", "FlowEngine._heavy_admitted"): "outside",
     ("cardflow/engine.py", "FlowEngine._heavy_running"): "outside",
@@ -775,8 +798,22 @@ RAW_READS = {
         "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
         "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
     ("cardflow/guard.py", "runs"):
-        "PT-372: przedziały outside.started/outside.finished do wyjątku strażnika opiekuna; wynik tylko pomija "
-        "zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie uruchamia ani nie wznawia procesu",
+        "PT-372: przedziały przebiegów (start → koniec, widok commandruns: outside.* i command.*) do wyjątku strażnika "
+        "opiekuna; wynik tylko pomija zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie "
+        "uruchamia ani nie wznawia procesu",
+    ("cardflow/commandruns.py", "runs"):
+        "K-109 PT-481: widok przebiegów obu rodzin zapisu (para start → koniec kroku) — czysta projekcja bez I/O "
+        "i zapisu; skutek mają wyłącznie wywołujący, każdy z własną barierą albo uzasadnieniem w tym katalogu",
+    ("cardflow/commandruns.py", "pending"):
+        "K-109 PT-481/PT-485: zamiary command.intent bez startu i końca — czysta projekcja bez I/O i zapisu; woła ją "
+        "commands.outside_busy (rezerwacja miejsca po restarcie), sama nie uruchamia ani nie rozstrzyga procesu",
+    ("cardflow/commandruns.py", "attempt_of"):
+        "K-109 PT-485: ostatni zamiar kroku z jego startem i końcem — czysta projekcja bez I/O i zapisu; skutki mają "
+        "wywołujący z barierą outside (outside_ready/outside_recover po outside_history, outside_exit, "
+        "_started_heavy), sama nie uruchamia ani nie rozstrzyga procesu",
+    ("cardflow/commandruns.py", "intended"):
+        "K-109 PT-485: kroki z jakimkolwiek zamiarem — czysta projekcja; zawęża (nigdy nie dopuszcza) start: "
+        "outside_history odmawia drugiego startu tej decyzji, _seed_outside_waiting nie wstawia jej do kolejki",
 }
 
 # Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja
@@ -949,8 +986,10 @@ class ConsumerCatalog(unittest.TestCase):
         self.assertEqual(found - assigned - set(RAW_READS), set(), "surowy odczyt tożsamości bez bariery")
         self.assertEqual(set(RAW_READS) - found, set(), "nieaktualny wpis surowego odczytu")
         self.assertEqual(set(RAW_READS) & assigned, set())
-        for key in ("_outside_busy", "_seed_outside_waiting", "_outside_exit", "_outside_ready"):
-            self.assertIn(("cardflow/engine.py", f"FlowEngine.{key}"), assigned)
+        # K-109 PT-478: logika `_outside_busy`, `_outside_exit` i `_outside_ready` przeniesiona do commands.py.
+        for key in (("cardflow/commands.py", "outside_busy"), ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
+                    ("cardflow/commands.py", "outside_exit"), ("cardflow/commands.py", "outside_ready")):
+            self.assertIn(key, assigned)
 
     def test_new_raw_reader_fails_completeness(self):
         source = ("def busy(events, name):\n"

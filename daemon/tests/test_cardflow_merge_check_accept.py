@@ -387,9 +387,13 @@ class AcceptDbusTest(FlowCase):
                          [(check["ticket"], check["check"], check["after"], "user")])
         self.assertTrue(wait_until(lambda: [s for s in self.of(card, "step.started") if s.get("ticket") == blocked],
                                    timeout=60), self.events(card))
-        self.assertEqual(len([e for e in self.of(card, "outside.started")
-                              if e.get("step") == mergecheck.step_name(check["check"])]), 1,
+        # K-109 PT-483: przebieg próby to `command.intent` → `command.started` (dawne `outside.started` nie powstaje).
+        name = mergecheck.step_name(check["check"])
+        self.assertEqual(len([e for e in self.of(card, "command.intent") if e.get("step") == name]), 1,
                          "akceptacja nie uruchamia testów ponownie")
+        self.assertEqual(len([e for e in self.of(card, "command.started") if e.get("step") == name]), 1,
+                         "akceptacja nie uruchamia testów ponownie")
+        self.assertFalse([e for e in self.of(card, "outside.started") if e.get("step") == name])
 
 
 if __name__ == "__main__":

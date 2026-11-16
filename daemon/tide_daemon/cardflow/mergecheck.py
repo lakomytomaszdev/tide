@@ -12,14 +12,16 @@ Zdarzenia (dziennik karty):
   `merge-check-unavailable`). Zdarzenia „pominięto” nie ma: brak polecenia nigdy nie przepuszcza karty,
 - `merge.check-step {step, ticket, kind, check, command, after, branch, worktree, stepDir, baseVersion}` —
   pseudokrok próby z poleceniem (PT-329): `step` = `merge-check-<ticket>-<n>` (`step_name`), start procesu w modelu
-  tożsamości (processidentity), więc decyzja `step.decision` i uruchomienie `outside.started`/`outside.finished`
-  tej nazwy są zwykłym śladem procesu, a nie wpisem bez startu. Nie jest krokiem karty (`st.steps`): nie pracuje,
+  tożsamości (processidentity), więc decyzja `step.decision` i przebieg tej nazwy (od K-109 PT-483 protokół
+  jednego wykonania `command.intent` → `command.started` → `command.finished` z `source: merge-check`; próby
+  sprzed zmiany: `outside.started`/`outside.finished`) są zwykłym śladem procesu, a nie wpisem bez startu. Nie jest krokiem karty (`st.steps`): nie pracuje,
   nie wznawia się i nie dostaje review,
 - `step.decision {step: merge-check-…, ticket, kind: "merge-check", check, choice, command, auto?}` — zgoda albo
   odmowa jednej próby; ta sama ścieżka co prośba `outside` kroku (reguły projektu, `consent`, PT-311),
 - `merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` — wynik próby (zapisuje go przebieg
   pod zgodą, PT-329); `exit: 0` bieżącej próby otwiera bramkę, każda inna wartość daje problem `merge-check-failed`,
-  wynik nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`.
+  wynik nieaktualnej próby nic nie zmienia. Zamiar porzucony bez startu (`command.finished` z `reason: not-started`)
+  zapisuje tu `exit: zatrzymane` — porażkę, nie udaną próbę. Odmowa zgody bieżącej próby daje `merge-check-denied`.
   `failedModules`/`failedTests` (K-100, PT-423) to wyłącznie diagnostyka z `summary.json` uruchamiacza
   (`failed_from_summary`); brak lub błąd raportu daje puste listy, a wpisy bez tych pól czyta się jak dotąd,
 - `merge.check-accepted {ticket, check, after, by}` — „Akceptuj mimo porażki” (PT-320): jawna decyzja człowieka
@@ -264,7 +266,8 @@ def phase(st, entry: dict) -> str:
     """Etap czekającej próby z poleceniem: `consent` (pytanie o zgodę w panelu), `queued` (zgoda, przed startem
     w kolejce outside), `running` (polecenie trwa) albo "" (pseudokrok jeszcze niezapisany)."""
     name = step_name(entry.get("check"))
-    if name in (getattr(st, "outside_launched", None) or ()):
+    # Zamiar przed startem (`command.intent`, K-109 PT-483) jest w `outside_started`: polecenie mogło już ruszyć.
+    if name in (getattr(st, "outside_launched", None) or ()) or name in (getattr(st, "outside_started", None) or ()):
         return "running"
     if (st.step_decisions.get(name) or {}).get("choice") in RUN:
         return "queued"

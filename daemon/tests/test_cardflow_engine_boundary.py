@@ -15,7 +15,8 @@ from tools.test_dependencies import ENGINE, ImportGraph, import_chain
 from tide_daemon import cardflow
 from tide_daemon.cardflow import (
     basechange, basegeneration, baseproposal, basesuggestions, boxaccess, boxcontrol, boxstep, boxwait,
-    caretaker, caretakerchat, caretakerctx, consent, decisions, envconsent, environment, errors, evidence,
+    caretaker, caretakerchat, caretakerctx, commandruns, commands, consent, decisions, envconsent, environment, errors,
+    evidence,
     execution, faults, filesuggestions, findings, fullcard, gitops, guard, handoff, heavyqueue, history,
     historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
     mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,
@@ -30,7 +31,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # narzędzia wiersza poleceń), więc sięga silnika z założenia: rollback.py → engine.py.
 IMPORTED_MODULES = (
     cardflow, basechange, basegeneration, baseproposal, basesuggestions, boxaccess, boxcontrol, boxstep, boxwait,
-    caretaker, caretakerchat, caretakerctx, consent, decisions, envconsent, environment, errors, evidence,
+    caretaker, caretakerchat, caretakerctx, commandruns, commands, consent, decisions, envconsent, environment, errors,
+    evidence,
     execution, faults, filesuggestions, findings, fullcard, gitops, guard, handoff, heavyqueue, history,
     historyaudit, historyaudit_driver, hostingcli, journal, labels, limits, linksuggestions, mergecheck,
     mergeop, mergepreview, planappend, planartifacts, planediting, planning, plans, processidentity,

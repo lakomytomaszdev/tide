@@ -634,6 +634,26 @@ class HeavyQueueEngineTest(unittest.TestCase):
         self.assertTrue(self.eng._outside_quiet[waiting["step"]])
         self.assertTrue(self.eng._outside_waiting[waiting["step"]][4])
 
+    def test_classification_error_is_not_remembered_as_light(self):
+        """K-109 PT-482 (13.11): błąd odczytu przy klasyfikacji (np. `BoardBusy` w odczycie prezentacji) daje wynik
+        tego wywołania, ale nie zostaje w pamięci klasy — start w ticku liczy od nowa. Znacznik `exclusive` zostaje."""
+        a = self.card("K-1")
+        heavy = self.request(a, "PT-1", minutes=5)
+        perf = self.request(a, "PT-2", PERF_RUN, exclusive=True, minutes=4)
+        real = self.eng._project
+
+        def busy(card):
+            raise RuntimeError("Tablica: transakcję trzyma inny wątek")
+        self.eng._project = busy
+        self.assertEqual(self.eng._outside_class(a, heavy, HEAVY), (False, False))
+        self.assertEqual(self.eng._outside_class(a, perf, PERF_RUN), (True, True))
+        self.assertNotIn(heavy["step"], self.eng._outside_heavy)
+        self.assertNotIn(heavy["step"], self.eng._outside_quiet)
+        self.assertTrue(self.eng._outside_quiet[perf["step"]])
+        self.eng._project = real
+        self.assertEqual(self.eng._outside_class(a, heavy, HEAVY), (True, False))
+        self.assertTrue(self.eng._outside_heavy[heavy["step"]])
+
     def test_queue_view_from_the_engine_has_load_and_exclusive(self):
         self.load = heavyqueue.Load(7.1, 12)
         a = self.card("K-36")

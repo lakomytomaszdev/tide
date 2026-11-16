@@ -91,7 +91,11 @@ class ReadDirsLaunchTest(FlowInProcess):
                 self.assertIn("registry.npmjs.org", sandbox["network"]["allowedDomains"])
                 self.assertIn("api.nuget.org", sandbox["network"]["allowedDomains"])
                 self.assertIn("packages.example.test", sandbox["network"]["allowedDomains"])
-                self.assertEqual(fs["denyRead"], ["~"])
+                # Po `~` tylko wpisy `.git/worktrees` innych kroków, ukryte przez manifest ścieżek kroku (PT-480).
+                self.assertEqual(fs["denyRead"][0], "~")
+                for hidden in fs["denyRead"][1:]:
+                    self.assertEqual(os.path.basename(os.path.dirname(hidden)), "worktrees", hidden)
+                    self.assertNotEqual(hidden, bg_step.worktree)
                 if remove_dirs:
                     self.assertNotIn(data, fs["allowRead"])
                 else:
