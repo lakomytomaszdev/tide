@@ -779,8 +779,15 @@ RAW_READS = {
         "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
         "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
     ("cardflow/guard.py", "runs"):
-        "PT-372: przedziały outside.started/outside.finished do wyjątku strażnika opiekuna; wynik tylko pomija "
-        "zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie uruchamia ani nie wznawia procesu",
+        "PT-372: przedziały przebiegów (start → koniec, widok commandruns: outside.* i command.*) do wyjątku strażnika "
+        "opiekuna; wynik tylko pomija zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie "
+        "uruchamia ani nie wznawia procesu",
+    ("cardflow/commandruns.py", "runs"):
+        "K-109 PT-481: widok przebiegów obu rodzin zapisu (para start → koniec kroku) — czysta projekcja bez I/O "
+        "i zapisu; skutek mają wyłącznie wywołujący, każdy z własną barierą albo uzasadnieniem w tym katalogu",
+    ("cardflow/commandruns.py", "pending"):
+        "K-109 PT-481: zamiary command.intent bez startu (widok dla PT-485) — czysta projekcja bez I/O i zapisu, "
+        "dziś bez wywołań w produkcie; nie uruchamia ani nie rozstrzyga procesu",
 }
 
 # Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja

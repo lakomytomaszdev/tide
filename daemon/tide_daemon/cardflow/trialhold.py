@@ -5,6 +5,7 @@ import stat
 
 from ..box import trialgate
 from ..tasks import stepstop
+from . import commandruns
 from .state import copy_state, fold
 from .processidentity import box_event_error, process_identities
 
@@ -260,14 +261,14 @@ def _inventory_items(engine, st, events):
     outside = []
     for identity in st.process_identities.values():
         if identity.held and identity.outside:
-            started = [e for e in identity.outside if e.get("type") == "outside.started"]
+            started = [e for e in identity.outside if commandruns.phase(e) == "started"]
             outside.extend(started or [{"step": identity.name, "ticket": identity.data.get("ticket")}])
     for event in outside:
         try:
             state = stepstop.unit_state(event["unit"]) if event.get("unit") else "unknown"
-            # outside.started nie potwierdza utworzenia scope przez asynchroniczny systemd-run.
+            # Start przebiegu nie potwierdza utworzenia jednostki przez asynchroniczny systemd-run.
             # Po restarcie brak jednostki nie rozstrzyga, czy klient dopiero ją utworzy.
-            # Dawne outside.finished i plik exit-code też nie są chronionym dowodem hosta.
+            # Dawny koniec przebiegu i plik exit-code też nie są chronionym dowodem hosta.
             if state == "inactive":
                 state = "unknown"
         except Exception:

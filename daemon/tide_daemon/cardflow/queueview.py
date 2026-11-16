@@ -23,7 +23,8 @@ Kształt (dodatek do migawki, istniejące pola bez zmian):
 Obciążenie maszyny (`heavy.load`, #6) to jeden odczyt na tick (wstrzykiwany `load`, domyślnie `/proc/loadavg`) —
 w fazie ticku, nie w `snapshot_json`. Powody czekania (limit, cisza) to zdania `heavyqueue.admit`. Część `steps` w #10.
 
-Źródła w `FlowState`: trwające — `outside_started` (krok → `outside.started`: polecenie i `since`; ticket z `steps` albo
+Źródła w `FlowState`: trwające — `outside_started` (krok → start przebiegu z widoku `commandruns`, `outside.*` albo
+`command.*`: polecenie i `since`; ticket z `steps` albo
 `merge_check_steps`), czekające — `state.outside_queued` (decyzja „uruchom” bez startu; polecenie z `finished`, czas zgody
 z `step_decisions`) oraz próby testów po scaleniu w etapie `queued` (`mergecheck.phase`).
 """
