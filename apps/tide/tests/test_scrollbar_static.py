@@ -18,7 +18,9 @@ APPS = os.path.join(REPO, "apps")
 K104_EXCEPTIONS = ["DiffView.qml", "SyntaxText.qml", "ModuleHighlighter.qml"]
 K104_DIR = os.path.join("apps", "common", "qml", "git")
 
-BARE_BAR = re.compile(r"(?<![\w.])(?:QQC2\.|Controls\.|QtQuick\.Controls\.)?Scroll(?:Bar|Indicator)\s*\{")
+# Goły pasek to każdy ScrollBar/ScrollIndicator z prefiksem innym niż `Tide.` (QQC2., T., Controls. itd.) albo bez prefiksu.
+BARE_BAR = re.compile(r"(?<![\w.])(?:(?!Tide\.)\w+\.)*Scroll(?:Bar|Indicator)\s*\{")
+FLICKABLE = re.compile(r"(?<![\w.])(?:Flickable|ListView|GridView)\s*\{")
 SCROLL_VIEW = re.compile(r"(?<![\w.])(?:QQC2\.|Controls\.)?ScrollView\s*\{")
 
 
@@ -64,6 +66,18 @@ class ScrollBarStaticTest(unittest.TestCase):
                     offenders.append(relative)
         self.assertEqual(offenders, [], "ScrollView bez Tide.ScrollBar")
 
+    def test_every_flickable_has_a_tide_bar_or_a_reason(self):
+        """Każdy Flickable/ListView/GridView ma Tide.ScrollBar albo komentarz `// bez paska: <powód>` w bloku."""
+        offenders = []
+        for relative, path in qml_files():
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            for found in FLICKABLE.finditer(text):
+                body = block(text, found.start())
+                if "Tide.ScrollBar" not in body and "// bez paska:" not in body:
+                    offenders.append("%s:%d" % (relative, text.count("\n", 0, found.start()) + 1))
+        self.assertEqual(offenders, [], "Flickable/ListView/GridView bez Tide.ScrollBar (ani `// bez paska: powód`)")
+
     def test_exception_list_is_literal_and_does_not_cover_the_whole_git_directory(self):
         self.assertEqual(sorted(K104_EXCEPTIONS), ["DiffView.qml", "ModuleHighlighter.qml", "SyntaxText.qml"])
         checked = {relative for relative, _ in qml_files()}
@@ -76,6 +90,8 @@ class ScrollBarStaticTest(unittest.TestCase):
     def test_checker_catches_violations(self):
         self.assertTrue(BARE_BAR.search("QQC2.ScrollBar.vertical: QQC2.ScrollBar {}"))
         self.assertTrue(BARE_BAR.search("ScrollBar { policy: 1 }"))
+        self.assertTrue(BARE_BAR.search("T.ScrollBar {"))
+        self.assertTrue(FLICKABLE.search("    Flickable {"))
         self.assertFalse(BARE_BAR.search("QQC2.ScrollBar.vertical: Tide.ScrollBar {}"))
         self.assertTrue(SCROLL_VIEW.search("QQC2.ScrollView {"))
 

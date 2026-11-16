@@ -20,6 +20,7 @@
 // albo „RRRR-MM-DD/slug”, takeFocus(), railInfo — katalog raportów na dole paska.
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "reports.js" as Logic
 
@@ -241,6 +242,7 @@ Rectangle {
                 clip: true
                 spacing: 4
                 boundsBehavior: Flickable.StopAtBounds
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 model: view.dayList
                 delegate: DayItem {
                     required property var modelData
@@ -384,6 +386,7 @@ Rectangle {
                     clip: true
                     contentHeight: cardColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                     ColumnLayout {
                         id: cardColumn
