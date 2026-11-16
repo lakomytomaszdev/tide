@@ -38,8 +38,8 @@ Item {
     readonly property var rows: TicketLib.planRows(waves, tickets, planRows, decisions)
     readonly property var pinnedRows: rows.filter(r => r.current)
     readonly property var otherRows: rows.filter(r => !r.current)
-    readonly property bool wide: table.width < minTableWidth
-    readonly property real barSpace: wide ? Tide.Tokens.scrollbarWidth + 4 : 0
+    readonly property bool scrollsHorizontally: table.width < minTableWidth
+    readonly property real barSpace: scrollsHorizontally ? Tide.Tokens.scrollbarWidth + 4 : 0
     readonly property real headerHeight: 30
     readonly property real pinnedNatural: pinnedRows.length > 0 ? pinnedColumn.implicitHeight : 0
     readonly property real naturalHeight: headerHeight + pinnedNatural + otherColumn.implicitHeight + barSpace
@@ -273,7 +273,7 @@ Item {
         contentWidth: Math.max(table.width, table.minTableWidth)
         contentHeight: height
         flickableDirection: Flickable.HorizontalFlick
-        interactive: table.wide
+        interactive: table.scrollsHorizontally
         boundsBehavior: Flickable.StopAtBounds
         clip: true
         QQC2.ScrollBar.horizontal: Tide.ScrollBar {}

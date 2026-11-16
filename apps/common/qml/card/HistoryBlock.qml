@@ -36,6 +36,19 @@ ColumnLayout {
 
     spacing: 8
 
+    // `rows` jest nową tablicą, więc zmiana `olderOpen` resetuje model i `ListView` wraca na górę. Pozycję przewijania
+    // zapamiętujemy przed zmianą i przywracamy po niej (po rozwinięciu starsze wpisy leżą tuż pod przyciskiem).
+    function toggleOlder() {
+        const y = list.contentY
+        olderOpen = !olderOpen
+        const restore = () => {
+            list.contentY = y
+            list.returnToBounds()
+        }
+        restore()
+        Qt.callLater(restore)
+    }
+
     function eventsLabel(n) {
         const last = n % 10, tens = n % 100
         return n + (n === 1 ? " zdarzenie" : last >= 2 && last <= 4 && (tens < 12 || tens > 14) ? " zdarzenia" : " zdarzeń")
@@ -199,7 +212,7 @@ ColumnLayout {
                                           : "▸ Pokaż starsze (" + block.older.length + ")"
                     variant: "ghost"
                     Accessible.name: "Starsze zlecenia: " + block.older.length + (block.olderOpen ? ", rozwinięte" : ", zwinięte")
-                    onClicked: block.olderOpen = !block.olderOpen
+                    onClicked: block.toggleOlder()
                 }
             }
         }

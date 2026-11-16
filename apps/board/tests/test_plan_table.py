@@ -294,7 +294,9 @@ bar = ("(function (l) {{ return l.children.find(c => typeof c.scrollable === 'bo
 def snap():
     return {{"page": js(flick + ".contentHeight"), "frame": js(frame + ".height"), "list": js(lst + ".contentHeight"),
             "lines": count("fullHistoryLine"), "bar": js("(function () {{ const b = " + bar + "; return !!b && b.visible && b.scrollable }})()"),
-            "open": js(V + ".oldOpen"), "count": js("(" + ALL + ")(" + V + ", 'fullHistoryCount')[0].text"), "viewport": js(flick + ".height")}}
+            "open": js(V + ".oldOpen"), "y": js(lst + ".contentY"),
+            "top": js(lst + ".indexAt(10, " + lst + ".contentY + 3)"),
+            "bottom": js(lst + ".indexAt(10, " + lst + ".contentY + " + lst + ".height - 6)"), "count": js("(" + ALL + ")(" + V + ", 'fullHistoryCount')[0].text"), "viewport": js(flick + ".height")}}
 out["before"] = snap()
 {"js(lst + '.positionViewAtEnd()')" if expand else ""}
 wait(250)
@@ -330,6 +332,9 @@ out["after"] = snap()
         self.assertEqual(after["frame"], 340)
         self.assertGreater(after["list"], before["list"], "starsze zdarzenia doszły wewnątrz bloku")
         self.assertIn("70 zdarzeń", after["count"])
+        self.assertGreater(after["y"], 0, "lista nie wraca na górę po rozwinięciu")
+        self.assertLessEqual(after["top"], 40, "pierwszy starszy wpis (indeks 40) nie leży nad widokiem")
+        self.assertGreaterEqual(after["bottom"], 40, "pierwszy starszy wpis (indeks 40) jest w obszarze widocznym")
 
     def test_history_tab_fills_the_whole_height(self):
         out = self.measure(200, tab="history")
