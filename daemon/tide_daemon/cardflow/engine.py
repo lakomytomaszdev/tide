@@ -58,6 +58,8 @@ from . import testrerun
 from . import testpolicy
 from . import mergecheck
 from . import heavyqueue
+from . import commands
+from .commands import queue_heavy as _queue_heavy, test_pool_available  # noqa: F401  (dotychczasowe nazwy)
 from . import queueview
 from . import ticketlimit
 from . import stepqueue
@@ -140,24 +142,6 @@ OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążaj�
 # (K-39 #3, PT-373: cardflow/heavyqueue.py) i liczą się także do łącznego, więc łączny nie może być mniejszy.
 assert OUTSIDE_TOTAL >= heavyqueue.MAX_LIMIT
 OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
-
-
-def _queue_heavy(entry) -> bool:
-    """Pole `heavy` wpisu kolejki outside (PT-373); wpis bez pola (starszy kształt) — lekki."""
-    return len(entry) > 4 and bool(entry[4])
-
-
-def test_pool_available(worktree: str) -> bool:
-    """Czy uruchamiacz testów w worktree korzysta ze wspólnej puli maszyny. Brak uruchamiacza (inny projekt) — tak:
-    nie zmieniamy środowiska projektów, które nie używają tools/test_runner.py."""
-    path = os.path.join(worktree, "tools", "test_runner.py") if worktree else ""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            return "class MachineSlots" in fh.read()
-    except OSError:
-        return True
-
-
 CLOSE_AUTHOR = "close"           # `reassign-author` z ticket=close przepina wykonawcę domknięcia karty
 OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
@@ -516,6 +500,15 @@ def timeout_seconds(path: str) -> float:
 
 
 class FlowEngine(CaretakerChat, PlanEditing):
+    # Dotychczasowe nazwy pól stanu outside — widoki jednego `CommandsState` (commands.StateAlias), bez kopii.
+    _outside_active = commands.StateAlias("active")
+    _outside_waiting = commands.StateAlias("waiting")
+    _outside_heavy = commands.StateAlias("heavy")
+    _outside_quiet = commands.StateAlias("quiet")
+    _heavy_held = commands.StateAlias("held")
+    _outside_seeded = commands.StateAlias("seeded")
+    _outside_logged = commands.StateAlias("logged")
+
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
@@ -526,10 +519,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
         self._risk_view = RiskMemo()    # K-105 #4: pamięć oceny ryzyka outside tylko dla widoku (nie dla workera)
-        self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
-        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie, ciężkie): kolejka FIFO
-        self._outside_heavy = {}        # krok → ciężkie (bool): klasa polecenia czekającego albo trwającego (PT-373)
-        self._heavy_held = {}           # krok → (zajęte, limit): ciężkie wstrzymane limitem przy ostatniej decyzji
+        # Stan przebiegów poza piaskownicą w pamięci (K-109 PT-478): jeden obiekt z commands.py, przekazywany jawnie.
+        self._commands_state = commands.CommandsState()
         self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
@@ -7528,12 +7519,35 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     # --- polecenia poza piaskownicą (03.11) --------------------------------------------------------
 
+    # Logika `_outside*` jest w commands.py (K-109 PT-478, ADR-6); tu cienkie wrappery o dotychczasowych nazwach
+    # (punkty patchowania testów) i posiadanie instancji stanu. Wywołania między funkcjami commands.py idą przez
+    # `_commands_ports()`, więc trafiają do tych wrapperów.
+
+    def _commands(self) -> commands.CommandsState:
+        """Jedna instancja stanu outside (z `__init__`; silnik z `__new__` w testach dostaje ją przy pierwszym użyciu)."""
+        return self.__dict__.setdefault("_commands_state", commands.CommandsState())
+
+    def _commands_ports(self) -> commands.Ports:
+        # Odczyt pól i metod w chwili wywołania: podmiany w testach (także `journal` po zbudowaniu) działają jak dotąd.
+        return commands.Ports(
+            journal=getattr(self, "journal", None), wall_clock=time.time, project=self._project,
+            trial_check=self._trial_check,
+            consent_before_start=lambda card, step, done, decision: consent.before_start(self, card, step, done,
+                                                                                         decision),
+            record_automatic=lambda card, step, command, gate=None: consent.record_automatic(
+                self, card, step, command, gate=gate),
+            start_outside=self._start_outside, seed=self._seed_outside_waiting, heavy_admitted=self._heavy_admitted,
+            heavy_held=self._heavy_held_state, heavy_running=self._heavy_running, heavy_limit=self._heavy_limit,
+            quiet_held=self._quiet_held, heavy_contract=self._heavy_contract, heavy_patterns=self._heavy_patterns,
+            quiet_patterns=self._quiet_patterns, outside_history=self._outside_history,
+            outside_busy=self._outside_busy, outside_behind=self._outside_behind, outside_log=self._outside_log,
+            outside_heavy_of=self._outside_heavy_of, outside_heavy_state=self._outside_heavy_state,
+            outside_quiet_state=self._outside_quiet_state, outside_class=self._outside_class,
+            outside_collect=self._outside_collect, outside_stopped=self._outside_stopped,
+            outside_exit=self._outside_exit, outside_recheck_rules=self._outside_recheck_rules)
+
     def _outside_remembered(self, slug: str) -> list:
-        from ..board.commands import outside_pattern
-        value = (self._settings_data().get("outsideCommands") or {}).get(slug) or []
-        # Wpisy sprzed rodzin (dokładne polecenia) liczą się jako ich rodzina — tak rozumiał to użytkownik.
-        return [c if c.endswith(" *") else outside_pattern(c) for c in value if isinstance(c, str)] \
-            if isinstance(value, list) else []
+        return commands.outside_remembered(self._settings_data(), slug)
 
     def _remember_outside(self, slug: str, command: str) -> None:
         data = self._settings_data()
@@ -7546,149 +7560,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _outside_history(self, card: str, step: dict | None = None, *, command: str | None = None,
                          fresh: bool = True):
-        """Niepełna historia nie uprawnia do zgody, startu ani sprzątania outside.
-
-        K-105 PT-415: bez `step` (bariera ticku, odczyt bez skutku) — historia z pamięci według wersji dziennika;
-        z `step`/`command` (bramka zgody i startu outside) — świeży pełny odczyt i nowe złożenie stanu. `fresh=False`
-        tylko dla obserwacji w każdym ticku (krok czeka na kolejkę, wynik albo regułę), po której każdy skutek
-        (zgoda, start, zapis wyniku, wznowienie) ma własne świeże wywołanie tej bramki."""
-        try:
-            if step is None:
-                return trialhold.read_process_history(self.journal, card)
-            events, st = trialhold.process_state(self.journal, card, fresh=fresh)
-            name = step.get("step") or ""
-            recorded = st.steps.get(name)
-            if recorded is None or any(recorded.get(key) != step.get(key) for key in
-                                       ("ticket", "kind", "runner", "worktree", "stepDir", "branch")):
-                raise ValueError("tożsamość outside nie zgadza się z zapisanym krokiem")
-            self._trial_check(recorded)
-            if command is not None:
-                done = st.finished.get(name) or {}
-                decision = st.step_decisions.get(name) or {}
-                if (done.get("result") != "denied" or not done.get("outside")
-                        or done.get("command") != command
-                        or decision.get("choice") not in ("run", "run-always", "run-ticket")
-                        or ("command" in decision and decision["command"] != command)
-                        or name in st.outside_started):
-                    raise ValueError("brak aktualnej prośby i zgody na start outside")
-            return events
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
+        return commands.outside_history(self._commands_ports(), card, step, command=command, fresh=fresh)
 
     def _outside_ready(self, card: str, step: dict, done: dict, decision: dict):
-        """Zgoda na polecenie poza piaskownicą: uruchamia je raz (jednostka systemd, kod wyjścia w pliku) i zwraca
-        decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
-        self._trial_check(step)
-        name = step.get("step") or ""
-        # Start i zakończenie bieżącego uruchomienia outside tego procesu ze wspólnego wyniku redukcji:
-        # zakończenie innej próby tej samej nazwy nie jest odpowiedzią bieżącej (PT-288 review 2, M4).
-        # K-105 PT-415: czekanie (kolejka, trwające polecenie) z pamięci; każdy skutek (wznowienie z wynikiem, start,
-        # zapis `outside.finished`) dopiero po świeżym odczycie i tej samej redukcji na nim.
-        state, started, finished = processidentity.outside_run(self._outside_history(card, step, fresh=False), name)
-        if state != "ok":
-            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
-
-        def fresh_run():
-            run = processidentity.outside_run(self._outside_history(card, step), name)
-            if run[0] != "ok":
-                raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
-            return run
-        if finished:
-            _, started, finished = fresh_run()
-        if finished:
-            return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
-        if started is None:
-            if self.journal.state(card).paused:
-                # Wstrzymana karta nie uruchamia nowych poleceń poza piaskownicą i nie trzyma miejsca w kolejce
-                # (07.11, K-38/PT-264: automatyczna zgoda 3 min po wstrzymaniu puściła pełne testy w trakcie gry).
-                # Po wznowieniu zgoda wraca do kolejki; polecenie już uruchomione kończy się normalnie.
-                self._outside_waiting.pop(name, None)
-                return None
-            if not consent.before_start(self, card, step, done, decision):
-                return None
-            # Polecenie wymagające ciszy (#6: `exclusive` wyniku kroku albo `quietCommands`) jest zawsze ciężkie.
-            heavy = self._outside_heavy_of(card, step, done.get("command") or "",
-                                           heavyqueue.exclusive_of(done.get("exclusive")))
-            if self._outside_busy(card):
-                # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
-                # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
-                self._outside_behind(card, name, decision, quiet=True, heavy=heavy)
-                self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
-                return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
-            if self._outside_behind(card, name, decision, heavy=heavy):
-                return None
-            if heavy and not self._heavy_admitted(card, name):
-                return None     # kolejka ciężkich poleceń na maszynę (PT-373)
-            self._outside_waiting.pop(name, None)
-            self._heavy_held_state().pop(name, None)
-            self._outside_log(name, "start")
-            self._start_outside(card, step, done.get("command") or "")
-            return None
-        def still_current():
-            # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
-            _, now_started, now_finished = fresh_run()
-            return not now_finished and now_started == started
-        collected = self._outside_collect(card, name, started, confirm=still_current)
-        if collected is None:
-            return None
-        code, tail = collected
-        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
-                            command=started.get("command") or "", exit=code, tail=tail)
-        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
-        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
-        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
-                                      f"Koniec wyniku:\n{tail}"}
+        return commands.outside_ready(self._commands_ports(), self._commands(), card, step, done, decision)
 
     def _outside_collect(self, card: str, name: str, started: dict, confirm=None):
-        """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
-        wyjścia, zatrzymana jednostka bez kodu (PT-315, `_outside_stopped`) albo przekroczony czas. Wspólne dla prośby
-        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego.
-
-        `confirm` (K-105 PT-415): gdy `started` pochodzi z pamięci historii, świeża kontrola tuż przed pierwszym skutkiem
-        (zatrzymanie jednostki, zwolnienie miejsca); False — historia zmieniła się po odczycie z pamięci, bez skutku
-        i bez wyniku (None), kolejny tick decyduje od nowa. Wołana tylko, gdy uruchomienie już się skończyło albo
-        przekroczyło czas, więc nie dokłada świeżego odczytu do czekania."""
-        self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
-        self._outside_active[name] = (card, started["unit"])
-        step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
-        code = stepstop.read_exit_code(step_dir)
-        if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
-            code = self._outside_stopped(started, step_dir)
-            if code is None:
-                return None
-        if confirm is not None and not confirm():
-            return None
-        if code is None:
-            stepstop._systemctl("stop", started["unit"] + ".scope")
-            code = "przekroczony czas"
-        tail = ""
-        try:
-            with open(started["log"], "rb") as fh:
-                fh.seek(0, os.SEEK_END)
-                fh.seek(max(0, fh.tell() - OUTSIDE_TAIL))
-                tail = fh.read().decode("utf-8", "replace")
-        except OSError:
-            tail = "(brak wyniku)"
-        self._outside_active.pop(name, None)
-        self._outside_heavy_state().pop(name, None)
-        self._outside_quiet_state().pop(name, None)
-        # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
-        stepstop._systemctl("stop", started["unit"] + ".scope")
-        return code, tail
+        return commands.outside_collect(self._commands_ports(), self._commands(), card, name, started, confirm,
+                                        timeout=OUTSIDE_TIMEOUT, tail_size=OUTSIDE_TAIL)
 
     def _outside_stopped(self, started: dict, step_dir: str):
-        """Zatrzymana jednostka outside bez `exit-code` (PT-315: `systemctl --user stop …scope` zostawia `exit-code.tmp`
-        bez zmiany nazwy): kod z kompletnego pliku tymczasowego albo "zatrzymane". None — jednostka działa albo stan
-        nieznany (błąd odczytu nie kończy polecenia); wtedy czekamy dalej do OUTSIDE_TIMEOUT."""
-        if time.time() - _epoch(started.get("ts")) < OUTSIDE_STOP_GRACE:
-            return None         # systemd-run rejestruje jednostkę chwilę po starcie procesu
-        if not stepstop.unit_without_processes(started.get("unit") or "", timeout=OUTSIDE_STATE_TIMEOUT):
-            return None
-        # Wrapper mógł skończyć zaraz po pierwszym odczycie (zmiana nazwy tmp → exit-code): najpierw plik docelowy.
-        code = stepstop.read_exit_code(step_dir)
-        if code is None:
-            code = stepstop.read_exit_code(step_dir, stepstop.EXIT_CODE_FILE + ".tmp")
-        return code if code is not None else OUTSIDE_STOPPED
+        return commands.outside_stopped(self._commands_ports(), started, step_dir, grace=OUTSIDE_STOP_GRACE,
+                                        state_timeout=OUTSIDE_STATE_TIMEOUT, stopped=OUTSIDE_STOPPED)
 
     def _review_rounds(self, data: dict | None = None) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę).
@@ -7773,43 +7656,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 pass
 
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
-        """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
-        poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
-        if trialhold.held(step):
-            return
-        try:
-            # K-105 PT-415: sprawdzenie co tick z pamięci; każdy zapis niżej dopiero po świeżej bramce (`gate`).
-            self._outside_history(card, step, fresh=False)
-        except FlowError:
-            return
-
-        def gate():
-            self._outside_history(card, step)
-        try:
-            self._outside_recheck_rules(card, step, done, gate)
-        except FlowError:
-            return
+        commands.outside_recheck(self._commands_ports(), card, step, done)
 
     def _outside_recheck_rules(self, card: str, step: dict, done: dict, gate) -> None:
-        if step.get("runner") == boxstep.RUNNER:
-            if done.get("canAllow", True):
-                gate()
-                self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
-                                    ticket=step.get("ticket") or "", canAllow=False)
-            return
-        from ..board.commands import outside_allowed
-        command = done.get("command") or ""
-        _, project = self._project(card)
-        roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
-        allowed = outside_allowed(command, project.denied_commands, roots)
-        if allowed != bool(done.get("canAllow", True)):
-            # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
-            # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
-            gate()
-            self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
-                                ticket=step.get("ticket") or "", canAllow=allowed)
-        if allowed:
-            consent.record_automatic(self, card, step, command, gate=gate)
+        commands.outside_recheck_rules(self._commands_ports(), card, step, done, gate)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
 
@@ -8007,34 +7857,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return (self.journal.state(card).ticket_consents.get(ticket) or {}).get("type") == consent.GRANTED
 
     def _outside_busy(self, card: str) -> bool:
-        """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
-        e2e naraz na jednym porcie kończyło się kodem 1 i agenci prosili o kolejne)."""
-        if self._outside_active is None:
-            # Po restarcie usługi: polecenia rozpoczęte (bez zakończenia) we wszystkich kartach.
-            # Wspólny wynik redukcji (PT-288 review 2, M7): bieżące uruchomienie każdego procesu;
-            # proces wstrzymany z jakimkolwiek startem zajmuje miejsce zachowawczo.
-            self._outside_active = {}
-            for other in self.journal.cards():
-                for name, started in processidentity.outside_runs(self.journal.read(other)).items():
-                    unit = started.get("unit")
-                    self._outside_active[name] = (other, unit if isinstance(unit, str) else "")
-        alive = {}
-        for name, (other, unit) in self._outside_active.items():
-            if stepstop.read_exit_code(os.path.dirname(os.path.dirname(self._outside_exit(other, name)))) is None:
-                alive[name] = (other, unit)
-        self._outside_active = alive
-        if len(alive) >= OUTSIDE_TOTAL:
-            return True
-        slug = self._project(card)[1].slug
-        return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
+        return commands.outside_busy(self._commands_ports(), self._commands(), card, total=OUTSIDE_TOTAL,
+                                     per_project=OUTSIDE_PER_PROJECT)
 
     # --- kolejka ciężkich poleceń na maszynę (K-39 #3, PT-373; zasada: heavyqueue.py) ---------------
 
     def _outside_heavy_state(self) -> dict:
-        return self.__dict__.setdefault("_outside_heavy", {})
+        return commands.outside_heavy_state(self._commands())
 
     def _heavy_held_state(self) -> dict:
-        return self.__dict__.setdefault("_heavy_held", {})
+        return commands.heavy_held_state(self._commands())
 
     def _heavy_limit(self) -> int:
         return heavyqueue.limit_of(self._settings_data().get("heavyLimit"))
@@ -8059,55 +7891,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return testpolicy.effective_tests(tests, worktree, approved, "", error=error)
 
     def _outside_quiet_state(self) -> dict:
-        return self.__dict__.setdefault("_outside_quiet", {})
+        return commands.outside_quiet_state(self._commands())
 
     def _quiet_patterns(self) -> list:
         return heavyqueue.quiet_patterns_of(self._settings_data().get("quietCommands"))
 
     def _outside_heavy_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
-        """Klasa polecenia procesu `step` (raz na proces, pamiętana do końca uruchomienia). Błąd odczytu kontraktu
-        albo projektu — lekkie (dotychczasowe limity). Polecenie wymagające ciszy (#6) jest zawsze ciężkie."""
-        return self._outside_class(card, step, command, marked)[0]
+        return commands.outside_heavy_of(self._commands_ports(), card, step, command, marked)
 
     def _outside_quiet_of(self, card: str, step: dict, command: str, marked: bool | None = None) -> bool:
-        """Czy polecenie procesu `step` wymaga ciszy (K-39 #6, PT-376): pole `exclusive` w `step.finished` albo wzorzec
-        `quietCommands`. Pamiętane razem z klasą ciężkości do końca uruchomienia."""
-        return self._outside_class(card, step, command, marked)[1]
+        return commands.outside_quiet_of(self._commands_ports(), card, step, command, marked)
 
     def _outside_class(self, card: str, step: dict, command: str, marked: bool | None = None) -> tuple[bool, bool]:
-        """(ciężkie, wymaga ciszy) procesu `step`. `marked` — pole `exclusive` wyniku kroku; None — odczyt
-        ze stanu karty (`journal.state`, także po restarcie: znacznik odtwarza się z `step.finished` i ustawień).
-        Próba testów po scaleniu jest ciężka i nie wymaga ciszy."""
-        name = step.get("step") or ""
-        known, quiet = self._outside_heavy_state(), self._outside_quiet_state()
-        if name not in quiet:
-            exclusive = False
-            if not mergecheck.is_step(name):
-                try:
-                    if marked is None:
-                        marked = heavyqueue.exclusive_of(
-                            (self.journal.state(card).finished.get(name) or {}).get("exclusive"))
-                    exclusive = bool(marked)
-                    _, project = self._project(card)
-                    roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
-                    exclusive = heavyqueue.needs_quiet(command, roots, self._quiet_patterns(), marked=exclusive)
-                except Exception:
-                    pass        # błąd projektu albo ustawień: zostaje sam znacznik kroku
-            quiet[name] = exclusive
-        if name not in known:
-            if quiet[name] or mergecheck.is_step(name):
-                heavy = True
-            else:
-                try:
-                    _, project = self._project(card)
-                    worktree = step.get("worktree") or ""
-                    roots = (worktree, project.repo, step.get("stepDir") or "")
-                    heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree),
-                                               self._heavy_patterns()).heavy
-                except Exception:
-                    heavy = False
-            known[name] = heavy
-        return bool(known[name] or quiet[name]), bool(quiet[name])
+        return commands.outside_class(self._commands_ports(), card, step, command, marked)
 
     def _heavy_running(self) -> set:
         """Trwające ciężkie z żywego `_outside_active` (po `_outside_busy` i po każdym starcie w tym ticku, także
@@ -8157,21 +7953,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return getattr(self, "_read_load", None) or heavyqueue.read_load
 
     def _outside_describe(self, name: str) -> str:
-        """Opis polecenia do zdań o ciszy: „make test (K-36)” — polecenie z `outside.started` albo prośby kroku."""
-        found = (getattr(self, "_outside_active", None) or {}).get(name) or \
-            (getattr(self, "_outside_waiting", None) or {}).get(name)
-        card = found[0] if found else ""
-        command = ""
-        if card:
-            try:
-                st = self.journal.state(card)
-                command = (st.outside_started.get(name) or {}).get("command") or \
-                    (st.finished.get(name) or st.merge_check_steps.get(name) or {}).get("command") or ""
-            except Exception:
-                command = ""
-        text = " ".join(str(command or name).split())
-        text = text if len(text) <= 40 else text[:39] + "…"
-        return f"{text} ({card})" if card else text
+        return commands.outside_describe(getattr(self, "journal", None), self._commands(), name)
 
     def _heavy_decision(self, name: str = "") -> "heavyqueue.Admission":
         """`heavyqueue.admit` z czekającymi ciężkimi, które mogą ruszyć (ich karta nie ma zajętego miejsca projektu
@@ -8221,48 +8003,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False,
                         heavy: bool = False) -> bool:
-        """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
-        projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
-        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki. Wpis ma pole `heavy`
-        (PT-373): starsze ciężkie polecenie, które nie ruszy, bo limit ciężkich jest zajęty, nie blokuje innych."""
-        now = time.time()
-        if not getattr(self, "_outside_seeded", False):
-            self._outside_seeded = True
-            self._seed_outside_waiting(now)
-        slug = self._project(card)[1].slug
-        previous = self._outside_waiting.get(name)
-        queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
-        self._outside_waiting[name] = (card, slug, queued, now, heavy)
-        self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
-        heavy_load = None
-        quiet_held = None
-        for other, entry in list(self._outside_waiting.items()):
-            other_card, other_slug, other_queued = entry[:3]
-            if other == name or (other_queued, other) >= (queued, name):
-                continue
-            if _queue_heavy(entry):
-                if heavy_load is None:
-                    heavy_load = (len(self._heavy_running()), self._heavy_limit())
-                if not heavyqueue.holds_queue(True, *heavy_load):
-                    continue    # czeka na miejsce ciężkich — ruszy dopiero po zwolnieniu, nie trzyma innych
-                if quiet_held is None:
-                    # Cisza (#6): starsze ciężkie wstrzymane ciszą (czeka na spokojną maszynę albo za poleceniem
-                    # wymagającym ciszy) nie ruszy teraz, więc nie trzyma lekkich ani innych projektów.
-                    quiet_held = self._quiet_held()
-                if other in quiet_held:
-                    continue
-            if other_slug == slug or not self._outside_busy(other_card):
-                if not quiet:
-                    self._outside_log(name, f"czeka za starszą zgodą {other}")
-                return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
-        return False
+        return commands.outside_behind(self._commands_ports(), self._commands(), card, name, decision, quiet=quiet,
+                                       heavy=heavy, stale=OUTSIDE_QUEUE_STALE)
 
     def _outside_log(self, name: str, text: str) -> None:
-        """Jedna linia w dzienniku usługi przy zmianie powodu czekania polecenia poza piaskownicą."""
-        seen = self.__dict__.setdefault("_outside_logged", {})
-        if seen.get(name) != text:
-            seen[name] = text
-            print(f"tide-daemon: kolejka poza piaskownicą: {name}: {text}", flush=True)
+        commands.outside_log(self._commands(), name, text)
 
     def _seed_outside_waiting(self, now: float) -> None:
         """Po restarcie usługi: zgody na polecenia poza piaskownicą, które jeszcze nie ruszyły, z czasem zgody
@@ -8304,59 +8049,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     self._outside_waiting.setdefault(name, (other, slug, queued, now, heavy))
 
     def _outside_exit(self, card: str, name: str) -> str:
-        """Plik kodu wyjścia uruchomienia outside procesu ze wspólnego wyniku redukcji (PT-288 review 2, M7):
-        niezakończone uruchomienie, które zajmuje miejsce (najpierw bieżącej próby), inaczej bieżące."""
-        events = self.journal.read(card)
-        found = processidentity.outside_runs(events).get(name)
-        if found is None:
-            found = processidentity.outside_run(events, name)[1] or {}
-        value = found.get("exitFile")
-        return value if isinstance(value, str) and value else "/nonexistent/in/exit-code"
+        return commands.outside_exit(self.journal, card, name)
 
     def _outside_still_allowed(self, card: str, step: dict) -> bool:
-        """Świeża kontrola decyzji tuż przed startem (PT-311). Odmowa człowieka zapisana po kontroli kolejki
-        kończy start bez błędu (krok wznowi się z odmową); automatyczna zgoda przechodzi `before_start`
-        (odmowa w innym kroku ticketu ją unieważnia). Brak zgody nadal odrzuca `_outside_history` (FlowError),
-        a ręczna zgoda nie dostaje nowych kontroli."""
-        name = step.get("step") or ""
-        current = self.journal.state(card)
-        decision = current.step_decisions.get(name) or {}
-        refused = decision.get("choice") == "deny" and not decision.get("auto")
-        if refused or decision.get("auto") and decision.get("choice") in consent.RUN and not consent.before_start(
-                self, card, step, current.finished.get(name) or {}, decision):
-            self._outside_waiting.pop(name, None)
-            return False
-        return True
+        return commands.outside_still_allowed(self._commands_ports(), self._commands(), card, step)
 
     def _outside_launch(self, name: str, step_dir: str, worktree: str, command: str):
-        """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko polecenia poza piaskownicą (jednostka
-        `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`). Wspólne dla prośby kroku i próby testów po
-        scaleniu (PT-329); start i jego zapis należą do wywołującego."""
-        folder = os.path.join(step_dir, "outside")
-        os.makedirs(os.path.join(folder, "in"), exist_ok=True)
-        exit_file = os.path.join(folder, "in", "exit-code")
-        log = os.path.join(folder, "outside.log")
-        unit = f"tide-outside-{name}"
-        env = dict(os.environ)
-        from ..tasks import node as node_mod
-        prefix = node_mod.node_home(os.path.expanduser("~"))
-        if prefix:
-            env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
-        chrome = node_mod.chrome_bin(os.path.expanduser("~"))
-        # Bez pamięci dyskowej QML (08.11: ~/.cache/QtProject urósł do 100 GB od testów qml6 na ścieżkach tymczasowych);
-        # obejmuje też gałęzie kart, których uruchamiacz testów jeszcze tego nie ustawia.
-        env.setdefault("QML_DISABLE_DISK_CACHE", "1")
-        if chrome and not env.get("CHROME_BIN"):
-            env["CHROME_BIN"] = chrome
-        if not env.get("JOBS") and not test_pool_available(worktree):
-            # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
-            # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
-            env["JOBS"] = str(OLD_RUNNER_JOBS)
-        argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
-                "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
-                "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
-                exit_file, "/bin/sh", "-c", command]
-        return unit, log, exit_file, argv, env
+        return commands.outside_launch(name, step_dir, worktree, command, systemd_run=self.systemd_run,
+                                       cpu_weight=STEP_CPU_WEIGHT, old_jobs=OLD_RUNNER_JOBS)
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         self._trial_check(step)
