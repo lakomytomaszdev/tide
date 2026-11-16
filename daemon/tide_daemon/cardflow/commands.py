@@ -104,6 +104,7 @@ class Ports:
     # K-109 PT-479: przebieg `command.*` przez runner (wynik z `exit-code`, zapora zatrzymania) i obciążenie maszyny.
     unit_result: Callable = None       # (start przebiegu) → liczba, `zatrzymane` albo None (trwa)
     unit_stop: Callable = None         # (jednostka) → zatrzymanie bez czekania
+    unit_gone: Callable = None         # (jednostka) → True tylko przy potwierdzonym końcu (`unknown` = żyje)
     machine_load: Callable = None      # () → heavyqueue.Load
 
 
@@ -463,7 +464,14 @@ def outside_busy(ports,state: CommandsState, card: str, *, total: int, per_proje
     for name, (other, unit) in state.active.items():
         # Plik kodu wyjścia przebiegu (`outside.*`: <krok>/outside/in/exit-code, `command.*`: plik opakowania
         # tide-step — liczba albo `zatrzymane`).
-        if runner_mod.read_command_exit(ports.outside_exit(other, name)) is None:
+        code = runner_mod.read_command_exit(ports.outside_exit(other, name))
+        if code is None:
+            alive[name] = (other, unit)
+        elif (code == runner_mod.STOPPED and unit.startswith(runner_mod.COMMAND_PREFIX)
+              and not ports.unit_gone(unit)):
+            # K-109 PT-479 (review 2): opakowanie zapisuje `zatrzymane` od razu przy SIGTERM, a procesy polecenia
+            # mogą żyć do `TimeoutStopSec` — miejsce i kolejka ciężkich (także `exclusive`) zostają zajęte do
+            # potwierdzonego końca jednostki, jak `command_result` i jak zatrzymany scope dawnej drogi (PT-315).
             alive[name] = (other, unit)
     state.active = alive
     if len(alive) >= total:

@@ -21,8 +21,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 
+from tide_daemon.cardflow import commands
 from tide_daemon.tasks import runner as runner_mod
 from tide_daemon.tasks.runner import CommandRequest, HostRunner
 
@@ -87,6 +89,15 @@ class RealSystemdCommandTest(unittest.TestCase):
             time.sleep(0.05)
         return self.runner.command_state(handle.unit) == state
 
+    def busy(self, handle):
+        """`commands.outside_busy` z portem `unit_gone` jak w silniku (ten sam `command_state` runnera)."""
+        state = commands.CommandsState(active={"s": ("K-1", handle.unit)})
+        project = types.SimpleNamespace(slug="p")
+        ports = types.SimpleNamespace(
+            journal=None, project=lambda card: (None, project), outside_exit=lambda card, name: handle.exit_file,
+            unit_gone=lambda unit: self.runner.command_state(unit, timeout=3) == "gone")
+        return commands.outside_busy(ports, state, "K-2", total=7, per_project=1)
+
     def exit_text(self, handle):
         try:
             with open(handle.exit_file, encoding="ascii") as fh:
@@ -140,14 +151,20 @@ class RealSystemdCommandTest(unittest.TestCase):
             time.sleep(0.05)
         alive = self.runner.command_state(handle.unit)
         during = self.result(handle)
+        busy_during = self.busy(handle)
         value = self.wait_result(handle)
         elapsed = time.monotonic() - self.started
+        busy_after = self.busy(handle)
         client = handle.proc.wait(timeout=30)
         self.report("b-term", handle, value, client)
         print(f"PT479 b-term: exit-code=zatrzymane przy jednostce {alive}, wynik w trakcie={during!r}, "
+              f"miejsce zajęte w trakcie={busy_during}, po końcu={busy_after}, "
               f"rozstrzygnięte po {elapsed:.1f} s", file=sys.stderr, flush=True)
         self.assertEqual(alive, "active")
         self.assertIsNone(during)
+        # Review PT-479 r2, MAJOR 1: miejsce i kolejka ciężkich (`outside_busy`) też czekają na koniec jednostki.
+        self.assertTrue(busy_during)
+        self.assertFalse(busy_after)
         self.assertEqual(value, runner_mod.STOPPED)
         self.assertGreaterEqual(elapsed, 2.5)
 

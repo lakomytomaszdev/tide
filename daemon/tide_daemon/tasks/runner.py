@@ -131,6 +131,9 @@ class Runner(Protocol):
         mogą jeszcze żyć po SIGTERM). Jednostka bez procesów i bez pliku po `grace` sekundach od startu (`age`) —
         `zatrzymane`."""
 
+    def command_state(self, unit: str, *, timeout: float = 3) -> str:
+        """`active`, `gone` albo `unknown` jednostki polecenia; tylko `gone` potwierdza jej koniec."""
+
     def stop_command(self, unit: str) -> None:
         """Zatrzymanie jednostki polecenia bez czekania (opakowanie zapisze `zatrzymane`)."""
 
@@ -185,9 +188,10 @@ class HostRunner:
         unit = command_unit(attempt)
         folder = os.path.join(request.folder, "outside", unit)
         exit_file, log, script = (os.path.join(folder, name) for name in (EXIT_FILE, LOG_FILE, "command"))
-        if any(c in path for path in (exit_file, log, script, TIDE_STEP_SCRIPT) for c in "$%\n"):
-            # Argumenty jednostki przechodzą przez rozwijanie zmiennych i specyfikatorów systemd.
-            raise ValueError(f"ścieżka polecenia ze znakiem specjalnym systemd: {folder}")
+        if any(c in path for path in (exit_file, log, script, TIDE_STEP_SCRIPT, request.cwd or "") for c in "$%\n"):
+            # Argumenty jednostki (także `--working-directory=`) przechodzą przez rozwijanie zmiennych
+            # i specyfikatorów systemd.
+            raise ValueError(f"ścieżka polecenia ze znakiem specjalnym systemd: {folder} (cwd {request.cwd!r})")
         os.makedirs(request.folder, exist_ok=True)
         os.makedirs(os.path.join(request.folder, "outside"), exist_ok=True)
         os.mkdir(folder, 0o700)         # nowa próba = nowy katalog: stary `exit-code` nie jest wynikiem nowej

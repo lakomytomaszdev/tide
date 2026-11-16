@@ -3370,6 +3370,9 @@ Opakowanie zapisuje `exit-code` atomowo (`.tmp` i `mv`): kod polecenia przy zwyk
 na jego koniec (wczesny zapis chroni wynik przed SIGKILL po `TimeoutStopSec`). `zatrzymane` z pliku jest wynikiem
 końcowym dopiero, gdy jednostki już nie ma (`gone`): dopóki procesy polecenia żyją (`active`/`deactivating`) albo stan
 jest nieznany, silnik czeka — nie zwalnia miejsca w kolejce i nie wznawia kroku (jak PT-315 na dawnej drodze).
+Tak samo zajętość miejsc projektu/łączna i zbiór trwających ciężkich poleceń (`outside_busy`, port `unit_gone`
+= `HostRunner.command_state(…) == "gone"`): wpis jednostki `tide-cmd-*` z plikiem `zatrzymane` zostaje zajęty
+w każdym ticku, także innych kart, dopóki jednostka nie zniknie — kolejka ciężkich nie wpuści obok niej `exclusive`.
 Wynik pochodzi wyłącznie z tego pliku (`HostRunner.command_result`: liczba albo `zatrzymane`, `OUTSIDE_STOPPED`);
 klient `systemd-run --wait` jest tylko obserwatorem — jego kod wyjścia i śmierć (np. restart usługi Tide) nie są
 wynikiem. Jednostka nieaktywna albo zebrana przez `--collect` bez pliku po `OUTSIDE_STOP_GRACE` od startu →

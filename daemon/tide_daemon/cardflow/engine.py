@@ -7548,6 +7548,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             outside_collect=self._outside_collect, outside_stopped=self._outside_stopped,
             outside_exit=self._outside_exit, outside_recheck_rules=self._outside_recheck_rules,
             unit_result=self._command_result, unit_stop=lambda unit: self.runner.stop_command(unit),
+            unit_gone=lambda unit: self.runner.command_state(unit, timeout=OUTSIDE_STATE_TIMEOUT) == "gone",
             machine_load=lambda: self._load_reader()())
 
     def _command_result(self, started: dict):

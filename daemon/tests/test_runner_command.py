@@ -106,6 +106,16 @@ class ArgvTest(Case):
         with self.assertRaises(ValueError):
             self.capture(self.request(attempt="../x"))
 
+    def test_systemd_special_characters_in_paths_are_refused_also_in_cwd(self):
+        # Review PT-479 r2, NIT 1: `--working-directory=` też przechodzi przez rozwijanie systemd.
+        for name in ("wt$x", "wt%h", "wt\nx"):
+            with self.subTest(name=name):
+                cwd = os.path.join(self.tmp, name)
+                with mock.patch.object(runner_mod.subprocess, "Popen") as popen, self.assertRaises(ValueError):
+                    HostRunner("/x/systemd-run").run_command(CommandRequest(command="true", folder=self.step_dir,
+                                                                            cwd=cwd))
+                popen.assert_not_called()
+
     def test_wrapper_is_the_box_tide_step_script(self):
         from tide_daemon.box import runner as box_runner
         self.assertEqual(runner_mod.TIDE_STEP_SCRIPT, box_runner.TIDE_STEP_SCRIPT)
