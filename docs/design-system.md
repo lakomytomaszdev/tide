@@ -156,12 +156,87 @@ a dopiero potem dokłada znaczniki ze stałymi atrybutami (`class`, `style` z pa
 trafia do atrybutu. Wynik nie ma `href` ani `<img>` — także link Markdown (`[x](javascript:…)` zostaje samym tekstem,
 `[x](http://…)` — tekstem z adresem), więc nic nie jest klikalne i widok nie robi żądań sieciowych. Schemat
 `tide-card:` jest zarezerwowany dla podglądu karty po numerze (`Tide.CardRef`, etap A2) i dziś nie powstaje.
-RichText występuje tylko w `Tide.Prose` i w `MarkdownBlock.qml` Tablicy (HTML z `backend.renderMarkdown`); jedyny
+RichText występuje tylko w `Tide.Prose`, w `Tide.CodeBlock` (linie skryptu z `shell.js`, każdy kawałek escapowany —
+niżej) i w `MarkdownBlock.qml` Tablicy (HTML z `backend.renderMarkdown`); jedyny
 wyjątek sprzed standardu — raport w oknie Sprawy (`IssuesView.qml`, `backend.renderReport` z obrazami sprawy) —
 przechodzi na `Tide.Prose` w przeglądzie pozostałych tekstów (etap A2). Pilnuje tego test statyczny.
 
 Pierwszy odbiorca: pole „dlaczego” decyzji karty (`DecisionForm.qml`, linie „Uwaga:” i „Powód kroku:”) w oknie
 decyzji i w „Twój ruch” pełnej karty.
+
+### Prośba o zgodę i decyzje (K-128, PT-506)
+
+Treść decyzji (`apps/common/qml/card/DecisionForm.qml`, wspólna dla okna decyzji i „Twój ruch” pełnej karty) według
+makiety S-9, obszar „Prośba o zgodę”, wariant A. Zmiana dotyczy **tylko formatowania i układu** (granica K-109): te
+same metody, parametry, grupy zgód i odpowiedzi; okno niczego nie wybiera z góry (D10).
+
+- **Tytuł jako pytanie.** Prośba o zgodę ma w tytule pytanie złożone z istniejących pól (`decision.js`,
+  `questionTitle`): „Uruchomić `<polecenie>` poza piaskownicą?”, „Zezwolić na `<polecenie>`?”, „Zezwolić na polecenia
+  z łańcucha?” (długie polecenie — „…polecenie…”). Zdanie usługi (`happened`) stoi pod nim tekstem `text.secondary`.
+  Pozostałe decyzje, grupa zgód i odmowa domeny mają dzisiejszy tytuł (`happened`).
+- **Jedno zalecenie.** Duży blok „Opiekun poleca” znika. Czysta funkcja `advice(decision)` w `decision.js` czyta tylko
+  `options[].recommended` i `caretaker{optionId, recommendation, summary, failed, tried}` i daje tryb:
+  - plakietka **„polecane”** (teal na tealu ~0,10, obrys ~0,35, makieta `.chip.teal`) wyłącznie przy opcji
+    z `recommended: true`; opcja polecana ma obrys tealu ~0,35;
+  - `caretaker.optionId` = opcja polecana (`agree`) — pod jej opisem „✓ Polecane — opiekun karty też to poleca”
+    (teal) i przycisk „uzasadnienie opiekuna”, który rozwija komentarz (rekomendacja i streszczenie opiekuna);
+  - `caretaker.optionId` = inna opcja (`differ`) — przy tamtej opcji plakietka **„opiekun”** (lawenda, `.chip.lav`)
+    i „◆ Opiekun poleca tę opcję” (masło) z „dlaczego?”. **Gałąź tymczasowa** (`TODO(K-128 etap B)` w kodzie,
+    niżej „Co wymaga etapu B”);
+  - pusty albo nieznany `caretaker.optionId`, a jest `recommendation`, `summary` albo `failed` (`note`) — jedno zdanie
+    pod możliwościami („Opiekun poleca: …” w tealu albo „Opiekun nie poradził sobie z problemem i oddaje decyzję
+    Tobie.” w brzoskwini) i „Szczegóły opiekuna” rozwijające streszczenie i listę prób `tried` („Co próbowano”).
+
+  Komentarz (`CaretakerDetail.qml`, makieta `.comment`) ma tło `background.view` i obrys `opacity.border`; streszczenie
+  opiekuna pokazuje `Tide.Prose`. Rozwinięcie niczego nie wybiera.
+- **Polecenie** z `technical.command` stoi w jednowierszowym `Tide.CodeBlock` z „Kopiuj” (jak dawne pole), tak samo
+  polecenia do skopiowania z treści pytania (`copyCommands`).
+- **Podgląd skryptu:** gdy decyzja ma pole `decision.script = {path, language, text, lineCount, truncated}`, pod
+  poleceniem stoi zwinięty `Tide.CodeBlock` z treścią; bez pola — brak bloku.
+- **Przyciski** to `Tide.Button`: w oknie decyzji „Otwórz całą kartę” (`ghost`), „Później” (`ghost`, `Esc`)
+  i jedyny główny **„Wybierz ↵”** (`primary`; w „Twój ruch” — ten sam jedyny główny w widoku karty); przełączniki
+  („Szczegóły techniczne”, „Tickety i kroki”, „Co próbowano”) — `ghost` `small`; poprzednia/następna i ✕ — ikony
+  `ghost`. Obok „Wybierz” podpowiedź klawiszy „↑↓ wybór · Enter zatwierdza · Esc później” (`text.muted`); ↑↓ wybierają
+  sąsiednią możliwość (`DecisionForm.moveChoice`) — bez strzałki ani kliknięcia nic nie jest wybrane.
+- Kontrast nowych kolorów (plakietki „polecane” i „opiekun”, dopiski, przycisk tonowany, zdanie opiekuna) na ich tłach
+  nałożonych na `background.window` i `background.card` jest co najmniej 4,5:1 (test
+  `apps/board/tests/test_decision_advice.py`).
+
+#### Co wymaga etapu B
+
+Dwie części widoku są gotowe, ale **w produkcji po etapie A się nie pojawią** — działają wyłącznie na danych testowych,
+bo usługa nie daje dziś potrzebnych danych ([szkic etapu B](agents/plans/followups/etap-b-silnik.md)):
+
+- **Podgląd treści skryptu** — usługa nie podaje pola `decision.script`, więc bloku skryptu w prośbie o zgodę nie ma.
+- **Znacznik rozbieżności „opiekun”** — `caretaker.annotate_escalation` (`daemon/tide_daemon/cardflow/caretaker.py`)
+  nadpisuje `recommended` wyborem opiekuna, więc dziś `caretaker.optionId` zawsze wskazuje opcję polecaną (tryb
+  `agree`) i rozbieżności nie da się wiarygodnie wykryć. Gałąź `differ` ma w kodzie `TODO(K-128 etap B)`, a jej testy
+  są oznaczone jako kontrakt tymczasowy; etap B może zmienić znaczenie „polecane” i tę gałąź albo usunąć.
+
+Pastylki ryzyka z makiety (`decision.risks`) powstaną razem z danymi w etapie B (albo A2).
+
+### Blok kodu (`Tide.CodeBlock`)
+
+`widgets/lib/CodeBlock.qml` (makieta S-9 `.code`) — blok kodu okna Tide w dwóch wariantach:
+
+- **Zwijany** (domyślny): nagłówek na tle tekstu ~0,04 nad `background.view` — ścieżka (`path`, sky, Geist Mono,
+  skracana w środku), „· 34 linie · bash” (`text.muted`; liczba z `lineCount` albo z tekstu), „pokaż treść skryptu” /
+  „zwiń” i „Kopiuj” (`Tide.Button` `ghost` `small`). **Domyślnie zwinięty** (`expanded: false`); klik w nagłówek, Spacja
+  albo Enter rozwija. Po rozwinięciu linie z numerami (`text.muted`, wyrównane do prawej) i kolorowaniem powłoki w ramce
+  najwyżej `maxBodyHeight` (420 px) z własnym przewijaniem (`Tide.ScrollBar`); `truncated` dopisuje „Treść skrócona —
+  pokazano początek pliku.” Linie liczą się dopiero po rozwinięciu.
+- **Jednowierszowy** (`oneLine: true`): polecenie zwykłym tekstem (Geist Mono, zaznaczalne) w polu `background.view`
+  z „Kopiuj” — pole polecenia decyzji.
+
+Kolorowanie robi `widgets/lib/shell.js` — prosty tokenizer linii (`tokens(line)` → `{kind, text}`): komentarz
+(`#` na początku słowa — `text.muted`, kursywa), słowo kluczowe w miejscu polecenia (`if`, `then`, `for`, `export`,
+`echo`, `set`… — lawenda), napis `'…'` i `"…"` (masło; zmienne w `"…"` osobno), zmienna `$X`, `${X}`, `$1`, `$@` (sky),
+polecenie — pierwsze słowo na początku linii i po `;`, `|`, `&`, `(`, `$(` (teal); reszta `text.primary`. Kolory
+z `shell.colors(Tokens)`; każda para ma kontrast co najmniej 4,5:1 na tle bloku (test `widgets/tests/test_codeblock.py`).
+
+**Treść to niezaufany tekst.** `shell.html(line, colors)` escapuje każdy kawałek (`&`, `<`, `>`, `"`, `'`) i dopiero
+potem owija go w `<span>` ze stałym stylem z palety — tekst nigdy nie trafia do atrybutu, bez linków i obrazów. „Kopiuj”
+kopiuje surowy tekst. Test sprawdza, że `<` i `&` ze skryptu są widoczne jako tekst.
 
 ### Paski przewijania
 

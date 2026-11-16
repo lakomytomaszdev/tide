@@ -468,6 +468,11 @@ Rectangle {
         } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && current) {
             form.choose()
             event.accepted = true
+        } else if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down) && current) {
+            // ↑↓ — wybór sąsiedniej możliwości w „Twój ruch” (K-128, PT-506).
+            form.moveChoice(event.key === Qt.Key_Down ? 1 : -1)
+            view.forceActiveFocus()
+            event.accepted = true
         }
     }
 
@@ -766,7 +771,18 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         visible: !!view.current
-                        Item { Layout.fillWidth: true }
+                        spacing: 10
+                        Text {
+                            objectName: "fullKeysHint"
+                            Layout.fillWidth: true
+                            text: form.keysHint
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideLeft
+                        }
                         // Jedyny przycisk główny widoku; pod pytaniem o potwierdzenie główny jest przycisk pytania.
                         Tide.Button {
                             objectName: "fullChoose"

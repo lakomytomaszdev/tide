@@ -34,3 +34,4 @@ ScrollBar 1.0 ScrollBar.qml
 Button 1.0 Button.qml
 Sheet 1.0 Sheet.qml
 TopBar 1.0 TopBar.qml
+CodeBlock 1.0 CodeBlock.qml

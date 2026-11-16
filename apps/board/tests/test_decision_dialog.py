@@ -98,7 +98,8 @@ class PackageTest(unittest.TestCase):
                      "qml/card/DecisionForm.qml", "qml/card/DecisionKind.qml", "qml/card/CardFullView.qml",
                      "qml/card/TicketTile.qml", "qml/card/ticket.js", "qml/card/decision.js",
                      "qml/card/PlanTable.qml", "qml/card/HistoryBlock.qml", "qml/card/history.js",
-                     "qml/tide/Tokens.qml"):
+                     "qml/card/CaretakerDetail.qml", "qml/card/OptionBadge.qml", "qml/tide/CodeBlock.qml",
+                     "qml/tide/shell.js", "qml/tide/Tokens.qml"):
             self.assertIn(name, files)
 
     def test_no_hardcoded_colors_fonts_or_choice_logic(self):
@@ -123,10 +124,15 @@ class PackageTest(unittest.TestCase):
             with open(os.path.join(CARD_DIR, name), encoding="utf-8") as fh:
                 self.assertNotIn("recommended", fh.read(), f"{name}: możliwości tylko przez DecisionForm")
         with open(os.path.join(CARD_DIR, "DecisionForm.qml"), encoding="utf-8") as fh:
-            uses = [line.strip() for line in fh if "recommended" in line]
+            uses = [line.strip() for line in fh if "recommended" in line and not line.strip().startswith("//")]
         self.assertEqual(uses, ["recommended: modelData.recommended === true"], "polecana tylko przekazana do karty")
+        # Reguła jednego zalecenia (K-128, PT-506) tylko CZYTA `recommended` z usługi: nigdy go nie ustawia
+        # ani nie przestawia możliwości.
         with open(os.path.join(CARD_DIR, "decision.js"), encoding="utf-8") as fh:
-            self.assertNotIn("recommended", fh.read())
+            source = re.sub(r"//.*", "", fh.read())
+        self.assertIsNone(re.search(r"\brecommended\s*(?:=(?!=)|:)", source), "decision.js nie ustawia polecanej")
+        self.assertEqual(re.findall(r"[\w.\[\]]*\brecommended\b", source), ["options[i].recommended"],
+                         "polecana czytana w jednym miejscu (advice)")
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
@@ -465,7 +471,7 @@ out["after"] = [js("page.decisionOpen"), js("page.toast")]
         self.assertIn("Backlogu plasma-tide", out["openedExtra"]["effect"])
         self.assertFalse(out["openedExtra"]["shown"], "podglądu nie ma przed opisem")
 
-        self.assertEqual(out["typed"]["button"], "Pokaż podgląd  ↵")
+        self.assertEqual(out["typed"]["button"], "Pokaż podgląd", "skrót ↵ obok napisu (Tide.Button kbd, PT-506)")
         [call] = out["previewCall"]
         self.assertEqual(call[:2], ["PreviewStepFault", "K-8"])
         self.assertEqual(json.loads(call[2]), {"step": "K-8-plan-2", "description": "Po aktualizacji to samo."})
@@ -475,7 +481,7 @@ out["after"] = [js("page.decisionOpen"), js("page.toast")]
         self.assertEqual(shown["title"], preview["title"])
         self.assertIn("> Po aktualizacji to samo.", shown["body"], "opis użytkownika w podglądzie")
         self.assertIn("odmowa Write", shown["body"], "wycinek dziennika w podglądzie")
-        self.assertEqual(shown["button"], "Zapisz i ponów  ↵")
+        self.assertEqual(shown["button"], "Zapisz i ponów")
         self.assertTrue(out["previewState"]["open"], "podgląd niczego nie wysyła ani nie zamyka")
 
         self.assertEqual(len(out["sent"]), 2)
@@ -652,27 +658,41 @@ out["sent"] = calls()
 
 
 CARE_PY = r'''
+def shown(name):
+    """Środek pierwszego WIDOCZNEGO elementu o tej nazwie w oknie (komentarz opiekuna jest w każdej opcji)."""
+    return at("(" + ALL + ")(page.decisionDialog, '" + name + "')[0]")
+
 def caretaker():
-    """Blok opiekuna w oknie: tytuł, streszczenie, przełącznik „Co próbowano”, wiersze prób (akcja, powód)."""
+    """Opiekun w oknie według reguły jednego zalecenia (K-128, PT-506): plakietki i dopisek przy każdej opcji, zdanie
+    pod możliwościami (tryb "note"), rozwinięty komentarz (rekomendacja, streszczenie), przełącznik „Co próbowano”
+    i wiersze prób. `oldBlock` — dawny blok „Opiekun poleca” (nie może wrócić)."""
     return json.loads(js("(function () { const d = page.decisionDialog; const all = " + ALL + "; "
         "const one = n => all(d, n)[0] || null; "
         "const y = it => it.mapToItem(d, 0, 0).y; "
-        "const block = one('decisionCaretaker'); "
-        "const firstOption = all(d, 'decisionOption').sort((a, b) => y(a) - y(b))[0]; "
-        "return JSON.stringify({ block: !!block, "
+        "const opts = all(d, 'decisionOption').sort((a, b) => y(a) - y(b)); "
+        "const note = one('decisionCaretakerNote'); "
+        "const detail = one('decisionCaretakerDetail'); "
+        "return JSON.stringify({ oldBlock: !!one('decisionCaretaker'), "
+        "  badges: opts.map(o => [all(o, 'decisionRecommended').length, all(o, 'decisionCaretakerBadge').length]), "
+        "  notes: opts.map(o => all(o, 'decisionAdviceNote').map(n => [n.text, "
+        "    all(n, 'decisionAdviceToggle')[0].text])[0] || null), "
+        "  detailIn: detail ? opts.findIndex(o => all(o, 'decisionCaretakerDetail').length > 0) : null, "
         "  title: one('decisionCaretakerTitle') ? one('decisionCaretakerTitle').text : null, "
+        "  noteToggle: one('decisionCaretakerToggle') ? one('decisionCaretakerToggle').text : null, "
+        "  belowOptions: note && opts.length ? opts.every(o => y(note) > y(o)) : null, "
+        "  recommendation: one('decisionCaretakerRecommendation') ? one('decisionCaretakerRecommendation').text : null, "
         "  summary: one('decisionCaretakerSummary') ? one('decisionCaretakerSummary').text : null, "
         "  toggle: one('decisionTriedToggle') ? one('decisionTriedToggle').text : null, "
         "  tried: !!one('decisionTried'), "
         "  rows: all(d, 'decisionTriedRow').sort((a, b) => y(a) - y(b)).map(r => [ "
-        "    all(r, 'decisionTriedAction')[0].text, all(r, 'decisionTriedReason').map(t => t.text)]), "
-        "  aboveOptions: block && firstOption ? y(block) < y(firstOption) : null })})()"))
+        "    all(r, 'decisionTriedAction')[0].text, all(r, 'decisionTriedReason').map(t => t.text)]) })})()"))
 '''
 
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class DecisionDialogCaretakerTest(ProbeCase):
-    """Blok „Opiekun poleca” i zwijane „Co próbowano” (K-37, PT-157): okno tylko pokazuje pole `caretaker` z usługi."""
+    """Opiekun w oknie decyzji (K-37, PT-157; od K-128 PT-506 — jedno zalecenie zamiast bloku „Opiekun poleca”):
+    okno tylko pokazuje pole `caretaker` z usługi, przy opcji albo jednym zdaniem pod możliwościami."""
 
     def scenario(self, with_tried=True):
         return scenario_f(self.data, decisions_caretaker(with_tried))
@@ -697,7 +717,7 @@ out["sent"] = calls()
         self.assertEqual(out["sent"][1][:2], ["ResolveCardCaretaker", "K-8"])
         self.assertEqual(json.loads(out["sent"][1][2]), {"choice": "report", "problem": "flow-error:advance",
                                                         "description": "Etap nadal nie działa"})
-        self.assertEqual(out["label"], "Zgłoś błąd  ↵")
+        self.assertEqual(out["label"], "Zgłoś błąd", "skrót ↵ stoi obok napisu (Tide.Button kbd)")
 
     def test_card_problem_has_recommendation_and_both_buttons_send_the_new_method(self):
         for index, choice in enumerate(("retry-stage", "dismiss")):
@@ -735,7 +755,9 @@ out["sent"] = calls()
 ''', scenario_f(self.data, decisions(journal_caretaker_card())))
         self.assertEqual(out["sent"], [["TalkToCaretaker", "K-8", '{"problem":"flow-error:advance"}']])
 
-    def test_block_shows_recommendation_and_summary_above_the_options_without_choosing(self):
+    def test_agreeing_caretaker_is_one_recommendation_with_collapsed_reason(self):
+        """Dane `decisionfix` (usługa): `caretaker.optionId` = opcja polecana. Jedna plakietka „polecane”, dopisek
+        o opiekunie przy niej, uzasadnienie zwinięte i rozwijane kliknięciem; bloku „Opiekun poleca” nie ma."""
         first = decisions_caretaker()[0]["options"][0]
         out = self.probe(STATE_PY + CARE_PY + """
 click(card("K-8"))
@@ -743,25 +765,43 @@ out["opened"] = state()
 out["care"] = caretaker()
 key(Qt.Key.Key_Return)
 out["enter"] = [len(calls()), state()["choose"]]
+click(shown("decisionAdviceToggle"))
+out["open"] = caretaker()
+out["openState"] = state()
+click(shown("decisionAdviceToggle"))
+out["again"] = caretaker()
 """, self.scenario())
         care = out["care"]
-        self.assertTrue(care["block"])
-        self.assertEqual(care["title"], f"Opiekun poleca: {CARE_RECOMMENDATION}")
-        self.assertEqual(care["summary"], CARE_SUMMARY)
-        self.assertTrue(care["aboveOptions"], "blok jest nad możliwościami")
+        count = len(out["opened"]["options"])
+        self.assertFalse(care["oldBlock"], "blok „Opiekun poleca” znika")
+        self.assertEqual(care["badges"], [[1, 0]] + [[0, 0]] * (count - 1), "jedna plakietka „polecane”, bez „opiekun”")
+        self.assertEqual(care["notes"][0], ["✓ Polecane — opiekun karty też to poleca", "▸ uzasadnienie opiekuna"])
+        self.assertEqual(care["notes"][1:], [None] * (count - 1))
+        self.assertIsNone(care["title"], "bez zdania pod możliwościami")
+        self.assertIsNone(care["detailIn"], "uzasadnienie domyślnie zwinięte")
+        self.assertIsNone(care["summary"])
         opened = out["opened"]
         self.assertEqual(opened["options"][0][0], first["title"], "polecona pierwsza, kolejność z usługi bez zmian")
-        self.assertEqual([o[3] for o in opened["options"]], [False] * len(opened["options"]),
-                         "okno niczego nie wybiera za użytkownika")
+        self.assertEqual([o[3] for o in opened["options"]], [False] * count, "okno niczego nie wybiera za użytkownika")
         self.assertEqual(out["enter"], [0, False], "Enter bez wyboru nic nie wysyła")
+
+        shown = out["open"]
+        self.assertEqual(shown["detailIn"], 0, "komentarz rozwija się przy opcji polecanej")
+        self.assertEqual(shown["notes"][0][1], "▾ uzasadnienie opiekuna")
+        self.assertEqual(shown["recommendation"], f"Opiekun: {CARE_RECOMMENDATION}")
+        self.assertEqual(shown["summary"], CARE_SUMMARY)
+        self.assertEqual([o[3] for o in out["openState"]["options"]], [False] * count,
+                         "rozwinięcie komentarza niczego nie wybiera")
+        self.assertIsNone(out["again"]["detailIn"], "ponowne kliknięcie zwija")
 
     def test_tried_is_collapsed_and_expands_in_order_with_action_reason_and_effect(self):
         out = self.probe(STATE_PY + CARE_PY + """
 click(card("K-8"))
+click(shown("decisionAdviceToggle"))
 out["closed"] = caretaker()
-click(named("decisionTriedToggle"))
+click(shown("decisionTriedToggle"))
 out["open"] = caretaker()
-click(named("decisionTriedToggle"))
+click(shown("decisionTriedToggle"))
 out["again"] = caretaker()
 """, self.scenario())
         self.assertEqual(out["closed"]["toggle"], "▸ Co próbowano (1)")
@@ -774,23 +814,75 @@ out["again"] = caretaker()
                            ["Opiekun: nie udało się wykonać działania „merge” — nieznana akcja opiekuna „merge”"]]])
         self.assertFalse(out["again"]["tried"], "ponowne kliknięcie zwija")
 
-    def test_empty_tried_hides_the_section_but_keeps_the_block(self):
+    def test_empty_tried_hides_the_section_but_keeps_the_comment(self):
         out = self.probe(STATE_PY + CARE_PY + """
 click(card("K-8"))
+click(shown("decisionAdviceToggle"))
 out["care"] = caretaker()
 """, self.scenario(with_tried=False))
-        self.assertTrue(out["care"]["block"])
+        self.assertEqual(out["care"]["summary"], CARE_SUMMARY)
         self.assertIsNone(out["care"]["toggle"], "pusta lista tried[] ukrywa sekcję")
         self.assertFalse(out["care"]["tried"])
 
-    def test_without_caretaker_the_dialog_looks_like_today(self):
+    def test_temporary_contract_caretaker_recommending_another_option(self):
+        """KONTRAKT TYMCZASOWY — do potwierdzenia w etapie B karty K-128 (followups/etap-b-silnik.md): dziś
+        `caretaker.annotate_escalation` nadpisuje `recommended` wyborem opiekuna, więc te dane (opiekun wskazuje inną
+        opcję niż polecana) są wyłącznie testowe. Etap B może zmienić znaczenie „polecane” i ten test albo usunąć."""
+        items = decisions_caretaker()
+        other = items[0]["options"][1]
+        items[0]["caretaker"]["optionId"] = other["id"]
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["care"] = caretaker()
+out["opened"] = state()
+click(shown("decisionAdviceToggle"))
+out["open"] = caretaker()
+""", scenario_f(self.data, items))
+        care = out["care"]
+        count = len(out["opened"]["options"])
+        self.assertEqual(care["badges"][:2], [[1, 0], [0, 1]], "„polecane” przy jednej opcji, „opiekun” przy drugiej")
+        self.assertEqual(care["badges"][2:], [[0, 0]] * (count - 2))
+        self.assertIsNone(care["notes"][0], "przy opcji polecanej bez dopisku opiekuna")
+        self.assertEqual(care["notes"][1], ["◆ Opiekun poleca tę opcję", "▸ dlaczego?"])
+        self.assertEqual([o[3] for o in out["opened"]["options"]], [False] * count, "nic nie jest wybrane")
+        self.assertEqual(out["open"]["detailIn"], 1, "komentarz opiekuna rozwija się przy jego opcji")
+        self.assertEqual(out["open"]["summary"], CARE_SUMMARY)
+
+    def test_failed_caretaker_is_one_sentence_with_tried_attempts(self):
+        items = decisions_caretaker()
+        tried = items[0]["caretaker"]["tried"]
+        items[0]["caretaker"] = {"summary": "Opiekun nie poradził sobie z problemem: brak wyniku", "recommendation": "",
+                                 "tried": tried, "optionId": "", "failed": True}
+        out = self.probe(STATE_PY + CARE_PY + """
+click(card("K-8"))
+out["care"] = caretaker()
+click(shown("decisionCaretakerToggle"))
+out["open"] = caretaker()
+click(shown("decisionTriedToggle"))
+out["tried"] = caretaker()
+""", scenario_f(self.data, items))
+        care = out["care"]
+        self.assertEqual(care["title"], "Opiekun nie poradził sobie z problemem i oddaje decyzję Tobie.")
+        self.assertTrue(care["belowOptions"], "zdanie stoi pod możliwościami")
+        self.assertEqual(care["noteToggle"], "▸ Szczegóły opiekuna")
+        self.assertEqual([b[1] for b in care["badges"]], [0] * len(care["badges"]), "bez plakietki „opiekun”")
+        self.assertEqual(care["notes"], [None] * len(care["notes"]))
+        self.assertIsNone(care["summary"], "szczegóły zwinięte")
+        self.assertEqual(out["open"]["summary"], "Opiekun nie poradził sobie z problemem: brak wyniku")
+        self.assertEqual(out["open"]["toggle"], "▸ Co próbowano (1)")
+        self.assertEqual(out["tried"]["rows"][0][0], "merge — nie udało się")
+
+    def test_without_caretaker_the_dialog_has_no_caretaker_marks(self):
         out = self.probe(STATE_PY + CARE_PY + """
 click(card("K-8"))
 out["care"] = caretaker()
 out["state"] = state()
 """, scenario_f(self.data))
-        self.assertEqual(out["care"], {"block": False, "title": None, "summary": None, "toggle": None, "tried": False,
-                                       "rows": [], "aboveOptions": None})
+        care = out["care"]
+        self.assertEqual((care["oldBlock"], care["title"], care["summary"], care["toggle"], care["tried"], care["rows"]),
+                         (False, None, None, None, False, []))
+        self.assertEqual(care["badges"], [[1, 0], [0, 0], [0, 0]])
+        self.assertEqual(care["notes"], [None, None, None])
         self.assertEqual([o[0] for o in out["state"]["options"]],
                          ["Tak, uruchom poza piaskownicą", "Tylko dzienniki Claude", "Nie, zbuduj zestaw z testów"])
 

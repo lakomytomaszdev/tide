@@ -411,9 +411,10 @@ class ProseComponentTest(unittest.TestCase):
 
 
 class RichTextBoundaryTest(unittest.TestCase):
-    """RichText tylko w Tide.Prose i w MarkdownBlock.qml Tablicy (HTML z backend.renderMarkdown)."""
+    """RichText tylko w Tide.Prose, w Tide.CodeBlock (linie skryptu z shell.js, każdy kawałek escapowany — K-128,
+    PT-506, test_codeblock.py) i w MarkdownBlock.qml Tablicy (HTML z backend.renderMarkdown)."""
 
-    ALLOWED = {"widgets/lib/Prose.qml", "apps/board/qml/MarkdownBlock.qml"}
+    ALLOWED = {"widgets/lib/Prose.qml", "widgets/lib/CodeBlock.qml", "apps/board/qml/MarkdownBlock.qml"}
     # Wyjątek sprzed K-128: raport sprawy w oknie Sprawy rysuje HTML z backend.renderReport (z obrazami sprawy).
     # Przegląd pozostałych miejsc z tekstem na Tide.Prose to etap A2 karty K-128 (plan, „Odłożone jawnie”).
     LEGACY = {"apps/issues/qml/IssuesView.qml"}

@@ -116,6 +116,11 @@ Rectangle {
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             choose()
             event.accepted = true
+        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            // ↑↓ — wybór sąsiedniej możliwości (K-128, PT-506); bez strzałki nic nie jest wybrane (D10).
+            form.moveChoice(event.key === Qt.Key_Down ? 1 : -1)
+            dialog.forceActiveFocus()
+            event.accepted = true
         }
     }
 
@@ -154,7 +159,8 @@ Rectangle {
 
             ColumnLayout {
                 id: body
-                width: flick.width
+                // Pasek przewijania nie zasłania treści (Tide.ScrollBar leży na krawędzi widoku).
+                width: flick.width - Tide.Tokens.scrollbarWidth - 4
                 spacing: 12
 
                 // Nagłówek: plakietka rodzaju, kto pyta, licznik i nawigacja, zamknięcie.
@@ -175,12 +181,14 @@ Rectangle {
                         font.pointSize: Tide.Tokens.fontSizePt * 0.95
                         elide: Text.ElideRight
                     }
-                    Tide.TextButton {
+                    Tide.Button {
                         objectName: "decisionPrev"
                         visible: dialog.counter !== ""
                         enabled: dialog.index > 0
-                        opacity: enabled ? 1 : 0.4
                         text: "‹"
+                        variant: "ghost"
+                        small: true
+                        iconOnly: true
                         Accessible.name: "Poprzednia decyzja"
                         onClicked: dialog.go(-1)
                     }
@@ -195,20 +203,24 @@ Rectangle {
                         Accessible.role: Accessible.StaticText
                         Accessible.name: "Decyzja " + text
                     }
-                    Tide.TextButton {
+                    Tide.Button {
                         objectName: "decisionNext"
                         visible: dialog.counter !== ""
                         enabled: dialog.index < dialog.pending.length - 1
-                        opacity: enabled ? 1 : 0.4
                         text: "›"
+                        variant: "ghost"
+                        small: true
+                        iconOnly: true
                         Accessible.name: "Następna decyzja"
                         onClicked: dialog.go(1)
                     }
-                    Tide.TextButton {
+                    Tide.Button {
                         objectName: "decisionClose"
                         text: "✕"
-                        variant: "link"
-                        accent: Tide.Tokens.textMuted
+                        variant: "ghost"
+                        small: true
+                        iconOnly: true
+                        toolTip: "Później (Esc)"
                         Accessible.name: "Później (Esc)"
                         onClicked: dialog.laterRequested()
                     }
@@ -255,28 +267,41 @@ Rectangle {
                 current: dialog.cardOpen
                 onPicked: value => dialog.cardOpenRequested(value)
             }
+            // Przyciski formularza (K-128, PT-506): Tide.Button, jeden główny „Wybierz ↵”, podpowiedź klawiszy.
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
-                Tide.TextButton {
+                Tide.Button {
                     objectName: "decisionFullCard"
                     text: "Otwórz całą kartę"
+                    variant: "ghost"
                     onClicked: dialog.fullCardRequested("")
                 }
-                Item { Layout.fillWidth: true }
-                Tide.TextButton {
+                Text {
+                    objectName: "decisionKeysHint"
+                    Layout.fillWidth: true
+                    text: form.keysHint
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideLeft
+                }
+                Tide.Button {
                     objectName: "decisionLater"
-                    text: "Później  Esc"
-                    variant: "outline"
+                    text: "Później"
+                    kbd: "Esc"
+                    variant: "ghost"
                     Accessible.name: "Później"
                     onClicked: dialog.laterRequested()
                 }
-                Tide.TextButton {
+                Tide.Button {
                     objectName: "decisionChoose"
-                    text: form.chooseLabel + "  ↵"
-                    variant: "filled"
+                    text: form.chooseLabel
+                    kbd: "↵"
+                    variant: "primary"
                     enabled: form.canChoose
-                    opacity: enabled ? 1 : 0.45
                     Accessible.name: form.chooseLabel
                     onClicked: dialog.choose()
                 }

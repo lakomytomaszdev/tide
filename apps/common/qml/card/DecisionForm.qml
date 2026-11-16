@@ -30,6 +30,13 @@
 // usługi, po możliwościach usługi stoi własna możliwość okna „Przyjmij odstępstwo…” — niepolecona, niezaznaczona,
 // z polem uzasadnienia i licznikiem. Bez uzasadnienia albo ponad limit „Wybierz” jest nieaktywne ze zdaniem dlaczego;
 // wybór wysyła jedno `answered` z `retry` tej decyzji i `answer` ze stałą instrukcją i uzasadnieniem.
+//
+// Odświeżenie K-128 (PT-506, makieta S-9 „Prośba o zgodę”, wariant A) — tylko formatowanie i układ (granica K-109):
+// te same metody, parametry, grupy i odpowiedzi. Tytuł jako pytanie (`Decision.questionTitle`, pod nim `happened`),
+// jedno zalecenie zamiast bloku „Opiekun poleca” (`Decision.advice`: dopisek opiekuna przy opcji albo jedno zdanie
+// pod możliwościami, komentarz rozwijany w CaretakerDetail.qml), polecenie w jednowierszowym Tide.CodeBlock
+// z „Kopiuj”, zwinięty podgląd skryptu z `decision.script` (etap B; dziś usługa pola nie podaje), przyciski na
+// Tide.Button, `moveChoice(±1)` dla ↑↓ gospodarza i `keysHint` obok „Wybierz”.
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide
@@ -44,7 +51,8 @@ ColumnLayout {
     property var decision: null
     property string selected: ""
     property bool techOpen: false
-    property bool triedOpen: false
+    // Rozwinięty komentarz opiekuna (przy opcji albo pod zdaniem opiekuna) — tylko widok, nic nie wybiera.
+    property bool adviceOpen: false
     property string error: ""
     // Uwagi recenzenta zaznaczone do odesłania (id z `decision.findings`); domyślne zaznaczenie daje usługa.
     property var checkedIds: []
@@ -65,8 +73,14 @@ ColumnLayout {
     readonly property bool freeText: !!decision && decision.freeText === true && !!decision.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
-    readonly property var caretaker: Decision.hasCaretaker(decision) ? decision.caretaker : null
-    readonly property var triedRows: Decision.triedRows(caretaker)
+    // Jedno zalecenie (K-128, PT-506): tryb i oznaczenia opiekuna z decision.js (`advice`), tylko z pól usługi.
+    readonly property var advice: Decision.advice(decision)
+    readonly property var caretaker: advice.mode !== "none" ? decision.caretaker : null
+    // Tytuł jako pytanie (pusty — zostaje dzisiejszy tytuł `happened`) i podgląd skryptu (`decision.script`, etap B).
+    readonly property string question: Decision.questionTitle(decision)
+    readonly property var script: Decision.script(decision)
+    // Podpowiedź klawiszy obok „Wybierz” u gospodarza (okno decyzji, „Twój ruch”).
+    readonly property string keysHint: "↑↓ wybór · Enter zatwierdza · Esc później"
     readonly property var commands: decision && decision.commands ? decision.commands : []
     readonly property bool showCommands: Decision.showsCommands(decision)
     readonly property var chosenOption: options.find(o => o.id === choice) || null
@@ -98,7 +112,8 @@ ColumnLayout {
     function reset() {
         selected = ""
         techOpen = false
-        triedOpen = false
+        adviceOpen = false
+        scriptBlock.expanded = false
         membersOpen = false
         error = errors && errors[decisionId] ? String(errors[decisionId]) : ""
         preview = null
@@ -144,6 +159,21 @@ ColumnLayout {
         error = ""
         if (id === otherId) answer.forceActiveFocus()
         else if (id === Deviation.OPTION_ID) deviationReason.forceActiveFocus()
+    }
+
+    // ↑↓ u gospodarza: wybór sąsiedniej możliwości w kolejności na ekranie (możliwości usługi, odstępstwo, „Inna
+    // odpowiedź…”). To wybór użytkownika z klawiatury — bez zaznaczenia nic nie jest wybrane z góry (D10).
+    function moveChoice(delta) {
+        const ids = options.map(o => o.id)
+        if (deviationOffered) ids.push(Deviation.OPTION_ID)
+        if (freeText && !onlyText) ids.push(otherId)
+        if (ids.length === 0) return
+        const at = ids.indexOf(choice)
+        const next = at < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, at + delta))
+        const id = ids[next]
+        // „Inna odpowiedź…” bez fokusu pola: kolejne ↑↓ dalej chodzą po możliwościach.
+        if (id === otherId) selected = form.otherId
+        else pick(id)
     }
 
     // „Wybierz” i Enter: bez zaznaczenia (albo z pustą własną odpowiedzią) nic się nie dzieje.
@@ -195,18 +225,36 @@ ColumnLayout {
 
     spacing: 12
 
+    // Tytuł jako pytanie (makieta S-9, „Prośba o zgodę”, wariant A): „Uruchomić make test poza piaskownicą?”. Zdanie
+    // usługi (`happened`) stoi wtedy pod nim mniejszym tekstem; bez pytania `happened` jest tytułem jak dotąd.
+    TextEdit {
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
+        objectName: "decisionTitle"
+        Layout.fillWidth: true
+        visible: form.question !== ""
+        text: form.question
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textPrimary
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt * 1.35
+        font.weight: Font.DemiBold
+        wrapMode: Text.Wrap
+    }
     TextEdit {
         readOnly: true
         selectByMouse: true
         selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
         objectName: "decisionHappened"
         Layout.fillWidth: true
+        Layout.topMargin: form.question !== "" ? -6 : 0
         text: form.decision ? form.decision.happened : ""
         textFormat: Text.PlainText
-        color: Tide.Tokens.textPrimary
+        color: form.question !== "" ? Tide.Tokens.textSecondary : Tide.Tokens.textPrimary
         font.family: Tide.Theme.uiFamily
-        font.pointSize: Tide.Tokens.fontSizePt * 1.35
-        font.weight: Font.DemiBold
+        font.pointSize: form.question !== "" ? Tide.Tokens.fontSizePt : Tide.Tokens.fontSizePt * 1.35
+        font.weight: form.question !== "" ? Font.Normal : Font.DemiBold
         wrapMode: Text.Wrap
     }
     // „Dlaczego” z liniami „Uwaga:” i „Powód kroku:” (tekst agenta i usługi): standard tekstu K-128 — escapowany
@@ -216,61 +264,28 @@ ColumnLayout {
         Layout.fillWidth: true
         text: form.decision ? form.decision.why : ""
     }
-    Rectangle {
+    // Polecenie z `technical.command`: jednowierszowy Tide.CodeBlock z „Kopiuj” (zwykły tekst).
+    Tide.CodeBlock {
         objectName: "decisionCommand"
         Layout.fillWidth: true
-        visible: commandText.text !== ""
-        implicitHeight: commandText.implicitHeight + 18
-        radius: Tide.Tokens.radiusFrame
-        color: Tide.Tokens.backgroundView
-        border.width: 1
-        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-        TextEdit {
-            id: commandText
-            readOnly: true
-            selectByMouse: true
-            selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
-            anchors.left: parent.left
-            anchors.right: commandCopy.left
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.margins: 12
-            text: form.decision && form.decision.technical ? Decision.text(form.decision.technical.command) : ""
-            textFormat: Text.PlainText
-            color: Tide.Tokens.textPrimary
-            font.family: Tide.Theme.monoFamily
-            font.pointSize: Tide.Tokens.fontSizePt * 0.95
-            wrapMode: Text.WrapAnywhere
-        }
-        Text {
-            id: commandCopy
-            property bool copied: false
-            objectName: "decisionCommandCopy"
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.rightMargin: 12
-            anchors.topMargin: 9
-            text: copied ? "Skopiowano" : "Kopiuj"
-            textFormat: Text.PlainText
-            color: Tide.Tokens.sky
-            font.family: Tide.Theme.uiFamily
-            font.pointSize: Tide.Tokens.fontSizePt
-            Accessible.role: Accessible.Button
-            Accessible.name: "Kopiuj polecenie"
-            MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    clipboardHelper.text = commandText.text
-                    clipboardHelper.selectAll()
-                    clipboardHelper.copy()
-                    commandCopy.copied = true
-                }
-            }
-        }
-        Connections {
-            target: form
-            function onDecisionIdChanged() { commandCopy.copied = false }
-        }
+        oneLine: true
+        visible: text !== ""
+        text: form.decision && form.decision.technical ? Decision.text(form.decision.technical.command) : ""
+        copyName: "Kopiuj polecenie"
+    }
+    // Podgląd skryptu (`decision.script`, etap B karty K-128): zwinięty Tide.CodeBlock; bez pola — brak bloku.
+    // Dziś usługa pola nie podaje, więc w produkcji bloku nie ma (działa na danych testowych).
+    Tide.CodeBlock {
+        id: scriptBlock
+        objectName: "decisionScript"
+        Layout.fillWidth: true
+        visible: form.script !== null
+        text: form.script ? form.script.text : ""
+        path: form.script ? form.script.path : ""
+        language: form.script ? form.script.language : ""
+        lineCount: form.script ? form.script.lineCount : 0
+        truncated: form.script ? form.script.truncated : false
+        copyName: "Kopiuj treść skryptu"
     }
 
     // Grupa zgód (PT-338): znak przyjęcia po wyborze, miejsce na prognozę (#9) i rozwijana lista ticketów i kroków.
@@ -299,11 +314,12 @@ ColumnLayout {
         font.pointSize: Tide.Tokens.fontSizePt
         wrapMode: Text.Wrap
     }
-    Tide.TextButton {
+    Tide.Button {
         objectName: "decisionGroupToggle"
         visible: form.members.length > 0
         text: (form.membersOpen ? "▾ " : "▸ ") + "Tickety i kroki (" + form.members.length + ")"
-        accent: Tide.Tokens.textMuted
+        variant: "ghost"
+        small: true
         onClicked: form.membersOpen = !form.membersOpen
     }
     ColumnLayout {
@@ -349,64 +365,15 @@ ColumnLayout {
 
     // Polecenia z treści pytania (04.11): gdy agent prosi o wpisanie czegoś w terminalu, polecenie stoi w osobnym
     // polu z przyciskiem „Kopiuj” zamiast w środku akapitu.
-    TextEdit {
-        id: clipboardHelper
-        visible: false
-    }
     Repeater {
         model: form.decision && form.decision.copyCommands ? form.decision.copyCommands : []
-        delegate: Rectangle {
-            id: copyRow
+        delegate: Tide.CodeBlock {
             required property string modelData
-            property bool copied: false
             objectName: "decisionCopyCommand"
             Layout.fillWidth: true
-            implicitHeight: Math.max(copyText.implicitHeight, copyButton.implicitHeight) + 14
-            radius: Tide.Tokens.radiusFrame
-            color: Tide.Tokens.backgroundView
-            border.width: 1
-            border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-            TextEdit {
-                id: copyText
-                readOnly: true
-                selectByMouse: true
-                selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
-                anchors.left: parent.left
-                anchors.right: copyButton.left
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: 12
-                anchors.rightMargin: 8
-                text: copyRow.modelData
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textPrimary
-                font.family: Tide.Theme.monoFamily
-                font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                wrapMode: Text.WrapAnywhere
-            }
-            Text {
-                id: copyButton
-                objectName: "decisionCopyButton"
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.rightMargin: 12
-                text: copyRow.copied ? "Skopiowano" : "Kopiuj"
-                textFormat: Text.PlainText
-                color: Tide.Tokens.sky
-                font.family: Tide.Theme.uiFamily
-                font.pointSize: Tide.Tokens.fontSizePt
-                Accessible.role: Accessible.Button
-                Accessible.name: "Kopiuj polecenie " + copyRow.modelData
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        clipboardHelper.text = copyRow.modelData
-                        clipboardHelper.selectAll()
-                        clipboardHelper.copy()
-                        copyRow.copied = true
-                    }
-                }
-            }
+            oneLine: true
+            text: modelData
+            copyName: "Kopiuj polecenie " + modelData
         }
     }
 
@@ -570,102 +537,6 @@ ColumnLayout {
         }
     }
 
-    // Opiekun karty (K-37, PT-157): rekomendacja i streszczenie z usługi, zwijane „Co próbowano”. Możliwości zostają
-    // w kolejności z usługi, bez zaznaczenia (D10); bez pola `caretaker` bloku nie ma.
-    ColumnLayout {
-        objectName: "decisionCaretaker"
-        Layout.fillWidth: true
-        visible: form.caretaker !== null
-        spacing: 6
-        Accessible.role: Accessible.Grouping
-        Accessible.name: "Opiekun"
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: careColumn.implicitHeight + 24
-            radius: Tide.Tokens.radiusFrame
-            color: Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
-            border.width: 1
-            border.color: Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
-            ColumnLayout {
-                id: careColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 12
-                spacing: 4
-                Text {
-                    objectName: "decisionCaretakerTitle"
-                    Layout.fillWidth: true
-                    text: Decision.caretakerTitle(form.caretaker)
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textPrimary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
-                    font.weight: Font.DemiBold
-                    wrapMode: Text.Wrap
-                }
-                Text {
-                    objectName: "decisionCaretakerSummary"
-                    Layout.fillWidth: true
-                    visible: text !== ""
-                    text: form.caretaker && form.caretaker.summary ? String(form.caretaker.summary) : ""
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textSecondary
-                    font.family: Tide.Theme.uiFamily
-                    font.pointSize: Tide.Tokens.fontSizePt
-                    wrapMode: Text.Wrap
-                }
-            }
-        }
-        Tide.TextButton {
-            objectName: "decisionTriedToggle"
-            visible: form.triedRows.length > 0
-            text: Decision.triedToggleLabel(form.caretaker, form.triedOpen)
-            accent: Tide.Tokens.textMuted
-            onClicked: form.triedOpen = !form.triedOpen
-        }
-        ColumnLayout {
-            objectName: "decisionTried"
-            Layout.fillWidth: true
-            visible: form.triedOpen && form.triedRows.length > 0
-            spacing: 4
-            Repeater {
-                model: form.triedRows
-                delegate: ColumnLayout {
-                    id: triedRow
-                    objectName: "decisionTriedRow"
-                    required property var modelData
-                    readonly property string action: modelData.action
-                    readonly property string reason: modelData.reason
-                    readonly property string effect: modelData.effect
-                    Layout.fillWidth: true
-                    spacing: 0
-                    Text {
-                        objectName: "decisionTriedAction"
-                        Layout.fillWidth: true
-                        text: triedRow.action + " — " + triedRow.effect
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                        wrapMode: Text.Wrap
-                    }
-                    Text {
-                        objectName: "decisionTriedReason"
-                        Layout.fillWidth: true
-                        visible: text !== ""
-                        text: triedRow.reason
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textSecondary
-                        font.family: Tide.Theme.uiFamily
-                        font.pointSize: Tide.Tokens.fontSizePt * 0.9
-                        wrapMode: Text.Wrap
-                    }
-                }
-            }
-        }
-    }
-
     // Możliwości w kolejności z usługi; „Inna odpowiedź…” zawsze ostatnia.
     ColumnLayout {
         objectName: "decisionOptions"
@@ -675,16 +546,32 @@ ColumnLayout {
         Accessible.role: Accessible.Grouping
         Accessible.name: "Możliwości"
 
+        // Jedno zalecenie (K-128, PT-506): „polecane” z `recommended` usługi, oznaczenie opiekuna z decision.js.
         Repeater {
             model: form.options
             DecisionOption {
+                id: optionCard
+                readonly property var marks: Decision.optionAdvice(form.advice, modelData.id)
                 objectName: "decisionOption"
                 Layout.fillWidth: true
                 title: modelData.title
                 effect: modelData.effect
                 recommended: modelData.recommended === true
                 checked: form.selected === modelData.id
+                caretakerBadge: marks.badge
+                note: marks.note
+                tone: marks.tone
+                link: marks.link
+                noteOpen: form.adviceOpen
                 onPicked: form.pick(modelData.id)
+                onNoteToggled: form.adviceOpen = !form.adviceOpen
+                CaretakerDetail {
+                    objectName: "decisionCaretakerDetail"
+                    Layout.fillWidth: true
+                    visible: optionCard.note !== "" && form.adviceOpen
+                    rule: form.advice
+                    care: optionCard.note !== "" ? form.caretaker : null
+                }
             }
         }
 
@@ -894,6 +781,48 @@ ColumnLayout {
         }
     }
 
+    // Opiekun bez wskazanej opcji (tryb "note" reguły zalecenia): jedno zdanie pod możliwościami, a szczegóły
+    // (streszczenie i lista prób `tried[]`) rozwijane na żądanie. Zastępuje dawny blok „Opiekun poleca”.
+    ColumnLayout {
+        objectName: "decisionCaretakerNote"
+        Layout.fillWidth: true
+        visible: form.advice.mode === "note"
+        spacing: 6
+        Accessible.role: Accessible.Grouping
+        Accessible.name: "Opiekun"
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            Text {
+                objectName: "decisionCaretakerTitle"
+                Layout.fillWidth: true
+                text: form.advice.sentence
+                textFormat: Text.PlainText
+                color: form.caretaker && form.caretaker.failed === true ? Tide.Tokens.peach : Tide.Tokens.teal
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                wrapMode: Text.Wrap
+            }
+            Tide.Button {
+                objectName: "decisionCaretakerToggle"
+                visible: Decision.adviceDetail(form.advice, form.caretaker).summary !== ""
+                         || Decision.triedRows(form.caretaker).length > 0
+                Layout.alignment: Qt.AlignTop
+                text: Decision.noteToggleLabel(form.adviceOpen)
+                variant: "ghost"
+                small: true
+                onClicked: form.adviceOpen = !form.adviceOpen
+            }
+        }
+        CaretakerDetail {
+            objectName: "decisionCaretakerDetail"
+            Layout.fillWidth: true
+            visible: form.adviceOpen
+            rule: form.advice
+            care: form.advice.mode === "note" ? form.caretaker : null
+        }
+    }
+
     // „Zezwól na wybrane” bez zaznaczonego polecenia: „Wybierz” jest nieaktywne, więc mówimy dlaczego.
     Text {
         objectName: "decisionAllowHint"
@@ -976,11 +905,12 @@ ColumnLayout {
     }
 
     // Szczegóły techniczne — zwinięte.
-    Tide.TextButton {
+    Tide.Button {
         objectName: "decisionTechToggle"
         visible: techRepeater.count > 0
         text: (form.techOpen ? "▾ " : "▸ ") + "Szczegóły techniczne"
-        accent: Tide.Tokens.textMuted
+        variant: "ghost"
+        small: true
         onClicked: form.techOpen = !form.techOpen
     }
     GridLayout {
