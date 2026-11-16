@@ -84,8 +84,35 @@ def _outside_finish(ticket):
             "tail": ""}
 
 
+def _command(kind, ticket, **fields):
+    """K-109 PT-481: przebieg nowej rodziny (`command.*`) z tymi samymi danymi co `_outside_start`/`_finish`."""
+    return {"type": kind, "step": STEP, "ticket": ticket, "command": "echo legacy", "attempt": "a1",
+            "executor": "host-isolated", "isolation": "none", "class": "", "consentVersion": "", "source": "step",
+            **fields}
+
+
+def _command_intent(ticket):
+    return _command("command.intent", ticket)
+
+
+def _command_start(ticket):
+    return _command("command.started", ticket, unit="tide-cmd-a1", log="/missing/log",
+                    exitFile="/missing/out/exit", worktree="/work")
+
+
+def _command_finish(ticket):
+    return _command("command.finished", ticket, exit=0, tail="")
+
+
 def base(kind, ticket):
     """(poprzedniki, zdarzenie) kompletnej poprawnej historii z badanym zdarzeniem na końcu."""
+    asked = [_card(), _start(ticket), _request(ticket), _decision(ticket)]
+    if kind == "command.intent":
+        return asked, _command_intent(ticket)
+    if kind == "command.started":
+        return [*asked, _command_intent(ticket)], _command_start(ticket)
+    if kind == "command.finished":
+        return [*asked, _command_intent(ticket), _command_start(ticket)], _command_finish(ticket)
     console = _start(ticket, unit="")          # runda 8: pusty unit kroku przed Konsolą
     if kind == "step.started":
         return [_card()], _start(ticket)
@@ -256,6 +283,11 @@ PREDECESSORS = {
     "outside.started": ("step.started",),
     "outside.finished": ("step.started", "outside.started"),
     "outside.ticket-consent": ("step.started",),
+    # K-109 PT-481: nowa rodzina przebiegu — te same poprzedniki co outside.* (zamiar nie jest jeszcze wymagany;
+    # jego brak przed startem rozstrzyga PT-485).
+    "command.intent": ("step.started",),
+    "command.started": ("step.started",),
+    "command.finished": ("step.started", "command.started"),
 }
 
 
@@ -277,7 +309,7 @@ def predecessor_cases():
 
 
 # Poprzedniki będące osobnym dowodem (nie samym startem procesu): dziedziczone pola zależą od nich.
-EVIDENCE_PREDECESSORS = ("step.entered", "outside.started")
+EVIDENCE_PREDECESSORS = ("step.entered", "outside.started", "command.started")
 
 
 def domain_cases():

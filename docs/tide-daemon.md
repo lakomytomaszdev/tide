@@ -3341,6 +3341,20 @@ karty przez `SetCardPaused`).
   zapamiętał `make test-changed` K-99-PT-395-1 jako lekkie i polecenie ruszyło obok pomiaru K-113-PT-468-3
   (regresja: `daemon/tests/test_cardflow_exclusive_tick.py`).
 
+**Jeden widok przebiegów poleceń** (K-109 PT-481, `cardflow/commandruns.py`, udostępniony też w `commands.py`).
+Przebieg polecenia poza piaskownicą zapisuje dziś para `outside.started` → `outside.finished`; protokół jednego
+wykonania (ADR-1) zapisze go jako `command.intent` → `command.started` → `command.finished` (PT-479/PT-485). Wszyscy
+czytający historię przebiegów — `state.fold` (`outside_started`, `outside_launched`, a przez nie kolejka, zgody,
+`mergecheck`, `rest`, liczniki w migawce), model tożsamości `processidentity` (role `outside-start`/`outside-finish`,
+zamiar jako ślad), strażnik opiekuna `guard.runs`, ponowienie padniętych modułów `testrerun.substitute`, inwentarz prób
+`trialhold` i `tools/coordinator/metrics.py` — pytają adapter o fazę zdarzenia (`phase`) albo czytają gotowe przebiegi
+(`runs`), bez porównywania nazw. Pola wspólne mają w obu rodzinach te same klucze (`step`, `ticket`, `command`, `unit`,
+`log`, `exitFile`, `worktree`, `head`, `rerunOf`; w końcu `exit`, `tail`), a `command.*` dokłada `attempt`, `executor`,
+`isolation`, `class`, `consentVersion`, `source`. Koniec może być z innej rodziny niż start (przebieg zaczęty przed
+przełączeniem zapisu). Adapter tylko czyta: nie przepisuje dziennika i niczego nie zapisuje; w modelu tożsamości
+`command.*` ma źródło `reader`, dopóki PT-479 nie włączy zapisu. Odzyskiwanie niezakończonego `outside.started` po
+restarcie działa jak dotąd: jednostka `tide-outside-<krok>`, wynik z pliku `exit-code`, bez ponownego uruchomienia.
+
 **Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
 tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
 (`journal.state`), a `snapshot_json` tylko je dołącza — bez odczytów dziennika i plików kroków w ścieżce migawki.

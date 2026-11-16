@@ -13,6 +13,12 @@ import glob
 import json
 import os
 import re
+import sys
+
+# Przebiegi poleceń obu rodzin zapisu (`outside.*`, `command.*`) czytamy przez widok z usługi (K-109 PT-481).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                "daemon"))
+from tide_daemon.cardflow import commandruns  # noqa: E402
 
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tide", "cardflow")
 RED = re.compile(r"czerwon|\bred\b|przed zmian|przed poprawk|na bazie|bez poprawki|odtw[oó]rz|reprodu|dowód porażki", re.I)
@@ -67,9 +73,9 @@ def main():
                 reasons[e.get("step")] = (e.get("reason") or "") + " " + (e.get("question") or "")
                 if e.get("step") in started:
                     day[d]["agent_s"] += (t - started.pop(e["step"])).total_seconds()
-            elif kind == "outside.started":
+            elif commandruns.phase(e) == "started":
                 outside[e.get("step")] = t
-            elif kind == "outside.finished":
+            elif commandruns.phase(e) == "finished":
                 cmd = e.get("command") or ""
                 if not HEAVY.search(cmd):
                     continue

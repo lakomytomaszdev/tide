@@ -11,6 +11,10 @@ Jawne wejścia zamiast wspólnego `self`:
 - limity (`OUTSIDE_TIMEOUT`, `OUTSIDE_PER_PROJECT`…) przychodzą w argumentach z wrappera silnika.
 
 Moduł nie importuje `engine`. Zdarzenia (`outside.finished`), kolejka i odmowy są te same co przed wydzieleniem.
+
+Widok przebiegów (K-109 PT-481): historię przebiegów obu rodzin (`outside.*` i `command.*`) czyta się wyłącznie przez
+adapter `commandruns` (`phase`, `runs`, `pending`, `Run`), udostępniony tu pod tymi samymi nazwami. Adapter leży
+w osobnym liściu, bo czytają go moduły importowane przez ten (`state`, `processidentity`, `trialhold`…).
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from typing import Callable
 
 from ..tasks import agentcmd, stepstop
 from . import boxstep, consent, heavyqueue, mergecheck, processidentity, trialhold
+from .commandruns import FINISHES, INTENTS, PHASES, STARTS, Run, family, pending, phase, runs  # noqa: F401 — widok
 from .errors import FlowError
 from .state import _epoch
 
@@ -449,7 +454,7 @@ def outside_log(state: CommandsState, name: str, text: str) -> None:
 
 
 def outside_describe(journal, state: CommandsState, name: str) -> str:
-    """Opis polecenia do zdań o ciszy: „make test (K-36)” — polecenie z `outside.started` albo prośby kroku."""
+    """Opis polecenia do zdań o ciszy: „make test (K-36)” — polecenie trwającego przebiegu albo prośby kroku."""
     found = (state.active or {}).get(name) or (state.waiting or {}).get(name)
     card = found[0] if found else ""
     command = ""

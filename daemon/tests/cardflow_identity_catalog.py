@@ -944,8 +944,32 @@ IDENTITY_NAMES = frozenset({
 RAW_PROCESS_TYPES = frozenset({
     "step.started", "step.entered", "step.console_opened", "step.console_closed", "step.decision",
     "step.finished", "outside.started", "outside.finished", "outside.ticket-consent", "box.use", "box.release",
+    # K-109 PT-481: nowa rodzina przebiegu polecenia (czytana razem z outside.* przez widok `commandruns`).
+    "command.intent", "command.started", "command.finished",
 })
 RAW_ACTION_TYPES = frozenset({"intent", "result"})
+# K-109 PT-481: odczyt przebiegów przez widok `commandruns` (także re-eksport w `commands.py`) to surowy odczyt
+# startów i końców obu rodzin — bez tego konsument przełączony na adapter zniknąłby z katalogu surowych odczytów.
+RUN_TYPES = frozenset({"outside.started", "outside.finished", "command.intent", "command.started",
+                       "command.finished"})
+ADAPTER_MODULES = frozenset({"cardflow/commandruns.py", "cardflow/commands.py"})
+ADAPTER_READS = frozenset({"phase", "runs", "pending"})
+
+
+def _adapter_read(node, path) -> bool:
+    """Wywołanie funkcji widoku przebiegów: `commandruns.phase(…)`, `commands.runs(…)` albo nazwy z importu."""
+    if path is None or not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.attr in ADAPTER_READS:
+        target = imports(path).get(func.value.id)
+        return bool(target) and target[1] is None and target[0] in ADAPTER_MODULES
+    if isinstance(func, ast.Name) and func.id in ADAPTER_READS:
+        target = imports(path).get(func.id)
+        if target:
+            return target[0] in ADAPTER_MODULES and target[1] == func.id
+        return path in ADAPTER_MODULES     # wywołanie wewnątrz samego adaptera
+    return False
 # Atrybuty: (atrybut, wymagany odbiorca albo None).
 IDENTITY_ATTRIBUTES = (("held", None), ("outside_unit", None), ("inventory", "trialhold"),
                        ("held", "trialhold"))
@@ -1092,6 +1116,8 @@ def raw_reads(function, path=None) -> frozenset:
                 bind(target, node.value)
             changed |= len(aliases) != before
     for node in nodes:
+        if _adapter_read(node, path):
+            found |= RUN_TYPES
         if isinstance(node, ast.Compare):
             operands = [node.left, *node.comparators]
             names = set().union(*(_literals(o, path) for o in operands))

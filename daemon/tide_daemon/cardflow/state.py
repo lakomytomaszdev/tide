@@ -35,6 +35,7 @@ from datetime import datetime
 import re
 
 from .baseproposal import blocked as base_blocked, pending
+from . import commandruns
 from . import consent
 from . import mergecheck
 from .faults import cause_label, of_finished
@@ -79,7 +80,7 @@ class FlowState:
     review_decisions: dict = field(default_factory=dict)
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
-    outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
+    outside_started: dict = field(default_factory=dict)  # krok → start trwającego przebiegu (commandruns: outside/command)
     outside_launched: set = field(default_factory=set)  # także zakończone, przed wznowieniem kroku
     ticket_consents: dict = field(default_factory=dict)  # ticket → ostatnie nadanie/cofnięcie w zleceniu
     superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
@@ -576,10 +577,10 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
-        elif kind == "outside.started":
+        elif commandruns.phase(e) == "started":     # `outside.started` albo `command.started` (PT-481)
             st.outside_launched.add(e.get("step"))
             st.outside_started[e.get("step")] = e
-        elif kind == "outside.finished":
+        elif commandruns.phase(e) == "finished":
             st.outside_started.pop(e.get("step"), None)
         elif kind == "step.wip":
             st.wip_retries[e.get("step")] = e
