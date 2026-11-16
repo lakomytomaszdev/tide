@@ -195,9 +195,7 @@ Rectangle {
             contentWidth: width
             contentHeight: cardsColumn.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {
-                policy: columnRoot.fill && flick.contentHeight > flick.height ? QQC2.ScrollBar.AsNeeded : QQC2.ScrollBar.AlwaysOff
-            }
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: cardsColumn
@@ -296,19 +294,15 @@ Rectangle {
                     }
                 }
 
-                PillButton {
+                Tide.Button {
                     objectName: "addCard"
                     Layout.fillWidth: true
                     visible: columnRoot.showAdd && columnRoot.manual && !columnRoot.compact
-                    implicitHeight: 30
-                    flat: true
-                    pillRadius: Tide.Tokens.radiusSmall
-                    pixelSize: 12
-                    horizontalPadding: 6
+                    small: true
+                    variant: "ghost"
                     text: "＋ Dodaj kartę"
-                    textColor: Tide.Tokens.textMuted
                     toolTip: "Nowa karta w kolumnie " + (columnRoot.spec.label || "")
-                    leftAligned: true
+                    alignment: Qt.AlignLeft
                     onClicked: columnRoot.addRequested(columnRoot.spec.id)
                 }
 

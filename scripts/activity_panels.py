@@ -67,6 +67,39 @@ def screens() -> dict:
     return {"mainOutput": MAIN_OUTPUT, "sideOutput": SIDE_OUTPUT}
 
 
+KSCREEN = ["kscreen-doctor", "-j"]
+
+
+def disabled_outputs(read, outputs: tuple[str, ...] | None = None) -> list[str]:
+    """Wyjścia z układu Tide, które są podłączone, ale wyłączone (kolejność MAIN, SIDE).
+
+    Czysta funkcja: `read` to funkcja odczytu poleceń (Reader silnika albo `run` instalatorów), więc odczyt
+    `kscreen-doctor -j` idzie tą samą drogą co reszta i nie woła plasmashella (incydent 15.11: skrypt
+    plasmashell przy wyłączonym wyjściu wywalał powłokę). Złącze niepodłączone nie liczy się (nowa maszyna
+    z jednym monitorem). Błąd odczytu i zły JSON to ValueError — wołający idzie wtedy zwykłą drogą."""
+    wanted = outputs if outputs is not None else (MAIN_OUTPUT, SIDE_OUTPUT)
+    try:
+        data = json.loads(read(KSCREEN))
+        by_name = {o["name"]: o for o in data["outputs"]}
+    except Exception as exc:  # polecenie, JSON albo kształt — wszystko to „nie wiadomo”
+        raise ValueError(f"kscreen-doctor: {exc}") from exc
+    return [n for n in dict.fromkeys(wanted)
+            if n in by_name and by_name[n].get("connected") and not by_name[n].get("enabled")]
+
+
+def guard(read) -> tuple[list[str], str]:
+    """(wyłączone wyjścia, notka o nieudanym odczycie). Przy błędzie odczytu lista jest pusta, a notka niepusta —
+    panele idą zwykłą drogą, a chronią je strażniki w skryptach."""
+    try:
+        return disabled_outputs(read), ""
+    except ValueError as exc:
+        return [], f"nie udało się odczytać układu wyjść ({exc}) — panele bez strażnika układu"
+
+
+def skipped_note(disabled: list[str]) -> str:
+    return f"wyłączone wyjście z układu Tide: {', '.join(disabled)} — panele pominięte"
+
+
 def script(name: str, params: dict) -> str:
     """Skrypt zapisujący: parametry P, wspólne funkcje common.js i treść scripts/panels/<name>.js."""
     common = (JS_DIR / "common.js").read_text()
@@ -109,7 +142,8 @@ def expected_dock(layout: dict) -> list[str]:
 
 
 def by_role(state: dict, role: str) -> list[dict]:
-    return [p for p in state.get("panels", []) if p.get("role") == role]
+    """Panele o danej roli. Panel bez widoku (`orphan`) nie ma ustawień widoku, więc nie bierze udziału w porównaniach."""
+    return [p for p in state.get("panels", []) if p.get("role") == role and not p.get("orphan")]
 
 
 def stream_differences(state: dict, layout: dict, desktop: bool, saved: dict | None = None) -> list[str]:
@@ -204,7 +238,9 @@ def work_plan(state: dict, saved: dict) -> tuple[list[str], dict]:
             out.append("pasek boczny pracy do przywrócenia: " + ", ".join(f"{k} {v}" for k, v in restore.items()))
         if sidebar_thin(sidebar) and not any(key in restore for key in ("maximumLength", "minimumLength")):
             out.append("pasek boczny pracy pozostał zwężony — ponownie zainstaluj Tide")
-    if saved and not out:
+    waiting = any(p.get("orphan") and p.get("role") == "sidebar" and saved.get("sidebar", p["id"]) == p["id"]
+                  for p in state.get("panels", []))
+    if saved and not out and not waiting:  # pasek bez widoku: zapis czeka na jego widok, nie jest nieaktualny
         out.append("nieaktualny zapis paska bocznego sprzed Stream — do usunięcia")
     return out, restore
 
@@ -229,7 +265,8 @@ def describe(state: dict) -> str:
     parts = []
     for panel in state.get("panels", []):
         role = f" {panel['role']}" if panel.get("role") else ""
-        parts.append(f"{panel['id']}{role} ({panel['location']}, ekran {panel['screen']}, {panel['hiding']})")
+        shown = "bez widoku" if panel.get("orphan") else panel["hiding"]
+        parts.append(f"{panel['id']}{role} ({panel['location']}, ekran {panel['screen']}, {shown})")
     return "; ".join(parts) or "brak paneli"
 
 

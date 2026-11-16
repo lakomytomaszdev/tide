@@ -106,13 +106,33 @@ write("start")''')
         self.stop_measured()
         self.assertTrue(all(not flow.flowfakes.alive(p) for p in pids), "pozostali potomkowie gita")
 
+    def wait_event(self, card, kind, timeout=30.0, **fields):
+        """Czeka, aż dziennik karty ma zdarzenie `kind` z polami `fields` (PT-368)."""
+        def present():
+            return any(e["type"] == kind and all(e.get(k) == v for k, v in fields.items())
+                       for e in self.events(card))
+        self.assertTrue(wait_until(present, timeout=timeout), f"{card}: brak {kind} {fields}\n{self.events(card)}")
+
+    def wait_closed(self, card):
+        """Koniec przebiegu karty „Od razu”: `card.closed` i po nim powiadomienie „do sprawdzenia”. Kolumnę `review`
+        widać już wcześniej (po scaleniu i sprzątaniu worktree, przed krokiem `close`) — PT-368."""
+        self.wait_event(card, "card.closed")
+        self.wait_event(card, "flow.notice", result="review")
+        self.wait_column(card, "review")
+
     def test_restart_preserves_decision_saved_result_and_review_column(self):
         waiting = self.card(description="ATRAPA: pytanie-opcje")
         waiting_start = self.start(waiting)
-        decision = self.wait_column(waiting, "waiting")["derived"]["flow"]["decisions"]
+        self.wait_column(waiting, "waiting")
         ready = self.card()
         ready_start = self.start(ready)
         self.wait_column(ready, "review")
+        # PT-368: kolumna liczy się z dziennika w dowolnej chwili ticku silnika, więc „review” widać już po scaleniu
+        # i sprzątaniu worktree, przed krokiem `close`, a „waiting” — przed `step.notice`. Migawka `before` dopiero
+        # po ostatnim zdarzeniu przebiegu każdej karty: powiadomienie o pytaniu i o karcie do sprawdzenia.
+        self.wait_event(waiting, "step.notice", result="question")
+        self.wait_closed(ready)
+        decision = self.wait_column(waiting, "waiting")["derived"]["flow"]["decisions"]
         before = {card: self.events(card) for card in (waiting, ready)}
         heads = {r["branch"]: flow.git(self.repo, "rev-parse", r["branch"])
                  for r in (waiting_start, ready_start)}
@@ -140,6 +160,7 @@ write("start")''')
         self.assertTrue(wait_until(lambda: heartbeat.read_text() != before, timeout=3))
         heartbeat.with_name("release").touch()
         self.wait_column(card, "review")
+        self.wait_closed(card)
         self.assertEqual([s["kind"] for s in self.of(card, "step.started")], ["ticket", "review", "close"])
         self.assertEqual(len(self.results(card, "merge")), 1)
         self.assertEqual(len(self.of(card, "step.finished")), 3)
@@ -222,6 +243,8 @@ class SystemdRestartTest(ShutdownTest):
         (root / "outside-release").touch()
         self.wait_column(background, "review")
         self.wait_column(outside, "review")
+        self.wait_closed(background)
+        self.wait_closed(outside)
         self.assertEqual([s["kind"] for s in self.of(background, "step.started")], ["ticket", "review", "close"])
         self.assertEqual([s["kind"] for s in self.of(outside, "step.started")],
                          ["ticket", "ticket", "review", "close"])

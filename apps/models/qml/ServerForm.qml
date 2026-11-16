@@ -224,28 +224,22 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.topMargin: 2
         spacing: 8
-        PillButton {
+        Tide.Button {
             objectName: "testButton"
             text: form.testing ? "Sprawdzam…" : "Sprawdź"
             enabled: !form.testing
-            implicitHeight: 32
             onClicked: form.test()
         }
         Item { Layout.fillWidth: true }
-        PillButton {
+        Tide.Button {
             text: "Anuluj"
-            implicitHeight: 32
-            fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
             onClicked: form.cancelled()
         }
-        PillButton {
+        Tide.Button {
             objectName: "saveButton"
             text: form.saving ? "Zapisuję…" : form.adding ? "Dodaj serwer" : "Zapisz"
             enabled: !form.saving
-            implicitHeight: 32
-            strong: true
-            fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            variant: "primary"
             onClicked: form.save()
         }
     }

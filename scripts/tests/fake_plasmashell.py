@@ -21,6 +21,22 @@ def available() -> bool:
     return Path(QML).exists()
 
 
+def kscreen_json(disabled: tuple[str, ...] = (), disconnected: tuple[str, ...] = ()) -> dict:
+    """Wynik `kscreen-doctor -j` dla DP-2 i HDMI-A-1: domyślnie oba podłączone i włączone. `disabled` — podłączone,
+    ale wyłączone; `disconnected` — niepodłączone (kscreen-doctor zgłasza wtedy też `enabled: false`)."""
+    return {"outputs": [{"name": name, "connected": name not in disconnected,
+                         "enabled": name not in disabled and name not in disconnected}
+                        for name in ("DP-2", "HDMI-A-1")]}
+
+
+def link_kscreen_doctor(bin_dir: Path) -> None:
+    """Atrapa `kscreen-doctor` w PATH testu instalatora (czyta $TIDE_FAKE_DIR/kscreen.json, patrz
+    fake_kscreen_doctor.py). Skrypt owijamy, bo plik atrapy nie musi mieć bitu wykonywalnego."""
+    wrapper = bin_dir / "kscreen-doctor"
+    wrapper.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{HERE / "fake_kscreen_doctor.py"}" "$@"\n')
+    wrapper.chmod(0o755)
+
+
 def widget(wid: int, type_: str, config: dict | None = None) -> dict:
     return {"id": wid, "type": type_, "config": config or {}, "removed": False}
 
@@ -99,6 +115,16 @@ def desktop_with_tide_panels(work: str = "work") -> dict:
                          {"id": 26, "screen": 1, "activity": work, "widgets": []}]}
 
 
+def desktop_like_15_11(work: str = "work") -> dict:
+    """Stan z 15.11.2026: DP-2 wyłączony, jeden ekran HDMI-A-1 (Plasma numeruje go 0), a panele 103 i 118
+    mają zapamiętane lastScreen=1, czyli `screen=1 >= screenCount` — to panele bez widoku. Reszta jak
+    w desktop_with_tide_panels (górny pasek i dock na ekranie 0; pulpit 26 też ze screen=1)."""
+    state = desktop_with_tide_panels(work)
+    state["screens"] = ["HDMI-A-1"]
+    state["geometries"] = [{"x": 0, "y": 0, "width": 1920, "height": 1080}]
+    return state
+
+
 def run(state: dict, script: str) -> tuple[str, dict]:
     """Wykonuje skrypt na stanie; zwraca wypisany tekst i nowy stan."""
     fake = (HERE / "fake_plasmashell.js").read_text()
@@ -108,7 +134,9 @@ def run(state: dict, script: str) -> tuple[str, dict]:
         (Path(tmp) / "harness.js").write_text(combined)
         (Path(tmp) / "main.qml").write_text(
             'import QtQuick\nimport "harness.js" as H\n'
-            f'Item {{ Component.onCompleted: {{ console.warn("{RESULT}" + H.main()); Qt.quit(); }} }}\n')
+            # Wyjątek skryptu (np. „panel bez widoku”) nie może zawiesić qml6 do limitu czasu: kończymy z jego treścią.
+            f'Item {{ Component.onCompleted: {{ try {{ console.warn("{RESULT}" + H.main()); }} '
+            f'catch (e) {{ console.warn("TIDE_FAKE_ERROR: " + e); }} Qt.quit(); }} }}\n')
         env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "QT_FORCE_STDERR_LOGGING": "1"}
         proc = subprocess.run([QML, str(Path(tmp) / "main.qml")], capture_output=True, text=True, env=env, timeout=60)
     log = proc.stdout + proc.stderr

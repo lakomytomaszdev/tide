@@ -286,12 +286,10 @@ ColumnLayout {
                 onEdited: role.ctxDirty = true
                 onAccepted: role.saveCtx()
             }
-            PillButton {
+            Tide.Button {
                 objectName: "ctxSave"
                 text: role.busy("ctx") ? "Zapisuję…" : "Zapisz"
                 enabled: !role.readOnly && !!role.row && role.row.model !== "" && !role.busy("ctx")
-                implicitHeight: 32
-                fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.08)
                 onClicked: role.saveCtx()
             }
         }

@@ -207,6 +207,17 @@ class BoardDBusTest(unittest.TestCase):
                                "Tester|K-2: update note", "Tester|K-2: move to todo"])
         self.assertEqual(git_out(self.board, "remote").strip(), "")
 
+        # pole karty startRef (PT-392): zapis, migawka, błąd składni bez zapisu, czyszczenie
+        shown = lambda: {c["id"]: c for c in self.snapshot()["cards"]}["K-2"]["startRef"]  # noqa: E731
+        self.assertTrue(self.call("UpdateCard", "K-2", json.dumps({"startRef": "refs/heads/feature/x"}))["changed"])
+        self.assertEqual(shown(), "refs/heads/feature/x")
+        head = git_out(self.board, "rev-parse", "HEAD")
+        bad = self.call("UpdateCard", "K-2", json.dumps({"startRef": "feature/x"}))
+        self.assertEqual((bad["ok"], bad["error"]), (False, "bad-request"))
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
+        self.assertTrue(self.call("UpdateCard", "K-2", json.dumps({"startRef": ""}))["changed"])
+        self.assertEqual(shown(), "")
+
         # zmiana z zewnątrz → commit i Changed
         seen = receiver.count
         with open(os.path.join(self.board, "cards", "K-1.md"), "a", encoding="utf-8") as fh:

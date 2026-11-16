@@ -318,12 +318,12 @@ ColumnLayout {
             spacing: 6
             Repeater {
                 model: Logic.classOptions()
-                PillButton {
+                Tide.Button {
                     required property var modelData
                     objectName: "class_" + modelData.value
                     text: (panel.classes.indexOf(modelData.value) >= 0 ? "✓ " : "") + modelData.label
-                    implicitHeight: 28
-                    fill: panel.classes.indexOf(modelData.value) >= 0 ? Tide.Theme.alpha(Tide.Tokens.accent, 0.2) : Tide.Tokens.backgroundCard
+                    small: true
+                    tone: panel.classes.indexOf(modelData.value) >= 0 ? Tide.Tokens.accent : "transparent"
                     onClicked: panel.toggleClass(modelData.value)
                 }
             }
@@ -333,14 +333,11 @@ ColumnLayout {
         RowLayout {
             spacing: 8
             Item { Layout.fillWidth: true }
-            PillButton { text: "Anuluj"; implicitHeight: 32; onClicked: panel.editingExecutor = "" }
-            PillButton {
+            Tide.Button { text: "Anuluj"; onClicked: panel.editingExecutor = "" }
+            Tide.Button {
                 objectName: "exSave"
                 text: panel.page && panel.page.busy["executor:save"] ? "Zapisuję…" : "Zapisz"
-                implicitHeight: 32
-                strong: true
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
+                variant: "primary"
                 onClicked: panel.saveExecutor()
             }
         }
@@ -465,14 +462,11 @@ ColumnLayout {
         RowLayout {
             spacing: 8
             Item { Layout.fillWidth: true }
-            PillButton { text: "Anuluj"; implicitHeight: 32; onClicked: panel.editingProvider = "" }
-            PillButton {
+            Tide.Button { text: "Anuluj"; onClicked: panel.editingProvider = "" }
+            Tide.Button {
                 objectName: "prSave"
                 text: panel.page && panel.page.busy["provider:save"] ? "Zapisuję…" : "Zapisz"
-                implicitHeight: 32
-                strong: true
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
+                variant: panel.editingExecutor === "" ? "primary" : "normal"
                 onClicked: panel.saveProvider()
             }
         }

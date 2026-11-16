@@ -820,7 +820,7 @@ RAW_READS = {
 # (M7 review 2): reguła tekstu wywołania (odbiorca.metoda) → uzasadnienie, że to nie jest ta funkcja
 # albo że ścieżka jest już objęta barierą. Nowe takie wywołanie bez reguły daje porażkę.
 AMBIGUOUS_RULES = (
-    (r"^self\._(debounce|import_timer|live_timer|login|note_timer|poll|rederive|rescan|retry|retry_timer|soon|start"
+    (r"^self\._(debounce|import_timer|live_timer|login|note_timer|poll|rederive|rescan|retry|retry_timer|settle|soon|start"
      r"|thread|throttle|tick|timer|work_later)\.(start|stop)$", "QTimer/wątek monitora usługi"),
     (r"^(match|mark|cut|section|headers\[index \+ 1\])\.start$", "re.Match.start — pozycja dopasowania"),
     (r"^thread\.start$", "wątek czytający wyjście gita w Cancellation.run_capped (threading.Thread), nie konsument kroków"),

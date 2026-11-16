@@ -20,6 +20,7 @@
 // albo „RRRR-MM-DD/slug”, takeFocus(), railInfo — katalog raportów na dole paska.
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "reports.js" as Logic
 
@@ -194,7 +195,7 @@ Rectangle {
             lineHeight: 1.25
             wrapMode: Text.Wrap
         }
-        PillButton {
+        Tide.Button {
             Layout.alignment: Qt.AlignHCenter
             visible: view.available
             enabled: !view.generating
@@ -241,6 +242,7 @@ Rectangle {
                 clip: true
                 spacing: 4
                 boundsBehavior: Flickable.StopAtBounds
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 model: view.dayList
                 delegate: DayItem {
                     required property var modelData
@@ -307,17 +309,15 @@ Rectangle {
                         }
                     }
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "generateButton"
-                    implicitHeight: 34
                     enabled: !view.generating && view.available
                     text: view.generating ? "Składam raport…" : "Wygeneruj teraz"
                     toolTip: "Raport bieżącej doby teraz (ten sam początek okresu co poranny)"
                     onClicked: view.backend.generate()
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "openButton"
-                    implicitHeight: 34
                     enabled: view.hasReport
                     text: "Otwórz w przeglądarce ↗"
                     onClicked: view.backend.openDay(view.selectedDay, "")
@@ -384,6 +384,7 @@ Rectangle {
                     clip: true
                     contentHeight: cardColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                     ColumnLayout {
                         id: cardColumn

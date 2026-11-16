@@ -12,6 +12,7 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
 import "git" as Git
+import "git/start.js" as Start
 import "board.js" as Logic
 import "card/decision.js" as Decision
 
@@ -151,7 +152,6 @@ Rectangle {
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal environmentApproveRequested(string tag, string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
-    signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
     signal mergeRequested(string tag, string cardId, string request)
     signal previewBaseChangeRequested(string tag, string cardId, string request)
@@ -176,20 +176,19 @@ Rectangle {
         const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
         return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
     }
-    function chooseMerge(cardId) {
+    // Jedyne wejście do okna scalania (K-99, PT-390/#6, PT-401): „Scal…” z panelu i pełnej karty. Gdy baza karty jest
+    // znana i jest gałęzią lokalną, okno od razu prosi o podgląd dla niej; bez niej bierze domyślny cel i skróty
+    // z odpowiedzi `ListCardBranches`. Zgodę wysyła tylko jego „Scal do <cel>”.
+    function openMergeWindow(cardId) {
         const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
         const base = card && card.derived && card.derived.flow && card.derived.flow.base
-        mergeTargets.cardId = cardId
-        mergeTargets.contextKey = mergeContext(cardId)
-        mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
-        mergeTargets.open()
-    }
-    function previewMerge(cardId, target, targetRef) {
-        const tag = nextTag("preview-merge:" + cardId)
-        mergePreview.show(tag, cardId, target)
-        mergePreview.contextKey = mergeContext(cardId)
-        mergePreview.targetRef = targetRef || "refs/heads/" + target
-        previewMergeRequested(tag, cardId, JSON.stringify({targetRef: mergePreview.targetRef}))
+        const known = base && base.status === "known"
+        const heads = known && (base.baseRef || "").indexOf("refs/heads/") === 0
+        const target = heads ? base.baseRef.substring(11) : ""
+        mergeWindow.contextKey = mergeContext(cardId)
+        mergeWindow.baseRef = known ? base.baseRef : ""
+        mergeWindow.startLine = card && card.derived ? Start.cardStartLine(card.derived.flow) : ""
+        mergeWindow.open(cardId, target ? "refs/heads/" + target : "", target)
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -431,7 +430,8 @@ Rectangle {
 
     function closeDiff() {
         diffOpen = false
-        page.forceActiveFocus()
+        if (mergeWindow.opened) mergeWindow.forceActiveFocus()   // „Zmiany gałęzi” z okna scalania wracają do okna
+        else page.forceActiveFocus()
     }
 
     // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
@@ -808,7 +808,7 @@ Rectangle {
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
         if (tag.indexOf("merge-targets:") === 0) {
-            mergeTargets.picker.receive(tag, reply)
+            mergeWindow.receiveBranches(tag, reply)
             return
         }
         if (tag.indexOf("base-change-branches:") === 0) {
@@ -891,7 +891,9 @@ Rectangle {
             cardPanel.error = error
             if (!error) {
                 if (reply.id) selectedId = reply.id
-                panelOpen = false
+                // Zapis istniejącej karty z panelu wraca do czytania (PT-504); nowa karta i szuflada opisu zamykają panel.
+                if (tag.indexOf("update:") === 0 && panelOpen && !descriptionDrawer) cardPanel.setMode("read")
+                else panelOpen = false
                 if (notice) showToast(notice, "butter")
                 Qt.callLater(() => revealCard(selectedId))
             }
@@ -959,23 +961,10 @@ Rectangle {
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
         } else if (tag.indexOf("diff:") === 0) {
             return   // odpowiedź `Git.Diff` odbiera sam widok diffa (DiffView), nie Tablica
-        } else if (tag.indexOf("preview-merge:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            mergePreview.result = error ? null : reply
-            if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
-        } else if (tag.indexOf("merge-card:") === 0) {
-            if (mergePreview.requestTag !== tag) return
-            mergePreview.busy = false
-            mergePreview.error = error
-            if (error) {
-                // Ponowna zgoda wymaga nowego odczytu; stary przycisk nie może ponowić mutacji.
-                mergePreview.result = null
-            } else {
-                mergePreview.close()
-                showToast("Karta scalona do " + reply.targetBranch + ".", "mint")
-            }
+        } else if (tag.indexOf("preview-merge:") === 0 || tag.indexOf("merge-card:") === 0) {
+            // Okno samo pomija odpowiedź z innym tagiem niż bieżące żądanie (stary podgląd, zamknięte okno).
+            const merged = mergeWindow.receive(tag, error, reply)
+            if (merged) showToast(merged + ".", "mint")
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -999,8 +988,7 @@ Rectangle {
         if (planApproveFallback.running) planApproveCard = ""   // PT-408: po odpowiedzi nową migawkę przejmuje stan zatwierdzania
         refreshColumnSpecs()
         optimistic = []
-        if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
-        if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
+        if (mergeWindow.opened && mergeWindow.contextKey !== mergeContext(mergeWindow.cardId)) mergeWindow.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
             const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
@@ -1289,14 +1277,11 @@ Rectangle {
                     }
                 }
             }
-            PillButton {
+            Tide.Button {
                 objectName: "newCardButton"
                 visible: page.available
                 text: "＋ Karta"
-                strong: true
-                horizontalPadding: 16
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
+                variant: "primary"
                 toolTip: "Nowa karta w Backlogu (Ctrl+N)"
                 onClicked: page.newCard("backlog")
             }
@@ -1416,17 +1401,14 @@ Rectangle {
             }
 
             // Filtr projektu.
-            PillButton {
+            Tide.Button {
                 id: projectButton
                 objectName: "projectFilter"
-                implicitHeight: 28
-                pillRadius: 14
-                pixelSize: 12
-                horizontalPadding: 12
+                small: true
                 text: "Projekt: " + (page.projectFilter === "" ? "wszystkie"
                                      : page.projectFilter === Logic.NO_PROJECT ? "bez projektu"
                                      : Logic.projectName(page.snapshot, page.projectFilter)) + " ▾"
-                textColor: page.projectFilter ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                tone: page.projectFilter ? Tide.Tokens.accent : "transparent"
                 onClicked: projectMenu.opened ? projectMenu.close() : projectMenu.open()
 
                 QQC2.Popup {
@@ -1446,7 +1428,7 @@ Rectangle {
                         implicitHeight: Math.min(10, count) * 32
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
-                        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                         model: {
                             const list = [{ key: "", name: "Wszystkie projekty", count: Logic.counts(page.allCards).total }]
                             for (const p of (page.snapshot && page.snapshot.projects) || [])
@@ -1510,15 +1492,11 @@ Rectangle {
             }
 
             // Menu „Widok” (PT-133): ustawienie otwierania karty z „Czeka na mnie” — to samo pole jest w stopce okna decyzji.
-            PillButton {
+            Tide.Button {
                 id: viewButton
                 objectName: "viewMenuButton"
-                implicitHeight: 28
-                pillRadius: 14
-                pixelSize: 12
-                horizontalPadding: 12
+                small: true
                 text: "Widok ▾"
-                textColor: Tide.Tokens.textSecondary
                 Accessible.name: "Widok"
                 onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
 
@@ -1613,13 +1591,13 @@ Rectangle {
                     font.pixelSize: 12
                     wrapMode: Text.Wrap
                 }
-                PillButton {
-                    implicitWidth: 26
-                    implicitHeight: 26
-                    flat: true
+                Tide.Button {
+                    iconOnly: true
+                    small: true
+                    variant: "ghost"
                     text: "✕"
-                    pixelSize: 11
                     toolTip: "Zamknij"
+                    Accessible.name: "Zamknij"
                     onClicked: page.toast = ""
                 }
             }
@@ -1722,7 +1700,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: lanesColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     ColumnLayout {
                         id: lanesColumn
                         width: lanesFlick.width
@@ -1872,15 +1850,12 @@ Rectangle {
                         lineHeight: 1.15
                         wrapMode: Text.Wrap
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "firstCardButton"
                         Layout.alignment: Qt.AlignHCenter
                         Layout.topMargin: 6
                         visible: page.available
                         text: "＋ Pierwsza karta"
-                        strong: true
-                        fill: Tide.Tokens.accent
-                        textColor: Tide.Tokens.backgroundDesktop
                         onClicked: page.newCard("backlog")
                     }
                 }
@@ -1912,23 +1887,16 @@ Rectangle {
     }
 
     // --- panel karty ----------------------------------------------------------------------------
-    MouseArea {
-        anchors.fill: parent
-        visible: page.panelOpen
-        z: page.descriptionDrawer ? 36 : 0
-        onClicked: page.closePanel()
-        onWheel: wheel => wheel.accepted = false
-    }
+    // Przyciemnienie i szufladę rysuje Tide.Sheet w CardPanel (klik poza szufladą zamyka panel).
     CardPanel {
         onNavigateRequested: (viewId, item) => page.navigateRequested(viewId, item)
         id: cardPanel
         objectName: "cardPanel"
         z: page.descriptionDrawer ? 37 : 0
         descriptionOnly: page.descriptionDrawer
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.margins: 12
+        anchors.fill: parent
+        canLaunch: page.canLaunch
+        onLaunchRequested: cardId => page.openLaunch(cardId, false)
         visible: page.panelOpen
         snapshot: page.snapshot
         card: page.panelOpen ? page.panelCard : null
@@ -1977,10 +1945,8 @@ Rectangle {
         }
         onPlanManagerRequested: page.openPlanManager()
         onBranchDiffRequested: cardId => page.openDiff(cardId)
-        onMergeMainRequested: cardId =>
-            page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
-        onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
-        onChooseMergeRequested: cardId => page.chooseMerge(cardId)
+        onBaseChangeRequested: cardId => { if (page.openFull(cardId)) page.openBaseChange(cardId) }
+        onMergeRequested: cardId => page.openMergeWindow(cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -2113,7 +2079,10 @@ Rectangle {
         onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
-        mergePreviewAvailable: true
+        // Pasek górny (PT-502): „← Tablica” wraca tutaj; opis karty renderuje backend.renderMarkdown Tablicy.
+        backText: "Tablica"
+        markdownRenderer: page.markdownRenderer
+        onLinkRequested: url => page.linkRequested(url)
         // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
         ticketSettingsEnabled: true
         onTicketSettingsRequested: id => page.openTicketSettings(id)
@@ -2137,9 +2106,7 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
-        onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
-        onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
-        onChooseMergeRequested: page.chooseMerge(page.fullCardId)
+        onMergeRequested: page.openMergeWindow(page.fullCardId)
         onBranchDiffRequested: page.openDiff(page.fullCardId)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
@@ -2169,26 +2136,28 @@ Rectangle {
         onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
 
-    MergePreview {
-        id: mergePreview
-        parent: page
+    // Okno scalania (wspólny komponent git/MergeWindow.qml): Tablica tylko przekłada sygnały na wywołania usługi.
+    Git.MergeWindow {
+        id: mergeWindow
+        anchors.fill: parent
         z: 60
-        onConfirmRequested: request => {
-            requestTag = page.nextTag("merge-card:" + cardId)
-            page.mergeRequested(requestTag, cardId, JSON.stringify(request))
+        onPreviewRequested: targetRef => {
+            const tag = page.nextTag("preview-merge:" + cardId)
+            track(tag)
+            page.previewMergeRequested(tag, cardId, JSON.stringify({targetRef: targetRef}))
         }
-        onRefreshRequested: page.previewMerge(cardId, targetBranch, targetRef)
-    }
-    MergeTargetPicker {
-        id: mergeTargets
-        parent: page
-        z: 60
-        onRequested: text => {
+        onBranchesRequested: text => {
             const tag = page.nextTag("merge-targets:" + cardId)
-            picker.pendingTag = tag
+            trackBranches(tag)
             page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
         }
-        onPreviewRequested: target => page.previewMerge(cardId, target.name, target.ref)
+        onMergeRequested: request => {
+            const tag = page.nextTag("merge-card:" + cardId)
+            track(tag)
+            page.mergeRequested(tag, cardId, JSON.stringify(request))
+        }
+        onChangesRequested: cardId => page.openDiff(cardId)
+        onClosed: page.forceActiveFocus()
     }
     CardUi.BaseChangePreview {
         id: baseChangePreview
@@ -2196,7 +2165,7 @@ Rectangle {
         z: 65
         selectedBase: baseChangePicker.selected
         selectionReady: baseChangePicker.ready
-        selectionContent: BranchPicker {
+        selectionContent: Git.BranchPicker {
             id: baseChangePicker
             Layout.fillWidth: true
             active: baseChangePreview.visible && baseChangePreview.selecting
@@ -2281,9 +2250,10 @@ Rectangle {
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
             if (page.diffOpen) page.closeDiff()
+            else if (mergeWindow.opened) mergeWindow.close()
             else if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
-            else if (page.panelOpen) page.closePanel()
+            else if (page.panelOpen) cardPanel.handleEscape()   // edycja wraca do czytania, czytanie zamyka panel
             else if (page.fullOpen && !page.managing) page.closeFull()
             else if (page.managing) page.managing = false
             else if (page.query !== "") { search.text = ""; page.query = "" }

@@ -203,7 +203,9 @@ def inventory(engine, card, st, *, fresh=False):
     K-105 PT-415: bez `fresh` czyta stan procesu karty z pamięci według wersji dziennika (odczyt bez skutku, bariera
     ticku). Gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), cała inwentaryzacja jest powtarzana na świeżym
     pełnym odczycie (`fresh=True`) i dopiero ona zapisuje — zapis nigdy nie wynika z historii z pamięci.
-    `fresh=True` także dla bramek przed skutkiem (diagnostyka K-38)."""
+    `fresh=True` także dla bramek przed skutkiem (diagnostyka K-38).
+    K-125 #3 (PT-488): to samo dotyczy stanu jednostek trzymanych procesów — bez `fresh` z pamięci
+    (`unitstate`, najwyżej 30 s, bez `unknown`), a przebieg zapisujący (`fresh=True`) czyta każdą jednostkę świeżo."""
     try:
         # Stan z tolerancyjnego odczytu UI lub wcześniejszego ticka nie jest dowodem.
         events, st = process_state(engine.journal, card, fresh=fresh)
@@ -211,7 +213,7 @@ def inventory(engine, card, st, *, fresh=False):
         # Nie dopisujemy przez tolerancyjny parser do uszkodzonej historii.
         # Jej zachowany błąd oznacza unknown również po restarcie usługi.
         return False
-    items, handoffs = _inventory_items(engine, st, events)
+    items, handoffs = _inventory_items(engine, st, events, fresh=fresh)
     previous = next((e for e in reversed(events) if e.get("type") == "k38.inventory"), {})
     changed = bool(items) and previous.get("items") != items
     if (handoffs or changed) and not fresh:
@@ -227,8 +229,30 @@ def inventory(engine, card, st, *, fresh=False):
     return public_safe and all(i["state"] == "inactive" for i in items)
 
 
-def _inventory_items(engine, st, events):
-    """Pozycje inwentaryzacji (stan jednostek) i brakujące zapisy przekazania `k38.handoff` — bez zapisu."""
+def _unit_reader(engine, fresh):
+    """Odczyt stanu jednostki dla inwentaryzacji: (klucz, odczyt) → stan. Pamięć silnika (`unit_states.read`,
+    `unitstate.UnitStates`, K-125 #3) albo — bez niej (silnik-atrapa) — zawsze świeży odczyt. Metoda klasy, nie atrybut
+    instancji (jak `_remembered`): atrapa `Mock` nie udaje pamięci. Bez importu `unitstate`: moduł zna tylko silnik."""
+    memory = getattr(engine, "unit_states", None)
+    remembered = getattr(type(memory), "read", None) if memory is not None else None
+    if not callable(remembered):
+        return lambda key, reader: reader()
+    return lambda key, reader: remembered(memory, key, reader, fresh=fresh)
+
+
+def _step_unit_key(step):
+    """Klucz jednostki kroku (hostowej albo w pudełku): pola, które wybierają odczyt w `FlowEngine._unit_state`."""
+    return ("step", step.get("runner") or "", step.get("boxSlug") or "", step.get("box") or "",
+            step.get("card") or "", step.get("unit") or "")
+
+
+def _inventory_items(engine, st, events, *, fresh=False):
+    """Pozycje inwentaryzacji (stan jednostek) i brakujące zapisy przekazania `k38.handoff` — bez zapisu.
+
+    K-125 #3 (PT-488): bez `fresh` stan jednostki pochodzi z pamięci silnika (`engine.unit_states` —
+    `unitstate.UnitStates`, najwyżej 30 s, tylko `active`/`inactive`); `fresh=True` czyta każdą jednostkę świeżo
+    i odświeża pamięć. Reguły poniżej (np. `inactive` → `unknown`) działają na stanie surowym, bez zmian."""
+    unit = _unit_reader(engine, fresh)
     items, handoffs = [], []
     for name, identity in st.process_identities.items():
         if not identity.held:
@@ -237,11 +261,13 @@ def _inventory_items(engine, st, events):
         try:
             if step.get("mode") == "interactive":
                 from ..tasks import launch
-                state = stepstop.unit_state(step.get("consoleUnit") or "")
+                console = step.get("consoleUnit") or ""
+                state = unit(("console", console), lambda: stepstop.unit_state(console))
                 if launch.process_alive(step.get("processFile") or "") is not False:
                     state = "unknown" if state == "inactive" else state
             else:
-                state = engine._unit_state(step) if step.get("unit") else "unknown"
+                state = (unit(_step_unit_key(step), lambda: engine._unit_state(step))
+                         if step.get("unit") else "unknown")
                 proc = engine.procs.get(name)
                 if proc is not None and proc.poll() is None:
                     state = "unknown" if state == "inactive" else state
@@ -265,7 +291,8 @@ def _inventory_items(engine, st, events):
             outside.extend(started or [{"step": identity.name, "ticket": identity.data.get("ticket")}])
     for event in outside:
         try:
-            state = stepstop.unit_state(event["unit"]) if event.get("unit") else "unknown"
+            state = (unit(("outside", event["unit"]), lambda: stepstop.unit_state(event["unit"]))
+                     if event.get("unit") else "unknown")
             # Start przebiegu nie potwierdza utworzenia jednostki przez asynchroniczny systemd-run.
             # Po restarcie brak jednostki nie rozstrzyga, czy klient dopiero ją utworzy.
             # Dawny koniec przebiegu i plik exit-code też nie są chronionym dowodem hosta.

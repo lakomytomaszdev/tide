@@ -122,8 +122,8 @@ _open_settings = open_settings
 def open_settings(ticket):
     js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
        "const tile = all(v, 'fullTicket').find(t => t.ticketId === '" + ticket + "'); "
-       "let f = tile.parent; while (f && f.contentY === undefined) f = f.parent; "
-       "if (f) f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, tile.mapToItem(f.contentItem, 0, 0).y - 40)) })()")
+       "for (let f = tile.parent; f; f = f.parent) { if (f.contentY === undefined) continue; "   # PT-503: tabela planu to zagnieżdżone przewijania — od najbliższego do strony
+       "f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, tile.mapToItem(f.contentItem, 0, 0).y - 40)) } })()")
     wait(80)
     _open_settings(ticket)
 

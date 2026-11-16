@@ -102,7 +102,7 @@ Rectangle {
             property bool follow: true
             onMovementEnded: follow = atYEnd
             onCountChanged: if (follow) Qt.callLater(positionViewAtEnd)
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
             delegate: Text {
                 required property var modelData
                 width: ListView.view.width - 12

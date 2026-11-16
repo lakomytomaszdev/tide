@@ -83,6 +83,7 @@ Window {
             current: win.current
             shell: win.shell
             info: win.currentView && win.currentView.railInfo ? win.currentView.railInfo : null
+            manageCurrent: win.current === "board" && !!win.currentView && win.currentView.managing === true
             onViewRequested: (id, item) => win.showView(id, item)
         }
 

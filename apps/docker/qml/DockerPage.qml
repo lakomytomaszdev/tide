@@ -430,7 +430,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: groupsColumn.implicitHeight + 8
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                     ColumnLayout {
                         id: groupsColumn
@@ -689,7 +689,7 @@ Rectangle {
                     clip: true
                     contentHeight: pruneColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     Column {
                         id: pruneColumn
                         width: pruneFlick.width - 12
@@ -748,12 +748,11 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 10
                     Item { Layout.fillWidth: true }
-                    PillButton {
+                    Tide.Button {
                         text: "Anuluj"
-                        fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.08)
                         onClicked: page.confirming = ""
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "confirmButton"
                         text: page.confirming !== "prune" ? "Usuń kontener"
                             : page.pruneDiskFailed ? "Nie mogę policzyć"
@@ -761,9 +760,7 @@ Rectangle {
                             : page.pruneList.length === 0 ? "Nic do wyczyszczenia"
                             : "Wyczyść · " + Logic.bytes(Logic.pickedBytes(page.categories, page.picks))
                         enabled: page.confirming !== "prune" || (page.pruneDiskFresh && page.pruneList.length > 0)
-                        fill: Tide.Tokens.negative
-                        textColor: Tide.Tokens.backgroundDesktop
-                        strong: true
+                        variant: "danger"
                         onClicked: page.confirming === "prune" ? page.confirmPrune() : page.confirmRemove()
                     }
                 }

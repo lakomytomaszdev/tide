@@ -40,7 +40,7 @@ Item {
         contentWidth: width
         contentHeight: content.implicitHeight + 8
         boundsBehavior: Flickable.StopAtBounds
-        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
         ColumnLayout {
             id: content
@@ -109,20 +109,17 @@ Item {
                     font.pixelSize: 11
                     elide: Text.ElideMiddle
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "docOpen"
-                    implicitHeight: 28
-                    pixelSize: 12
-                    outline: true
+                    small: true
                     text: "Otwórz plik"
                     toolTip: "Otwórz w domyślnym edytorze"
                     onClicked: view.openFile(view.doc.path)
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "docFolder"
-                    implicitHeight: 28
-                    pixelSize: 12
-                    flat: true
+                    small: true
+                    variant: "ghost"
                     text: "Pokaż w katalogu"
                     toolTip: "Plik zaznaczony w menedżerze plików"
                     onClicked: view.showInFolder(view.doc.path)
@@ -370,12 +367,10 @@ Item {
                             font.pixelSize: 12
                             elide: Text.ElideRight
                         }
-                        PillButton {
-                            implicitHeight: 24
-                            pixelSize: 11
-                            flat: true
+                        Tide.Button {
+                            small: true
+                            variant: "ghost"
                             text: "Otwórz"
-                            textColor: Tide.Tokens.accent
                             toolTip: Logic.shortPath(modelData.path, view.homeDir)
                             onClicked: view.openFile(modelData.path)
                         }

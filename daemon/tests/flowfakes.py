@@ -26,6 +26,9 @@
   procesu jednostki) według tego katalogu. Usługa polecenia `tide-cmd-<attempt>.service` (K-109 PT-479): `is-active`
   bez `--quiet` wypisuje stan (`active`/`inactive`), `stop` wysyła SIGTERM do grupy procesu.
 Prawdziwy menedżer systemd nie jest dotykany.
+- PT-417: przy `TIDE_TEST_SLOW` (powolny silnik, `tests/slowengine.py`) `install` wkleja do atrap `claude`/`codex`,
+  `systemd-run` i `systemctl` deterministyczne opóźnienia (start procesu, zapis `result.json`, odpowiedź);
+  bez zmiennej treść atrap jest dokładnie taka jak stałe w tym pliku.
 """
 import os
 import stat
@@ -658,12 +661,44 @@ fi
 """
 
 
+# PT-417: punkty powolnego silnika atrap (tylko przy TIDE_TEST_SLOW). `open` atrapy agenta czeka przed zapisem
+# `result.json`; pozostałe punkty biegną na starcie procesu.
+SLOW_AGENT = '''_slow("claude.start")
+def open(path, mode="r", *args, **kwargs):
+    if "w" in mode and _slow_os.path.basename(str(path)) == "result.json":
+        _slow("claude.result")
+    return _slow_builtins.open(path, mode, *args, **kwargs)
+'''
+SLOW_POINTS = {
+    "claude": (("claude.start", "claude.result"), SLOW_AGENT),
+    "codex": (("claude.start", "claude.result"), SLOW_AGENT),
+    "systemd-run": (("systemd-run.start",), '_slow("systemd-run.start")\n'),
+    "systemctl": (("systemctl",), '_slow("systemctl")\n'),
+}
+
+
+def _with_slow(name: str, body: str, folder: str) -> str:
+    """Atrapa z punktami powolnego silnika po linii #!; bez TIDE_TEST_SLOW — `body` bez zmian."""
+    if name not in SLOW_POINTS or not os.environ.get("TIDE_TEST_SLOW"):
+        return body
+    # Import dopiero przy włączonym silniku: kopie tego pliku w obcych drzewach (HARNESS_FILES w
+    # test_cardflow_integration_k38) działają bez slowengine.py.
+    from . import slowengine
+    points, calls = SLOW_POINTS[name]
+    code = slowengine.preamble(points, os.path.join(folder, ".slow-counters"))
+    if not code:
+        return body
+    shebang, rest = body.split("\n", 1)
+    return shebang + "\n" + code + calls + rest
+
+
 def install(folder: str) -> dict:
     """Atrapy w `folder`; zwraca {nazwa: ścieżka}."""
     os.makedirs(folder, exist_ok=True)
     out = {}
     for name, body in (("claude", CLAUDE), ("codex", CLAUDE), ("systemd-run", SYSTEMD_RUN), ("systemctl", SYSTEMCTL),
                        ("konsole", KONSOLE)):
+        body = _with_slow(name, body, folder)
         path = os.path.join(folder, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)

@@ -4,6 +4,7 @@
 // i „Pełna strona ↗” (strona projektu w przeglądarce). Teksty z raportu zawsze jako zwykły tekst.
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "reports.js" as Logic
 
@@ -44,6 +45,7 @@ Rectangle {
         clip: true
         contentHeight: content.implicitHeight
         boundsBehavior: Flickable.StopAtBounds
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
         ColumnLayout {
             id: content
@@ -232,15 +234,13 @@ Rectangle {
         anchors.margins: 18
         spacing: 8
 
-        PillButton {
+        Tide.Button {
             objectName: "copyButton"
             Layout.fillWidth: true
             visible: !panel.legacy
             enabled: panel.copyText !== ""
             text: panel.copied ? "Skopiowano ✓" : "Kopiuj jako tekst"
-            strong: true
-            fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            variant: "primary"
             onClicked: panel.copyRequested(panel.copyText)
         }
         RowLayout {

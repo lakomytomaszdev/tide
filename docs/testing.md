@@ -146,6 +146,21 @@ kodu, także przy usunięciu dokumentu. W mieszanym diffie dobór wynika z pozos
 W `docs/` pomijane są również `.rst`, `.txt` i ilustracje (`.png`, `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp`).
 Wyjątek nie obejmuje Markdown w `tools/`, `mk/`, katalogach testów ani `fixtures/`: wspólne fixture'y
 mogą zawierać dokumenty używane jako dane. Kod i konfiguracja w `docs/` nie są pomijane.
+Pliki koordynacji pod `COORDINATION_PATHS` w `tools/test_suites.py` (`docs/agents/masterplan/`,
+`docs/agents/interwencje/`, `docs/agents/plans/`; prefiksy dosłowne, bez reszty `docs/`) nie wybierają
+testów w żadnej postaci: ani `.md`, ani `.json`, `.html`, `.tsv`, ani przy usunięciu pliku. Plik, który
+jakiś test czyta z prawdziwego repozytorium, dostaje klucz w `FILE_TEST_MODULES`; klucz ma pierwszeństwo
+przed listą i wybiera swoje moduły. Test spójności w `scripts/tests/test_test_dependencies.py` pilnuje
+tego mechanicznie: skanuje AST wszystkich plików `.py` w katalogach testów z `SUITES` i dla każdej
+ścieżki istniejącego, śledzonego pliku pod prefiksem koordynacji wymaga klucza z tym modułem wśród
+odbiorców. Rozpoznaje napisy stałe (także części f-stringa i tekst poleceń powłoki, np.
+`cp "$src/../docs/agents/plans/x.md"`) oraz ciągi stałych segmentów po dowolnej bazie: `X / "docs/…"`,
+`X / "docs" / "agents" / …`, `os.path.join(X, "docs", …)`, `posixpath.join`, `Path("docs", …)`
+i `X.joinpath("docs", …)`. Fałszywe trafienia (nazwa istniejącego planu użyta w danych albo w repozytorium
+tymczasowym) trafiają do krotki `COORDINATION_SCAN_EXCEPTIONS` kluczowanej parą (moduł testu, ścieżka),
+z komentarzem przy każdej pozycji; pozycja, która przestała być trafieniem, wywala test. Skan nie
+wykrywa odczytu katalogu przez zmienną (glob po `ROOT`) ani odczytu przez stałą modułu produktu
+(np. `basechange.FOLLOWUP`): takie odbiorniki wymagają ręcznego wpisu w `FILE_TEST_MODULES`.
 Narzędzia użytkowe z `FILE_TEST_MODULES` w `tools/test_suites.py` mają jawne kontrakty:
 `board_compat_check.py`, `question_corpus.py`, `next_id.py`, `check_plans.py`, `sessions_preview.py`.
 Wybierają wyłącznie zadeklarowane moduły testów; brak takiego modułu jest błędem konfiguracji.
@@ -409,6 +424,130 @@ nie urywało się przedwcześnie. Wymaga tego samego środowiska co pełne testy
 gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. Nie uruchamiaj
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
+
+## Pętla przebiegów modułu pod obciążeniem
+
+Niestabilny test (K-100) odtwarzamy i dowodzimy poprawki jednym poleceniem, `tools/module_loop.py`.
+Powtarza badany moduł N razy (domyślnie 20); każdy przebieg to osobne wywołanie
+`tools/test_runner.py --modules … --output <katalog przebiegu>` (pula miejsc maszyny obowiązuje, narzędzie
+nie wywołuje unittest samo). Palniki CPU to procesy w czystym Pythonie, zatrzymywane zawsze (`finally`, SIGINT,
+SIGTERM, grupy procesów; `PR_SET_PDEATHSIG` zabija także palnik wstrzymany po SIGKILL narzędzia).
+
+```sh
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py              # dowód: palniki ograniczone
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --slow 417   # eksperyment: powolny silnik
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --reproduce  # odtworzenie: palniki 1,5×
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --pool       # odtworzenie: pula
+/usr/bin/python3 tools/module_loop.py <moduł> --pool --with <moduł…> --runs 2 --output <katalog>
+```
+
+Wspólne parametry: `--runs`, `--wait` (najdłuższy czas dojścia do progu, s), `--quiet-max`, `--board`,
+`--own-step`, `--own-worktree`, `--output` (domyślnie `build/module-loop/…`); parametry trybów niżej.
+
+### Kryterium dowodu K-100
+
+Dowód stabilności testu ma mierzyć wyścigi w teście, a nie przeciążenie maszyny (08–12.11 pętle 20× trybu puli
+przy loadavg 50–90 trwały godzinami i padały z przeciążenia). Dowód poprawki niestabilnego testu to:
+
+1. **20 przebiegów palnikami ograniczonymi** (jedyny tryb dowodowy) — N/N ważnych z zielonym badanym modułem
+   (kod 0). Powolny silnik (`--slow`) jest eksperymentalny: w kalibracji PT-417 (trzy serie w oknie ciszy
+   12/13.11) nie odtworzył znanej porażki PT-366, więc nie daje dowodu. Kalibracja jest pozycją następczą:
+   [followups/slow-engine-calibration.md](agents/plans/followups/slow-engine-calibration.md).
+2. **W oknie ciszy:** loadavg1 przed palnikami < 8 i żadne inne polecenie `outside` nie trwa. Pętle uruchamiamy
+   w oknach: noc **23:30–06:00 z czwartku na piątek i z piątku na sobotę** oraz **sobota 06:00–09:00**.
+3. **Pula (`--pool`) i palniki 1,5× (`--reproduce`) tylko do odtworzenia** porażki; nie dają kodu 0 i nie są
+   dowodem.
+4. **Bez wydłużania limitów czasu jako jedynej poprawki.** Dłuższy `timeout` w `wait_until` nie usuwa wyścigu;
+   poprawka usuwa przyczynę (np. czeka na właściwe zdarzenie dziennika).
+
+### Tryby
+
+- **Dowód — palniki ograniczone (domyślny):** w przebiegu biegnie tylko badany moduł. Palników jest ⌈cel⌉
+  (`--burners` zmienia górną liczbę), a regulator co sekundę ustala, ile z nich jest czynnych; pozostałe są
+  wstrzymane (SIGSTOP, wznowienie SIGCONT). Wybraliśmy liczbę czynnych palników, a nie ich wypełnienie: palnik
+  czynny to dokładnie jeden proces gotowy, więc liczba gotowych procesów przekłada się wprost na loadavg.
+  Regulacja (`regulate`) czyta loadavg1 i liczbę procesów gotowych teraz (4. pole `/proc/loadavg`); gotowe
+  procesy poza palnikami to test i reszta maszyny. Celem jest 0,9 × cel procesów gotowych łącznie z testem;
+  w paśmie 0,8–1,0 × cel regulator nie dokłada palników, a loadavg1 powyżej celu zawsze zmniejsza ich liczbę,
+  aż do wstrzymania wszystkich. Cel: `--target` (domyślnie liczba rdzeni dostępnych procesowi), próg startu
+  przebiegu: 0,8 × cel (`--threshold`). Raport podaje maksimum loadavg1 z próbek i zakres czynnych palników;
+  maksimum ponad cel to ostrzeżenie (gdy cel przekracza sam test, palniki są już wstrzymane).
+- **Eksperyment — powolny silnik (`--slow [ZIARNO]`):** nieskalibrowany, nie daje dowodu ani kodu 0 (raport
+  mówi to wprost; kod 4 przy braku porażki). Służy do szukania kolejności zdarzeń i dalszej kalibracji
+  ([followups/slow-engine-calibration.md](agents/plans/followups/slow-engine-calibration.md)). Bez palników. Każdy przebieg dostaje
+  `TIDE_TEST_SLOW=<profil>:<ziarno>:<numer przebiegu>` (profil `--slow-profile`, domyślnie `domyslny`; ziarno
+  bez wartości — z zegara), a fikstury i atrapy `daemon/tests/` wstrzykują deterministyczne opóźnienia
+  (`daemon/tests/slowengine.py`), które wymuszają kolejności zdarzeń losowane zwykle przez obciążenie. Raport
+  zapisuje ziarno każdego przebiegu; przebieg powtarza się tą samą wartością zmiennej:
+  `TIDE_TEST_SLOW=domyslny:417:7 /usr/bin/python3 tools/test_runner.py --modules <moduł>`. Bez zmiennej fikstury
+  i atrapy działają bit w bit jak wcześniej, a kod usługi (`daemon/tide_daemon/`) nie ma żadnych haków.
+- **Odtworzenie — palniki 1,5× (`--reproduce`):** ⌈1,5 × rdzenie⌉ palników bez regulacji, próg loadavg1 =
+  liczba rdzeni (`--burners`, `--threshold`). Loadavg1 to średnia wykładnicza dochodząca do liczby procesów
+  gotowych od dołu, dlatego palników jest 1,5× więcej niż próg.
+- **Odtworzenie — pula (`--pool`):** palniki 1,5×, a badany moduł biegnie w jednym wywołaniu uruchamiacza razem
+  z towarzyszami i z jego domyślnym `--jobs`, więc uruchamiacz dzieli moduły na równoległe i `[OSOBNO]` jak w pełnym `make test`
+  (14 procesów, prywatne magistrale, porty, procesy potomne). Towarzysze: `--with <moduły…>` albo stała
+  `DEFAULT_COMPANIONS` w narzędziu — 20 modułów `daemon/tests/` z prywatną magistralą D-Bus, procesami potomnymi
+  i fiksturą `FlowInProcess` (w tym pozostałe moduły K-100: `test_cardflow_youtrack`, `test_cardflow_waves`,
+  `test_daemon_lifecycle`, `test_cardflow_review`, `test_cardflow_dbus`,
+  `test_worktrees_shutdown`, `test_cardflow_integration_k38`), co z badanym modułem daje co najmniej
+  `JOBS` modułów równoległych (narzędzie odmawia, gdy zestaw domyślny jest za mały na tej maszynie). Badany
+  moduł nie jest duplikowany na liście. Pula pozostaje ciężka — nie uruchamiaj kilku naraz.
+- **Kiedy tryb puli:** moduł jest `[OSOBNO]` w `SERIAL_MODULES` (raport podaje to wprost), albo porażka z pełnego
+  `make test` nie odtwarza się innym trybem.
+
+### Ważność przebiegu i okno ciszy
+
+Seria jest **poza oknem ciszy** — bez przebiegów, wszystkie nieważne, kod 3 — gdy przed uruchomieniem palników
+loadavg1 ≥ 8 (`--quiet-max`) albo trwa inne polecenie poza piaskownicą: otwarte `outside.started` bez
+`outside.finished` w dziennikach kart Tablicy (`<tablica>/flow/<karta>/journal.jsonl`; `--board`, domyślnie
+`$TIDE_BOARD_DIR` albo `~/DevWorkspace/tide-board`; tylko odczyt). Krok samej pętli nie liczy się jako inny:
+narzędzie pomija polecenia `outside` z worktree, w którym leży (Tide uruchamia `outside` w worktree ticketu),
+z worktree z `--own-worktree` oraz kroki z `--own-step` albo `$TIDE_MODULE_LOOP_STEP`.
+
+Przebieg jest **nieważny**, gdy: loadavg1 na starcie > 1,5 × rdzenie; w trakcie przebiegu (odczyt na starcie,
+co 3 s i na końcu) działało inne `outside` albo inny proces `tools/test_runner.py` spoza drzewa procesów
+narzędzia; w trybach z palnikami loadavg1 nie doszło do progu przed przebiegiem (narzędzie czeka przed każdym
+przebiegiem; przed pierwszym przekroczenie czasu to błąd bez przebiegów, kod 2) albo palnik zginął. Spadek
+loadavg1 poniżej progu w trakcie lub na końcu (krótki moduł, przejścia uruchamiacza) daje tylko ostrzeżenie
+„spadek obciążenia” z minimum z próbek.
+
+### Raport i kody wyjścia
+
+Raport (`summary.json`, `report.md`): SHA, polecenie, tryb (`dowód: palniki-ograniczone`,
+`eksperyment: powolny-silnik`, `odtworzenie: palniki-1,5x | pula`), badany moduł i towarzysze, `[OSOBNO]`, rdzenie, palniki, cel i próg
+loadavg1, `JOBS`, profil i ziarno powolnego silnika, okno ciszy (loadavg przed palnikami, wykryte inne
+`outside`: karta, krok, polecenie), a dla przebiegu: ziarno, loadavg 1/5/15 na starcie i końcu, minimum
+i maksimum loadavg1 z próbek, zakres czynnych palników, ważność i powody nieważności (z innymi `outside`:
+karta, krok, polecenie), ostrzeżenia, kod uruchamiacza, czas i nazwy nieudanych testów osobno dla badanego
+modułu i towarzyszy. Porażki towarzyszy nie zmieniają kodu, ale raport je liczy — wykonawca rozlicza je w notce.
+
+Kody: **0** — dowód: N/N ważnych przebiegów z zielonym badanym modułem w trybie dowodowym; **1** — porażka
+badanego modułu albo nieważny przebieg; **2** — błąd (próg nieosiągnięty przed pierwszym przebiegiem,
+przerwanie); **3** — poza oknem ciszy; **4** — tryb odtworzenia albo eksperymentalny bez porażki (raport mówi
+wprost, że to nie jest dowód). Testy: `daemon/tests/test_module_loop.py` (narzędzie), `daemon/tests/test_slowengine.py` (powolny silnik).
+
+### Punkt opóźnienia powolnego silnika
+
+Punkty i ich parametry (prawdopodobieństwo, najdłuższe opóźnienie w sekundach) są w `PROFILES`
+w `daemon/tests/slowengine.py`. Obecne punkty: `fixture.tick` i `fixture.callback` (tick monitora w
+`FlowInProcess` i odpowiedź po nim), `fixture.observe` (po `wait_column` wątek testu czeka z działającą pętlą
+zdarzeń, więc timer monitora daje kolejne ticki i silnik wyprzedza test jak pod obciążeniem; sam `sleep` w wątku
+testu nie wystarcza, bo zatrzymuje też ticki startujące z timera jego pętli zdarzeń), `claude.start`
+i `claude.result` (atrapa agenta: start procesu kroku, zapis `result.json`), `systemd-run.start`, `systemctl`
+oraz `service.poll` (dodatek do `TIDE_FLOW_POLL_MS` usługi na prywatnej magistrali w `FlowCase`). Nowy punkt:
+
+1. Dopisz go do profilu w `PROFILES` z małym maksimum względem limitów `wait_until` testów, które go przechodzą.
+2. W fiksturze (proces testu) wywołaj `slowengine.sleep("<punkt>")` w miejscu, którego kolejność ma się
+   przesunąć. Liczniki wywołań są osobne dla każdego testu (`slowengine.begin(self.id())` w `setUp`).
+3. W atrapie z `flowfakes.py` dopisz punkt do `SLOW_POINTS[<atrapa>]` razem z wywołaniem `_slow("<punkt>")`
+   w kodzie wklejanym przy instalacji; liczniki atrap leżą w `<katalog atrap>/.slow-counters/`.
+4. Bez `TIDE_TEST_SLOW` nic się nie może zmienić: `sleep` zwraca 0, `install` zapisuje stałe atrap bez zmian
+   (test `test_without_variable_fakes_are_bit_for_bit_the_constants`). Haków w `daemon/tide_daemon/` nie dodajemy.
+
+Opóźnienie to czysta funkcja klucza (profil, ziarno, przebieg), nazwy punktu i numeru wywołania. Liczba wywołań
+punktu w teście zależy jednak od przeplotu wątków (np. liczby ticków), więc powtórzenie z tym samym ziarnem daje
+te same opóźnienia w tej samej kolejności wywołań, ale nie gwarantuje identycznego przeplotu.
 
 ## Raport zależności testów od silnika
 

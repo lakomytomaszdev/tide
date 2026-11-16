@@ -2,7 +2,9 @@
 // wysokość i pływanie panelu oraz wypełnianie menedżera zadań. Panel utworzony przez Tide znika.
 
 var tideDock = P.dock ? panelById(P.dock) : null;
-var tideReport = {dock: P.dock, removed: []};
+// Dock bez widoku (tidePanelHasView) trafia do `orphans`: widżety Tide znikają, ale szerokość, wysokość
+// i pływanie panelu nie są czytane ani przywracane.
+var tideReport = {dock: P.dock, removed: [], skipped: false, orphans: tideOrphanIds()};
 if (tideDock) {
     if (P.created) {
         tideDock.remove();
@@ -20,7 +22,10 @@ if (tideDock) {
                 tideWrite(tideW, ["General"], {fill: true});
             }
         }
-        if (P.previous) {
+        if (P.previous && !tidePanelHasView(tideDock)) {
+            // Instalator zachowa dock-installed.json (jedyna kopia `previous`) do ponowienia z widokiem.
+            tideReport.skipped = true;
+        } else if (P.previous) {
             tideDock.lengthMode = P.previous.lengthMode;
             tideDock.alignment = P.previous.alignment;
             tideDock.height = P.previous.height;

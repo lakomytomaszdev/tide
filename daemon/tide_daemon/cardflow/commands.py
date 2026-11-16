@@ -129,7 +129,7 @@ class Ports:
     unit_result: Callable = None       # (start przebiegu) → liczba, `zatrzymane` albo None (trwa)
     unit_stop: Callable = None         # (jednostka) → zatrzymanie bez czekania
     unit_gone: Callable = None         # (jednostka) → True tylko przy potwierdzonym końcu (`unknown` = żyje)
-    machine_load: Callable = None      # () → heavyqueue.Load
+    machine_load: Callable = None      # () → (loadavg 1/5/15 albo None, rdzenie albo None) — K-100 PT-423
     # K-109 PT-485: odzyskiwanie zamiaru bez startu — znacznik próby `abandoned` (O_EXCL) i stan jednostki.
     unit_abandon: Callable = None      # (plik exit-code) → True: polecenie nigdy nie wystartuje; False: wystartowało
     unit_state: Callable = None        # (jednostka) → `active`, `gone` albo `unknown`
@@ -325,20 +325,22 @@ def record_finished(ports, card: str, name: str, ticket: str, started: dict, cod
     if family(started.get("type")) == "command":
         # Ten sam przebieg kończy się w swojej rodzinie (K-109 PT-479); pola przebiegu z jego startu,
         # obciążenie maszyny z chwili końca.
-        load = ports.machine_load()
+        loadavg, cores = ports.machine_load()
         ports.journal.append(card, "command.finished", step=name, ticket=ticket,
                              command=started.get("command") or "", exit=code, tail=tail,
                              **{"attempt": started.get("attempt") or "", "executor": started.get("executor") or "",
                                 "isolation": started.get("isolation") or "", "class": started.get("class") or "",
                                 "consentVersion": started.get("consentVersion") or "",
                                 "unit": started.get("unit") or "", "exitFile": started.get("exitFile") or "",
-                                "loadavg": load.avg1, "cores": load.cores,
+                                "loadavg": loadavg, "cores": cores,
                                 "source": started.get("source") or ""})
     else:
         # Przebieg rozpoczęty dawną drogą (`outside.started` sprzed PT-479, a próby testów po scaleniu sprzed
-        # PT-483) kończy się w swojej rodzinie.
+        # PT-483) kończy się w swojej rodzinie; obciążenie maszyny jak w `outside.finished` od K-100 (PT-423).
+        loadavg, cores = ports.machine_load()
         ports.journal.append(card, "outside.finished", step=name, ticket=ticket,
-                             command=started.get("command") or "", exit=code, tail=tail)
+                             command=started.get("command") or "", exit=code, tail=tail, loadavg=loadavg,
+                             cores=cores)
 
 
 def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: dict, *, history=None) -> str:
@@ -377,10 +379,10 @@ def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: 
                   "isolation": intent.get("isolation") or "", "class": intent.get("class") or "",
                   "consentVersion": intent.get("consentVersion") or "", "unit": unit, "exitFile": exit_file,
                   "source": intent.get("source") or ""}
-        load = ports.machine_load()
+        loadavg, cores = ports.machine_load()
         if abandoned:
             ports.journal.append(card, "command.finished", **fields, exit=runner_mod.STOPPED, tail="",
-                                 reason=commandruns.NOT_STARTED, loadavg=load.avg1, cores=load.cores)
+                                 reason=commandruns.NOT_STARTED, loadavg=loadavg, cores=cores)
             ports.outside_busy(card)        # buduje zbiór aktywnych po restarcie
             state.active.pop(name, None)
             state.waiting.pop(name, None)
@@ -394,7 +396,7 @@ def outside_recover(ports, state: CommandsState, card: str, step: dict, intent: 
             return ""
         ports.journal.append(card, "command.started", **fields, log=intent.get("log") or "",
                              worktree=intent.get("worktree") or "", head=intent.get("head") or "",
-                             rerunOf=intent.get("rerunOf") or "", loadavg=load.avg1, cores=load.cores,
+                             rerunOf=intent.get("rerunOf") or "", loadavg=loadavg, cores=cores,
                              recovered=True)
         ports.outside_busy(card)
         state.active[name] = (card, unit)
@@ -919,11 +921,14 @@ def merge_check_run(ports, state: CommandsState, card: str, step: dict, entry: d
 
 def merge_check_finish(ports, card: str, step: dict, entry: dict, code, log: str) -> None:
     """Zapis `merge.check-finished` bieżącej próby, dokładnie raz (inna próba albo zapisany wynik — bez zapisu)."""
+    # Padnięte moduły i testy z `summary.json` uruchamiacza (K-100, PT-423); błąd odczytu daje puste listy.
+    failed_modules, failed_tests = mergecheck.failed_from_summary(log)
     journal = ports.journal
     with journal.lock:
         item = journal.state(card).merge_checks.get(step["ticket"]) or {}
         if (item.get("requested") or {}).get("check") == entry["check"] and item.get("finished") is None:
-            journal.append(card, mergecheck.FINISHED, ticket=step["ticket"], check=entry["check"], exit=code, log=log)
+            journal.append(card, mergecheck.FINISHED, ticket=step["ticket"], check=entry["check"], exit=code, log=log,
+                           failedModules=failed_modules, failedTests=failed_tests)
 
 
 def merge_check_still_allowed(ports, state: CommandsState, card: str, step: dict) -> bool:
@@ -1001,8 +1006,8 @@ def merge_check_start(ports, state: CommandsState, card: str, step: dict, entry:
         # Awaria między zamiarem a zapisem startu: odzyskiwanie (`outside_recover` z `merge_check_run`) rozstrzyga
         # próbę znacznikiem `O_EXCL`, nigdy nie uruchamia jej drugi raz.
         handle = ports.runner.run_command(request)
-        load = ports.machine_load()
-        journal.append(card, "command.started", **fields, loadavg=load.avg1, cores=load.cores)
+        loadavg, cores = ports.machine_load()
+        journal.append(card, "command.started", **fields, loadavg=loadavg, cores=cores)
     state.active[name] = (card, handle.unit)
 
 

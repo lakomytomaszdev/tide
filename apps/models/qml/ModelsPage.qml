@@ -231,7 +231,7 @@ Rectangle {
                     elide: Text.ElideRight
                 }
             }
-            PillButton {
+            Tide.Button {
                 objectName: "refreshButton"
                 visible: root.ready
                 text: "Sprawdź serwery teraz"
@@ -299,7 +299,7 @@ Rectangle {
             contentWidth: width
             contentHeight: content.implicitHeight + 8
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             RowLayout {
                 id: content

@@ -16,7 +16,7 @@ from unittest import mock
 
 from tide_daemon.cardflow_monitor import CardFlowMonitor
 
-from . import flowfakes
+from . import flowfakes, slowengine
 from .privatebus import app, wait_until
 from .test_cardflow_dbus import CLAUDE_MD, git, test_root
 
@@ -163,6 +163,7 @@ class FlowInProcess(unittest.TestCase):
 
     def setUp(self):
         app()
+        slowengine.begin(self.id())
         self.base = test_root()
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
         for name in ("ws", "home", "run", "tmp", "config/tide", "state"):
@@ -225,6 +226,18 @@ class FlowInProcess(unittest.TestCase):
                             which=lambda name: self.fakes.get(name), grace=5.0)
         if self.merge_checks_pass:
             pass_merge_checks(engine)
+        if slowengine.active():
+            # PT-417: powolny silnik — opóźniony tick monitora i opóźniona odpowiedź (callback po ticku).
+            tick = engine.tick
+
+            def slow_tick():
+                slowengine.sleep("fixture.tick")
+                try:
+                    return tick()
+                finally:
+                    slowengine.sleep("fixture.callback")
+
+            engine.tick = slow_tick
         flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         stop = flow.stop
@@ -317,6 +330,12 @@ class FlowInProcess(unittest.TestCase):
         # Kolumna liczy się z kopii dziennika w usłudze; plik w tablicy dostaje to samo zdarzenie chwilę później.
         journal = self.flow.engine.journal
         self.assertTrue(wait_until(lambda: self.events(card_id) == journal.read(card_id), timeout=5))
+        delay = slowengine.take("fixture.observe")
+        if delay:
+            # PT-417: wątek testu sprawdza stan później (jak pod obciążeniem), a jego pętla zdarzeń dalej daje
+            # timerowi monitora kolejne ticki — silnik wyprzedza test o kilka ticków. Sam sen zatrzymałby też
+            # silnik, bo ticki startują z timera pętli zdarzeń tego wątku.
+            wait_until(lambda: False, timeout=delay, step=0.01)
         return card
 
     def events(self, card_id) -> list:

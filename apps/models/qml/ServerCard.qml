@@ -199,16 +199,12 @@ Rectangle {
             }
 
             // Przełącznik „ten komputer / Mac”: jedno kliknięcie, role bez przypięcia idą za nim.
-            PillButton {
+            Tide.Button {
                 objectName: "useButton"
                 Layout.topMargin: 4
                 visible: !card.isDefault
                 text: card.busy("default") ? "Przełączam…" : "Używaj tego serwera"
                 enabled: !card.busy("default")
-                implicitHeight: 34
-                strong: true
-                fill: Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
-                textColor: Tide.Tokens.accent
                 onClicked: card.page.send("SetDefault", card.server.name, card.tag + ":default")
             }
             Note {
@@ -275,20 +271,15 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 8
                     Item { Layout.fillWidth: true }
-                    PillButton {
+                    Tide.Button {
                         text: "Anuluj"
-                        implicitHeight: 32
-                        fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
                         onClicked: card.removeCancelled()
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "removeButton"
                         text: card.busy("remove") ? "Usuwam…" : "Usuń serwer"
                         enabled: !card.busy("remove")
-                        implicitHeight: 32
-                        strong: true
-                        fill: Tide.Tokens.negative
-                        textColor: Tide.Tokens.backgroundDesktop
+                        variant: "danger"
                         onClicked: card.page.send("RemoveEndpoint", card.server.name, card.tag + ":remove")
                     }
                 }

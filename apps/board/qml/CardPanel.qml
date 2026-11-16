@@ -3,13 +3,17 @@
 // i repozytoria — wybranie repozytorium zakłada projekt), tagi (tagi projektu są dziedziczone i stałe),
 // opis, notatka. Istniejąca karta ma też przeniesienie między kolumnami ręcznymi i archiwizację.
 // Błąd z usługi pokazuje się w panelu (komunikat po polsku), commitError — dyskretnie pod nim.
-// Ctrl+Enter zapisuje, Esc zamyka. Teksty z karty to dane: zawsze zwykły tekst.
+// Teksty z karty to dane: zawsze zwykły tekst.
+// K-128 (PT-504): panel stoi w `Tide.Sheet` (ok. 64 % szerokości okna, najmniej 640 px) i ma dwa tryby (`mode`):
+// „Czytaj” (domyślny po kliknięciu karty: tytuł, tagi, pochodzenie, ramka YouTracka, zakładki Opis | Plan |
+// Specyfikacja, opis przez Tide.Prose, przebieg karty w HistoryBlock) i „Edytuj” (formularz; domyślny dla nowej
+// karty). Ctrl+Enter zapisuje; Esc w edycji wraca do czytania bez zapisu, w czytaniu zamyka panel.
 // PT-134: dla karty z pełnym widokiem panel jest tylko szufladą szybkiej edycji opisu (`descriptionOnly`: pole „Opis”,
 // „Zapisz opis”, Esc anuluje bez zapisu) albo szufladą nowej karty; rzadkie ustawienia są w pełnej karcie
 // (CardFullView). Pełny formularz zostaje na razie dla kart bez dziennika — sprząta go PT-135.
-// YouTrack (PT-7): pole „Zgłoszenie w YouTracku” (klucz albo adres zgłoszenia), a przy połączonej karcie —
-// stan zgłoszenia, stan synchronizacji, „Otwórz w YouTracku” i przy konflikcie wybór „Weź z YouTracka” /
-// „Nadpisz z Tide” (/Board ResolveYouTrack).
+// YouTrack (PT-7, PT-504): pola „Zgłoszenie w YouTracku” w formularzu już nie ma (formularz nie wysyła klucza
+// `youtrack`). Przy połączonej karcie tryb czytania pokazuje stan zgłoszenia, stan synchronizacji, „Otwórz
+// w YouTracku” i przy konflikcie wybór „Weź z YouTracka” / „Nadpisz z Tide” (/Board ResolveYouTrack).
 // Plan i specyfikacja karty (PT-5): zakładki „Opis” | „Plan” | „Specyfikacja” — dwie ostatnie tylko,
 // gdy /Board CardDocs(id) je znalazł. Wybrana zakładka zostaje dla kolejnych kart, póki działa okno
 // (karta bez takiego dokumentu pokazuje „Opis”). Przy dokumencie panel się poszerza (do 860 px, „Rozwiń” — prawie
@@ -23,8 +27,9 @@ import "tide" as Tide
 import "board.js" as Logic
 import "cardDocs.js" as Docs
 import "card" as CardUi
+import "git/start.js" as Start
 
-Rectangle {
+FocusScope {
     id: panel
 
     property var snapshot: null
@@ -50,14 +55,29 @@ Rectangle {
     property string docsText: ""
     property string docsPending: ""          // ID karty, na której CardDocs czekamy ("" — nic w drodze)
     property string tab: "opis"              // ostatni wybór użytkownika (opis | plan | spec) — także dla następnej karty
-    property bool expanded: false
+    property bool expanded: false            // „Rozwiń” w menu ⋯: szuflada na prawie całe okno
     property real maxWidth: 1200             // szerokość dostępna w oknie (ustawia BoardPage)
     property var renderer: null              // backend.renderMarkdown (przez BoardPage) albo null
     readonly property bool editing: card !== null
+    // Tryb panelu istniejącej karty: "read" (domyślny po kliknięciu) albo "edit". Nowa karta i szuflada opisu
+    // zawsze pokazują formularz.
+    property string mode: "read"
     // Szuflada szybkiej edycji opisu (PT-134): tylko pole „Opis” i „Zapisz opis” — rzadkie ustawienia są w pełnej karcie.
     property bool descriptionOnly: false
-    readonly property string shownTab: editing && !descriptionOnly ? Docs.effectiveTab(docs, tab) : "opis"
-    readonly property bool reading: shownTab !== "opis"
+    readonly property bool formMode: !editing || descriptionOnly || mode === "edit"
+    readonly property bool reading: !formMode
+    // Esc w formularzu istniejącej karty wraca do czytania (Sheet oddaje wtedy zdarzenie panelowi).
+    readonly property bool escapeReturns: editing && !descriptionOnly && mode === "edit"
+    readonly property string shownTab: reading ? Docs.effectiveTab(docs, tab) : "opis"
+    readonly property bool docShown: shownTab !== "opis"
+    readonly property alias sheet: sheet
+    readonly property alias menuList: menuList
+    property bool menuOpen: false
+    readonly property var history: card && card.derived && card.derived.flow && Array.isArray(card.derived.flow.history)
+                                   ? card.derived.flow.history : []
+    property bool canLaunch: false                 // ustawia BoardPage (agent dostępny)
+    readonly property color projectTone: Tide.Tokens.teal
+    signal launchRequested(string cardId)           // „Zleć agentowi…”
     readonly property var docTabs: Docs.tabs(docs)
     readonly property var flowPlan: editing && card && card.derived && card.derived.flow
                                     ? (card.derived.flow.plan || null) : null
@@ -96,15 +116,11 @@ Rectangle {
         || (card && card.derived && card.derived.flow && card.derived.flow.environment) || null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
+    signal baseChangeRequested(string cardId)       // „Zmień gałąź startową…”: pełna karta z podglądem korekty bazy
     readonly property string cardBranch: card && card.derived && card.derived.flow && card.derived.flow.cardBranch
                                          ? card.derived.flow.cardBranch : ""
-    signal mergeMainRequested(string cardId)
-    signal previewMergeRequested(string cardId, string target)
-    signal chooseMergeRequested(string cardId)
-    readonly property var mergeBase: card && card.derived && card.derived.flow ? card.derived.flow.base : null
-    readonly property string defaultMergeTarget: mergeBase && mergeBase.status === "known"
-                                                 && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
-                                                 ? mergeBase.baseRef.substring(11) : ""
+    signal mergeRequested(string cardId)            // „Scal…”: okno scalania z podglądem dla domyślnego celu
+    readonly property bool merged: Boolean(card && card.derived && card.derived.flow && card.derived.flow.merged)
 
     // PT-316: decyzja dotyczy pytania pokazanego w panelu — ticket i runda idą razem z wyborem (JSON dla usługi).
     function reviewChoice(choice) {
@@ -139,14 +155,51 @@ Rectangle {
         return out
     }
 
+    // Klucza `youtrack` formularz nie niesie: updateRequest/createRequest go pomijają, więc zapis z panelu nie
+    // zmienia ani nie kasuje zgłoszenia karty w usłudze (`youtrack: ""` kasuje klucz).
     function form() {
-        const key = Logic.issueKey(youtrackField.text)
         return { title: titleField.text, description: descriptionEdit.text, note: noteField.text, tags: tags,
-                 project: project, projectKind: projectKind, column: column,
-                 youtrack: key === null ? youtrackField.text.trim() : key }
+                 project: project, projectKind: projectKind, column: column }
     }
 
-    // Wypełnia formularz kartą (albo pustym, dla nowej) — przy otwarciu panelu.
+    // Wypełnia pola formularza kartą (albo pustym, dla nowej); `base` to karta z tej chwili.
+    function resetForm() {
+        base = card ? Object.assign({}, card, {tags: (card.tags || []).slice()}) : null
+        titleField.text = card ? card.title : ""
+        descriptionEdit.text = card ? card.description || "" : ""
+        noteField.text = card ? card.note || "" : ""
+        tags = card ? (card.tags || []).slice() : []
+        projectKind = card && card.project ? "project" : ""
+        project = card ? card.project || "" : ""
+        projectLabel = card ? card.projectName || card.project || "" : ""
+    }
+
+    function focusMode() {
+        if (formMode) {
+            if (descriptionOnly) descriptionEdit.forceActiveFocus()
+            else titleField.focusInput()
+        } else {
+            panel.forceActiveFocus()
+        }
+    }
+
+    // Czytaj ↔ Edytuj. Wejście w edycję wypełnia formularz bieżącą kartą, a powrót do czytania odrzuca zmiany.
+    function setMode(value) {
+        if (!editing || descriptionOnly || value === mode) return
+        error = ""
+        if (value === "edit") resetForm()
+        mode = value
+        Qt.callLater(focusMode)
+    }
+
+    // Esc: w edycji istniejącej karty — powrót do czytania bez zapisu (i bez wywołania usługi), poza tym zamknięcie.
+    function handleEscape() {
+        if (menuOpen) menuOpen = false
+        else if (escapeReturns) setMode("read")
+        else closeRequested()
+    }
+
+    // Wypełnia panel kartą (albo pustym, dla nowej) — przy otwarciu: istniejąca karta w trybie czytania, nowa w edycji.
     function load() {
         error = ""
         notice = ""
@@ -157,21 +210,14 @@ Rectangle {
         cardEnvironment.toggleLine = ""
         cardEnvironment.editing = false
         busy = false
-        base = card ? Object.assign({}, card, {tags: (card.tags || []).slice()}) : null
-        titleField.text = card ? card.title : ""
-        descriptionEdit.text = card ? card.description || "" : ""
-        noteField.text = card ? card.note || "" : ""
-        youtrackField.text = card ? card.youtrack || "" : ""
-        tags = card ? (card.tags || []).slice() : []
-        projectKind = card && card.project ? "project" : ""
-        project = card ? card.project || "" : ""
-        projectLabel = card ? card.projectName || card.project || "" : ""
+        menuOpen = false
+        mode = "read"
+        resetForm()
         docs = null
         docsText = ""
         docsPending = ""
         requestDocs()   // `tab` zostaje: ostatnio wybrana zakładka, póki działa okno Tide
-        if (descriptionOnly) descriptionEdit.forceActiveFocus()
-        else titleField.focusInput()
+        focusMode()
     }
 
     // Bez kolejki: póki odpowiedź dla tej karty nie wróciła, kolejne odświeżenie (5 s, Changed) czeka.
@@ -198,14 +244,10 @@ Rectangle {
             titleField.focusInput()
             return
         }
-        if (Logic.issueKey(youtrackField.text) === null) {
-            error = "Zgłoszenie w YouTracku to klucz, np. LEGAL-35 (albo adres zgłoszenia)."
-            youtrackField.focusInput()
-            return
-        }
         const request = editing ? Logic.updateRequest(base || card, values) : Logic.createRequest(values)
         if (editing && Object.keys(request).length === 0) {
-            closeRequested()
+            if (escapeReturns) setMode("read")   // bez zmian: wraca do czytania, bez wywołania usługi
+            else closeRequested()
             return
         }
         error = ""
@@ -219,27 +261,20 @@ Rectangle {
         tags = tags.concat([value])
     }
 
-    width: reading ? (expanded ? maxWidth : Math.min(maxWidth, 860)) : 420
-    Behavior on width { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
-    radius: 16
-    color: Tide.Tokens.backgroundPanel
-    border.width: 1
-    border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.09)
+    focus: true
     Accessible.role: Accessible.Dialog
     Accessible.name: editing ? "Karta " + card.id : "Nowa karta"
 
+    // Ctrl+Enter zapisuje w formularzu. Esc, którego Sheet nie wziął (edycja istniejącej karty), wraca do czytania.
     Keys.onPressed: event => {
         if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
-            panel.save()
+            if (panel.formMode) panel.save()
             event.accepted = true
         } else if (event.key === Qt.Key_Escape) {
-            panel.closeRequested()
+            panel.handleEscape()
             event.accepted = true
         }
     }
-
-    // Klik w panel nie przechodzi do tablicy pod spodem.
-    MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: wheel => wheel.accepted = true }
 
     // Plan i specyfikacja na żywo: po nowej migawce (Changed — także plik w docs/ tablicy) i co 5 s
     // (plan w repozytorium projektu nie zmienia migawki).
@@ -252,15 +287,19 @@ Rectangle {
         onTriggered: panel.requestDocs()
     }
 
-    ColumnLayout {
+    Tide.Sheet {
+        id: sheet
+        objectName: "cardSheet"
         anchors.fill: parent
-        anchors.margins: 18
-        spacing: 14
+        title: panel.editing ? "Karta " + panel.card.id : "Nowa karta"
+        widthFraction: panel.descriptionOnly ? 0.4 : panel.expanded ? 0.96 : 0.64
+        minSheetWidth: panel.descriptionOnly ? 420 : 640
+        scrolls: !panel.docShown
+        contentTakesEscape: panel.escapeReturns
+        showFooter: panel.formMode
+        onCloseRequested: panel.closeRequested()
 
-        // Nagłówek.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 10
+        header: [
             Text {
                 visible: panel.editing
                 text: panel.editing ? panel.card.id : ""
@@ -269,9 +308,11 @@ Rectangle {
                 font.family: Tide.Theme.monoFamily
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
-            }
+            },
             Text {
-                Layout.fillWidth: true
+                objectName: "cardColumnLabel"
+                Layout.fillWidth: !panel.editing
+                Layout.maximumWidth: 180
                 text: panel.editing ? Logic.columnLabel(panel.snapshot, Logic.displayColumn(panel.card))
                                     : "Nowa karta · " + Logic.columnLabel(panel.snapshot, panel.column)
                 textFormat: Text.PlainText
@@ -281,37 +322,203 @@ Rectangle {
                 font.weight: panel.editing ? Font.Normal : Font.DemiBold
                 elide: Text.ElideRight
                 Accessible.role: Accessible.Heading
+            },
+            Row {
+                objectName: "cardProjectLabel"
+                visible: panel.editing && panel.projectLabel !== ""
+                spacing: 6
+                Dot {
+                    anchors.verticalCenter: parent.verticalCenter
+                    colorOverride: panel.projectTone
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, 200)
+                    text: panel.projectLabel
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                    elide: Text.ElideRight
+                }
+            },
+            Item { Layout.fillWidth: true; visible: panel.editing },
+            Segmented {
+                objectName: "cardMode"
+                visible: panel.editing && !panel.descriptionOnly
+                itemHeight: 28
+                options: [{ value: "read", label: "Czytaj" }, { value: "edit", label: "Edytuj" }]
+                current: panel.mode
+                onPicked: value => panel.setMode(value)
+            },
+            Tide.Button {
+                objectName: "cardLaunch"
+                visible: panel.editing && !panel.descriptionOnly
+                enabled: panel.canLaunch && !panel.busy
+                text: "Zleć agentowi…"
+                toolTip: "Uruchom agenta dla tej karty"
+                onClicked: panel.launchRequested(panel.card.id)
+            },
+            Tide.Button {
+                objectName: "cardMenu"
+                visible: panel.editing && !panel.descriptionOnly
+                iconOnly: true
+                variant: "ghost"
+                text: "⋯"
+                toolTip: "Więcej akcji"
+                onClicked: panel.menuOpen = !panel.menuOpen
             }
-            PillButton {
-                objectName: "cardExpand"
-                visible: panel.reading
-                implicitHeight: 30
-                pixelSize: 12
-                flat: true
-                text: panel.expanded ? "Zwęź" : "Rozwiń"
-                toolTip: panel.expanded ? "Panel o zwykłej szerokości" : "Panel na prawie całe okno"
-                onClicked: panel.expanded = !panel.expanded
+        ]
+
+        // Czytaj: tytuł, tagi, pochodzenie.
+        Text {
+            objectName: "cardReadTitle"
+            Layout.fillWidth: true
+            visible: panel.reading
+            text: panel.card ? panel.card.title : ""
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textPrimary
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 21
+            font.weight: Font.DemiBold
+            wrapMode: Text.Wrap
+            Accessible.role: Accessible.Heading
+        }
+        Flow {
+            objectName: "cardReadTags"
+            Layout.fillWidth: true
+            visible: panel.reading && repeaterTags.count > 0
+            spacing: 6
+            Repeater {
+                id: repeaterTags
+                model: panel.card ? (panel.card.resolvedTags || panel.card.tags || []) : []
+                TagChip {
+                    required property var modelData
+                    name: modelData
+                    dotColor: panel.tagTone ? panel.tagTone(modelData) : Tide.Tokens.textMuted
+                }
             }
-            PillButton {
-                implicitWidth: 30
-                implicitHeight: 30
-                flat: true
-                text: "✕"
-                toolTip: "Zamknij (Esc)"
-                onClicked: panel.closeRequested()
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: panel.reading
+            spacing: 10
+            Tide.Button {
+                objectName: "cardSourceIssue"
+                visible: !!panel.card && !!panel.card.sourceIssue && !panel.descriptionOnly
+                small: true
+                text: panel.card ? "Raport i dowody " + (panel.card.sourceIssue || "") + " · wersja " + (panel.card.sourceIssueVersion || 0) : ""
+                onClicked: panel.navigateRequested("issues", panel.card.sourceIssue)
+            }
+            Text {
+                objectName: "cardDates"
+                Layout.fillWidth: true
+                text: panel.editing ? "utworzona " + Logic.when(panel.card.createdTs, panel.nowTs)
+                                      + (panel.card.updatedTs && panel.card.updatedTs !== panel.card.createdTs
+                                         ? " · zmieniona " + Logic.when(panel.card.updatedTs, panel.nowTs) : "")
+                                    : ""
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 12
+                elide: Text.ElideRight
+            }
+        }
+
+        // Stan zgłoszenia i synchronizacji (PT-7) — tylko połączona karta; od PT-504 w trybie czytania (jedyne miejsce
+        // rozstrzygania konfliktu synchronizacji).
+        Rectangle {
+            id: ytBox
+            objectName: "cardYouTrackBox"
+            readonly property var sync: panel.editing && panel.card.youtrackSync ? panel.card.youtrackSync : null
+            readonly property bool conflict: !!sync && sync.status === "conflict"
+            Layout.fillWidth: true
+            visible: sync !== null && panel.reading
+            radius: Tide.Tokens.radiusSmall
+            color: conflict ? Tide.Theme.alpha(Tide.Tokens.rose, 0.10) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04)
+            border.width: conflict ? 1 : 0
+            border.color: Tide.Theme.alpha(Tide.Tokens.rose, 0.45)
+            implicitHeight: ytColumn.implicitHeight + 16
+            ColumnLayout {
+                id: ytColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 8
+                anchors.leftMargin: 12
+                spacing: 6
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: Logic.syncGlyph(ytBox.sync)
+                        visible: text !== ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens[Logic.syncTone(ytBox.sync)]
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        objectName: "cardYouTrackState"
+                        Layout.fillWidth: true
+                        text: ytBox.sync ? (ytBox.sync.issue || "") + (ytBox.sync.issueState ? " · " + ytBox.sync.issueState : "") : ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                    Tide.Button {
+                        objectName: "cardYouTrackOpen"
+                        visible: Logic.youtrackUrl(panel.card) !== ""
+                        small: true
+                        variant: "ghost"
+                        text: "Otwórz w YouTracku ↗"
+                        toolTip: Logic.youtrackUrl(panel.card)
+                        onClicked: panel.linkRequested(Logic.youtrackUrl(panel.card))
+                    }
+                }
+                Text {
+                    objectName: "cardYouTrackText"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: ytBox.sync ? (ytBox.sync.text || "")
+                                       + (ytBox.sync.via === "ticket" && ytBox.sync.label ? " · stan według: " + ytBox.sync.label : "")
+                                     : ""
+                    textFormat: Text.PlainText
+                    color: ytBox.conflict ? Tide.Tokens.rose : Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: ytBox.conflict
+                    spacing: 8
+                    Tide.Button {
+                        objectName: "cardYouTrackTake"
+                        small: true
+                        text: "Weź z YouTracka"
+                        toolTip: "Zostaw stan z YouTracka — Tide zapisze dopiero przy następnej zmianie karty"
+                        onClicked: panel.youtrackResolveRequested(panel.card.id, "youtrack")
+                    }
+                    Tide.Button {
+                        objectName: "cardYouTrackOverwrite"
+                        small: true
+                        text: "Nadpisz z Tide"
+                        toolTip: "Zapisz w YouTracku stan karty mimo zmiany ręcznej"
+                        onClicked: panel.youtrackResolveRequested(panel.card.id, "tide")
+                    }
+                    Item { Layout.fillWidth: true }
+                }
             }
         }
 
         // Zakładki: Opis zawsze, Plan i Specyfikacja — gdy są.
-        PillButton {
-            objectName: "cardSourceIssue"
-            visible: !!panel.card && !!panel.card.sourceIssue && !panel.descriptionOnly
-            text: panel.card ? "Raport i dowody " + (panel.card.sourceIssue || "") + " · wersja " + (panel.card.sourceIssueVersion || 0) : ""
-            onClicked: panel.navigateRequested("issues", panel.card.sourceIssue)
-        }
         Segmented {
             objectName: "cardTabs"
-            visible: panel.editing && !panel.descriptionOnly && panel.docTabs.length > 1
+            visible: panel.reading && panel.docTabs.length > 1
             itemHeight: 28
             options: panel.docTabs
             current: panel.shownTab
@@ -320,7 +527,7 @@ Rectangle {
         Text {
             objectName: "cardDocsWarnings"
             Layout.fillWidth: true
-            visible: panel.reading && !!panel.docs && (panel.docs.warnings || []).length > 0
+            visible: panel.docShown && !!panel.docs && (panel.docs.warnings || []).length > 0
             text: panel.docs && panel.docs.warnings ? panel.docs.warnings.join(" · ") : ""
             textFormat: Text.PlainText
             color: Tide.Tokens.butter
@@ -332,12 +539,11 @@ Rectangle {
         ColumnLayout {
             objectName: "cardPlanProposal"
             Layout.fillWidth: true
-            visible: !panel.descriptionOnly && !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
+            visible: panel.reading && !!panel.flowPlan && (panel.planEntries().length > 0 || panel.flowPlan.status !== "reviewing")
             spacing: 5
-            PillButton {
+            Tide.Button {
                 objectName: "cardOpenPlanManager"
                 text: "Otwórz plan na całym ekranie"
-                outline: true
                 onClicked: panel.planManagerRequested()
             }
             Text {
@@ -396,7 +602,7 @@ Rectangle {
                     currentIndex: -1
                     Accessible.name: "Model do przeglądu planu"
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "cardPlanRunReview"
                     text: "Uruchom przegląd"
                     enabled: !panel.busy && !!planReviewPicker.currentValue
@@ -408,6 +614,8 @@ Rectangle {
             // wysokości decyzje kroków (Zezwól, Ponów) znikały pod krawędzią (K-33). Po zatwierdzeniu planu
             // review jest historią i jest w widoku planu na całym ekranie.
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: planReviewScroll
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.min(planReviewText.implicitHeight, 110)
@@ -452,7 +660,7 @@ Rectangle {
                 contentHeight: planRows.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 ColumnLayout {
                     id: planRows
                     width: parent.width
@@ -477,10 +685,10 @@ Rectangle {
                                 font.pixelSize: 12
                                 wrapMode: Text.Wrap
                             }
-                            PillButton {
+                            Tide.Button {
                                 objectName: "cardPlanTicket-" + (index + 1)
                                 text: ticket.editable === false || panel.flowPlan.status === "reviewing" ? "Kartka" : "Popraw ticket"
-                                outline: true
+                                small: true
                                 enabled: !!ticket.cardPath
                                 onClicked: {
                                     if (ticket.editable !== true || panel.flowPlan.status === "reviewing") panel.openFileRequested(ticket.cardPath)
@@ -504,7 +712,7 @@ Rectangle {
                 QQC2.TextField { id: planExecutor; objectName: "cardPlanExecutor"; Layout.fillWidth: true; placeholderText: "Wykonawca" }
                 QQC2.TextField { id: planReviewer; objectName: "cardPlanReviewer"; Layout.fillWidth: true; placeholderText: "Recenzent" }
                 QQC2.TextArea { id: planBody; objectName: "cardPlanBody"; Layout.fillWidth: true; wrapMode: TextEdit.Wrap; placeholderText: "Kartka przekazania" }
-                PillButton {
+                Tide.Button {
                     objectName: "cardPlanSaveTicket"
                     text: "Zapisz zmiany ticketu"
                     enabled: !panel.busy
@@ -525,20 +733,20 @@ Rectangle {
             }
             RowLayout {
                 visible: planFeedback.visible
-                PillButton {
+                Tide.Button {
                     objectName: "cardPlanReturn"
                     text: "Odeślij z uwagami"
                     enabled: !panel.busy && !!panel.flowPlan && planFeedback.text.trim().length > 0 && (!(panel.flowPlan.revision && panel.flowPlan.revision.seq) || panel.flowPlan.revision.failed)
                     onClicked: panel.planEditRequested(panel.card.id, {action: "return", feedback: planFeedback.text})
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "cardPlanEnter"
                     text: "Wejdź w planowanie"
                     enabled: !panel.busy && !!panel.flowPlan && !!panel.flowPlan.plannerStep
                     onClicked: panel.planEditRequested(panel.card.id, {action: "enter"})
                 }
             }
-            PillButton {
+            Tide.Button {
                 objectName: "cardPlanDiscardRevision"
                 text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.kind === "append"
                       ? "Odrzuć dopisanie" : "Odrzuć błędną poprawkę"
@@ -558,8 +766,9 @@ Rectangle {
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt
             }
-            PillButton {
+            Tide.Button {
                 objectName: "cardPlanApprove"
+                variant: "primary"
                 text: panel.planApproving ? "Zatwierdzanie…"
                       : panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.pending
                       ? "Zatwierdź różnicę" : "Zatwierdź plan i rozpocznij implementację"
@@ -575,7 +784,7 @@ Rectangle {
         CardUi.CardEnvironment {
             id: cardEnvironment
             Layout.fillWidth: true
-            environment: panel.descriptionOnly ? null : panel.flowEnvironment
+            environment: panel.reading ? panel.flowEnvironment : null
             planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
             planApproving: panel.planApproving
             busy: panel.busy
@@ -587,10 +796,19 @@ Rectangle {
             }
         }
 
+        // „Start od: …” (K-99, PT-389): panel tylko sygnalizuje; podgląd korekty bazy otwiera pełna karta (BoardPage).
+        CardUi.CardStartLine {
+            objectName: "cardPanelStartLine"
+            Layout.fillWidth: true
+            visible: panel.reading && !panel.docShown && text !== ""
+            derived: panel.card ? panel.card.derived : null
+            onChangeRequested: panel.baseChangeRequested(panel.card.id)
+        }
+
         // „Zmiany gałęzi” (K-36, #17): dla karty z gałęzią w każdym stanie; widok diffa otwiera BoardPage.
-        PillButton {
+        Tide.Button {
             objectName: "cardBranchDiff"
-            visible: panel.editing && !panel.descriptionOnly && !panel.reading && panel.cardBranch !== ""
+            visible: panel.reading && !panel.docShown && panel.cardBranch !== ""
             text: "Zmiany gałęzi"
             toolTip: "Pokaż zmiany gałęzi karty względem bazy"
             onClicked: panel.branchDiffRequested(panel.card.id)
@@ -600,7 +818,7 @@ Rectangle {
             objectName: "cardFlowClosing"
             Layout.fillWidth: true
             spacing: 6
-            visible: Boolean(panel.editing && !panel.descriptionOnly && panel.card && panel.card.derived
+            visible: Boolean(panel.reading && panel.card && panel.card.derived
                              && panel.card.derived.flow && panel.card.derived.flow.closed)
             Text {
                 Layout.fillWidth: true
@@ -614,6 +832,8 @@ Rectangle {
             // Podsumowanie domknięcia bywa długie, a ta sekcja leży nad przewijaną częścią panelu — bez limitu
             // przyciski Diff/Scal i ich wynik znikały pod krawędzią (03.11, K-15).
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: closingSummaryScroll
                 objectName: "cardClosingSummary"
                 Layout.fillWidth: true
@@ -635,33 +855,24 @@ Rectangle {
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 7
-                PillButton {
-                    objectName: "cardPreviewMerge"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: "Podgląd scalenia do " + (target || "…")
-                    enabled: !panel.busy && target !== ""
-                    onClicked: panel.previewMergeRequested(panel.card.id, target)
-                }
-                PillButton {
-                    objectName: "cardMergeMain"
-                    Layout.fillWidth: true
-                    wrapText: true
-                    readonly property string target: panel.defaultMergeTarget
-                    text: target ? "Scal do " + target : "Scal…"
-                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
-                                                && panel.card.derived.flow.merged)
-                    onClicked: {
-                        if (target) panel.previewMergeRequested(panel.card.id, target)
-                        else panel.chooseMergeRequested(panel.card.id)
-                    }
-                }
-                PillButton {
-                    objectName: "cardMergeChoose"
+                // Jedno „Scal…” dla karty domkniętej i niescalonej (K-99, PT-401); scalonej — tylko napis.
+                Tide.Button {
+                    objectName: "cardMerge"
                     text: "Scal…"
-                    visible: panel.defaultMergeTarget !== ""
-                    onClicked: panel.chooseMergeRequested(panel.card.id)
+                    visible: !panel.merged
+                    enabled: !panel.busy
+                    onClicked: panel.mergeRequested(panel.card.id)
+                }
+                Text {
+                    objectName: "cardMerged"
+                    Layout.fillWidth: true
+                    visible: panel.merged
+                    text: Start.mergedLine(panel.card && panel.card.derived ? panel.card.derived.flow : null)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.mint
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
                 }
             }
             QQC2.TextArea {
@@ -673,7 +884,7 @@ Rectangle {
                 placeholderText: "Co poprawić?"
                 wrapMode: TextEdit.Wrap
             }
-            PillButton {
+            Tide.Button {
                 objectName: "cardReturnForChanges"
                 text: "Do poprawy…"
                 visible: true
@@ -690,7 +901,7 @@ Rectangle {
             objectName: "cardDocView"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: panel.reading
+            visible: panel.docShown
             kind: panel.shownTab === "spec" ? "spec" : "plan"
             doc: panel.docs ? (panel.shownTab === "spec" ? panel.docs.spec : panel.docs.plan) : null
             others: panel.docs ? (panel.docs.others || []).filter(o => o.kind === kind) : []
@@ -702,22 +913,23 @@ Rectangle {
             onOpenLink: url => panel.linkRequested(url)
         }
 
-        Flickable {
+        // Formularz (Edytuj) i przebieg karty (Czytaj) w jednej kolumnie; przewija ją Tide.Sheet.
+        Item {
             id: formFlick
-            visible: !panel.reading
+            visible: !panel.docShown
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            contentWidth: width
-            contentHeight: formColumn.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            implicitHeight: formColumn.implicitHeight
 
             ColumnLayout {
                 id: formColumn
                 width: formFlick.width
                 spacing: 6
 
+                ColumnLayout {
+                id: formFields
+                Layout.fillWidth: true
+                visible: panel.formMode
+                spacing: 6
                 FieldLabel { text: "Tytuł"; visible: !panel.descriptionOnly }
                 LineInput {
                     id: titleField
@@ -830,7 +1042,7 @@ Rectangle {
                         contentWidth: width
                         contentHeight: descriptionEdit.implicitHeight
                         boundsBehavior: Flickable.StopAtBounds
-                        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                         TextEdit {
                             id: descriptionEdit
                             objectName: "cardDescription"
@@ -875,120 +1087,13 @@ Rectangle {
                     maximumLength: 300
                     onAccepted: panel.save()
                 }
+                }   // formFields
 
-                FieldLabel { text: "Zgłoszenie w YouTracku"; Layout.topMargin: 8; visible: !panel.descriptionOnly }
-                LineInput {
-                    id: youtrackField
-                    objectName: "cardYouTrackField"
-                    visible: !panel.descriptionOnly
-                    Layout.fillWidth: true
-                    placeholder: "np. LEGAL-35 — stan zgłoszenia pójdzie za kartą"
-                    accessibleName: "Zgłoszenie w YouTracku"
-                    maximumLength: 200
-                    invalid: Logic.issueKey(text) === null
-                    onAccepted: panel.save()
-                }
-
-                // Stan zgłoszenia i synchronizacji (PT-7) — tylko połączona karta.
-                Rectangle {
-                    id: ytBox
-                    objectName: "cardYouTrackBox"
-                    readonly property var sync: panel.editing && panel.card.youtrackSync ? panel.card.youtrackSync : null
-                    readonly property bool conflict: !!sync && sync.status === "conflict"
-                    Layout.fillWidth: true
-                    Layout.topMargin: 4
-                    visible: sync !== null && !panel.descriptionOnly
-                    radius: Tide.Tokens.radiusSmall
-                    color: conflict ? Tide.Theme.alpha(Tide.Tokens.rose, 0.10) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.04)
-                    border.width: conflict ? 1 : 0
-                    border.color: Tide.Theme.alpha(Tide.Tokens.rose, 0.45)
-                    implicitHeight: ytColumn.implicitHeight + 16
-                    ColumnLayout {
-                        id: ytColumn
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 8
-                        anchors.leftMargin: 12
-                        spacing: 6
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-                            Text {
-                                text: Logic.syncGlyph(ytBox.sync)
-                                visible: text !== ""
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens[Logic.syncTone(ytBox.sync)]
-                                font.family: Tide.Theme.uiFamily
-                                font.pixelSize: 13
-                                font.weight: Font.DemiBold
-                            }
-                            Text {
-                                objectName: "cardYouTrackState"
-                                Layout.fillWidth: true
-                                text: ytBox.sync ? (ytBox.sync.issue || "") + (ytBox.sync.issueState ? " · " + ytBox.sync.issueState : "") : ""
-                                textFormat: Text.PlainText
-                                color: Tide.Tokens.textPrimary
-                                font.family: Tide.Theme.monoFamily
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                            }
-                            PillButton {
-                                objectName: "cardYouTrackOpen"
-                                visible: Logic.youtrackUrl(panel.card) !== ""
-                                implicitHeight: 26
-                                pixelSize: 11
-                                flat: true
-                                text: "Otwórz w YouTracku ↗"
-                                toolTip: Logic.youtrackUrl(panel.card)
-                                onClicked: panel.linkRequested(Logic.youtrackUrl(panel.card))
-                            }
-                        }
-                        Text {
-                            objectName: "cardYouTrackText"
-                            Layout.fillWidth: true
-                            visible: text !== ""
-                            text: ytBox.sync ? (ytBox.sync.text || "")
-                                               + (ytBox.sync.via === "ticket" && ytBox.sync.label ? " · stan według: " + ytBox.sync.label : "")
-                                             : ""
-                            textFormat: Text.PlainText
-                            color: ytBox.conflict ? Tide.Tokens.rose : Tide.Tokens.textMuted
-                            font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 11
-                            wrapMode: Text.Wrap
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: ytBox.conflict
-                            spacing: 8
-                            PillButton {
-                                objectName: "cardYouTrackTake"
-                                implicitHeight: 28
-                                pixelSize: 12
-                                outline: true
-                                text: "Weź z YouTracka"
-                                toolTip: "Zostaw stan z YouTracka — Tide zapisze dopiero przy następnej zmianie karty"
-                                onClicked: panel.youtrackResolveRequested(panel.card.id, "youtrack")
-                            }
-                            PillButton {
-                                objectName: "cardYouTrackOverwrite"
-                                implicitHeight: 28
-                                pixelSize: 12
-                                outline: true
-                                text: "Nadpisz z Tide"
-                                toolTip: "Zapisz w YouTracku stan karty mimo zmiany ręcznej"
-                                onClicked: panel.youtrackResolveRequested(panel.card.id, "tide")
-                            }
-                            Item { Layout.fillWidth: true }
-                        }
-                    }
-                }
-
-                // Istniejąca karta: kolumna, archiwum, metadane.
+                // Edytuj istniejącą kartę: kolumna i archiwizacja.
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 14
-                    visible: panel.editing && !panel.descriptionOnly
+                    visible: panel.formMode && panel.editing && !panel.descriptionOnly
                     spacing: 8
 
                     FieldLabel { text: "Kolumna" }
@@ -1006,13 +1111,10 @@ Rectangle {
                             onPicked: value => { if (panel.editing && value !== Logic.displayColumn(panel.card)) panel.moveRequested(value) }
                         }
                         Item { Layout.fillWidth: true }
-                        PillButton {
+                        Tide.Button {
                             objectName: "cardArchive"
-                            implicitHeight: 30
-                            pixelSize: 12
-                            outline: true
+                            variant: "danger"
                             text: "Archiwizuj"
-                            textColor: Tide.Tokens.rose
                             toolTip: "Zdejmij kartę z tablicy (plik i historia zostają)"
                             onClicked: panel.moveRequested("archived")
                         }
@@ -1025,6 +1127,36 @@ Rectangle {
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                }
+
+                // Czytaj: opis, przebieg karty i metadane.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: panel.reading && !panel.docShown
+                    spacing: 8
+
+                    Tide.Prose {
+                        id: descriptionProse
+                        objectName: "cardDescriptionText"
+                        Layout.fillWidth: true
+                        visible: !!panel.card && (panel.card.description || "") !== ""
+                        text: panel.card ? panel.card.description || "" : ""
+                        markdown: true
+                        renderer: panel.renderer
+                        surface: Tide.Tokens.backgroundPanel
+                        onLinkClicked: url => panel.linkRequested(url)
+                    }
+                    Text {
+                        objectName: "cardDescriptionEmpty"
+                        Layout.fillWidth: true
+                        visible: !!panel.card && (panel.card.description || "") === ""
+                        text: "Karta nie ma opisu. Dodasz go w trybie Edytuj."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 13
                         wrapMode: Text.Wrap
                     }
                     ColumnLayout {
@@ -1070,23 +1202,20 @@ Rectangle {
                                             elide: Text.ElideRight
                                         }
                                     }
-                                    PillButton {
+                                    Tide.Button {
                                         objectName: "enterStep"
                                         text: flowStep.result ? "Wznów rozmowę" : "Przejmij w Konsoli"
                                         toolTip: flowStep.result ? "Otwórz tę rozmowę w Konsoli, także po restarcie komputera" : "Otwórz krok w Konsoli"
-                                        implicitHeight: 28
-                                        pixelSize: 12
-                                        outline: true
+                                        small: true
                                         enabled: !panel.busy && flowStep.canEnter
                                         onClicked: panel.enterStepRequested(panel.card.id, flowStep.id)
                                     }
-                                    PillButton {
+                                    Tide.Button {
                                         objectName: "abandonStep"
                                         visible: flowStep.reason === "interactive-closed" && flowStep.result === "stopped"
                                         text: "Porzuć"
-                                        implicitHeight: 28
-                                        pixelSize: 12
-                                        flat: true
+                                        small: true
+                                        variant: "ghost"
                                         enabled: !panel.busy
                                         onClicked: panel.abandonStepRequested(panel.card.id, flowStep.id)
                                     }
@@ -1109,10 +1238,9 @@ Rectangle {
                                         onActivated: index => flowStepRow.transferExecutor = model[index].value
                                         Accessible.name: "Wykonawca do przekazania kroku"
                                     }
-                                    PillButton {
+                                    Tide.Button {
                                         objectName: "cardStepTransfer"
                                         text: "Przekaż innemu dostawcy"
-                                        outline: true
                                         enabled: !panel.busy && manualTransferPicker.model.some(
                                                      option => option.value === flowStepRow.transferExecutor)
                                         onClicked: {
@@ -1151,8 +1279,9 @@ Rectangle {
                         visible: Boolean(panel.editing && panel.card && panel.card.derived && panel.card.derived.flow
                                          && panel.card.derived.flow.reviewQuestion === true)
                         spacing: 8
-                        PillButton {
+                        Tide.Button {
                             objectName: "cardReviewRetry"
+                            variant: "primary"
                             text: "Ponów poprawki"
                             enabled: !panel.busy
                             onClicked: {
@@ -1160,21 +1289,19 @@ Rectangle {
                                 panel.reviewResolveRequested(panel.card.id, panel.reviewChoice("retry"))
                             }
                         }
-                        PillButton {
+                        Tide.Button {
                             // Gdy uwagi dotyczą środowiska, a nie kodu — scalenie zatwierdzonego przez Ciebie stanu.
                             objectName: "cardReviewAccept"
                             text: "Scal mimo uwag"
-                            outline: true
                             enabled: !panel.busy
                             onClicked: {
                                 panel.busy = true
                                 panel.reviewResolveRequested(panel.card.id, panel.reviewChoice("accept"))
                             }
                         }
-                        PillButton {
+                        Tide.Button {
                             objectName: "cardReviewReject"
                             text: "Odrzuć ticket"
-                            outline: true
                             enabled: !panel.busy
                             onClicked: {
                                 panel.busy = true
@@ -1195,12 +1322,11 @@ Rectangle {
                             font.family: Tide.Theme.uiFamily
                             font.pixelSize: 12
                         }
-                        PillButton {
+                        Tide.Button {
                             objectName: "cardPause"
                             readonly property bool paused: Boolean(panel.card && panel.card.derived && panel.card.derived.flow && panel.card.derived.flow.paused)
                             visible: Boolean(panel.card && panel.card.derived && (!panel.flowPlan || panel.flowPlan.status !== "done") && panel.card.derived.column !== "review")
                             text: paused ? "Wznów" : "Wstrzymaj kartę"
-                            outline: true
                             enabled: !panel.busy
                             onClicked: panel.pauseRequested(panel.card.id, !paused)
                         }
@@ -1218,9 +1344,27 @@ Rectangle {
                             wrapMode: Text.Wrap
                         }
                     }
+                    // Przebieg karty w stałym bloku (K-128 #4): wysokość ramki nie rośnie z liczbą zdarzeń.
+                    // Loader: blok istnieje tylko przy otwartym panelu z historią, więc obiekty `fullHistory*` nie
+                    // dublują się z blokiem pełnej karty (testy i wyszukiwanie po objectName biorą pierwszy trafiony).
+                    Loader {
+                        objectName: "cardHistoryLoader"
+                        Layout.fillWidth: true
+                        Layout.topMargin: 6
+                        active: panel.reading && panel.history.length > 0
+                        visible: active
+                        sourceComponent: CardUi.HistoryBlock {
+                            objectName: "cardHistory"
+                            current: panel.history.filter(h => !h.old).reverse()
+                            older: panel.history.filter(h => h.old === true).reverse()
+                            onResumeRequested: step => panel.enterStepRequested(panel.card.id, step)
+                        }
+                    }
+                    // Starsze karty bez `flow.history[]`: dawna lista zdarzeń z osi czasu.
                     Repeater {
                         objectName: "cardTimeline"
-                        model: panel.card && panel.card.derived && panel.card.derived.flow ? panel.card.derived.flow.timeline || [] : []
+                        model: panel.card && panel.card.derived && panel.card.derived.flow && panel.history.length === 0
+                               ? panel.card.derived.flow.timeline || [] : []
                         Text {
                             Layout.fillWidth: true
                             text: panel.eventLabel(modelData)
@@ -1230,18 +1374,6 @@ Rectangle {
                             font.pixelSize: 11
                             wrapMode: Text.Wrap
                         }
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 6
-                        text: panel.editing ? "utworzona " + Logic.when(panel.card.createdTs, panel.nowTs)
-                                              + (panel.card.updatedTs && panel.card.updatedTs !== panel.card.createdTs
-                                                 ? " · zmieniona " + Logic.when(panel.card.updatedTs, panel.nowTs) : "")
-                                            : ""
-                        textFormat: Text.PlainText
-                        color: Tide.Tokens.textMuted
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 11
                     }
                     Text {
                         Layout.fillWidth: true
@@ -1292,33 +1424,90 @@ Rectangle {
             wrapMode: Text.Wrap
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            visible: !panel.reading
-            spacing: 8
+        // Stopka formularza: skróty, „Anuluj” (cichy) i „Zapisz” (główny).
+        footer: [
             Text {
+                objectName: "cardFooterHint"
                 Layout.fillWidth: true
-                text: panel.descriptionOnly ? "Ctrl+Enter zapisuje opis · Esc anuluje bez zapisu" : "Ctrl+Enter zapisuje"
+                text: panel.descriptionOnly ? "Ctrl+Enter zapisuje opis · Esc anuluje bez zapisu"
+                      : panel.editing ? "Ctrl+Enter zapisuje · Esc wraca do czytania bez zapisu"
+                      : "Ctrl+Enter zapisuje · Esc zamyka bez zapisu"
                 textFormat: Text.PlainText
                 color: Tide.Theme.alpha(Tide.Tokens.textMuted, 0.8)
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 11
-            }
-            PillButton {
-                implicitHeight: 34
-                flat: true
+                elide: Text.ElideRight
+            },
+            Tide.Button {
+                objectName: "cardCancel"
+                variant: "ghost"
                 text: "Anuluj"
-                onClicked: panel.closeRequested()
-            }
-            PillButton {
+                onClicked: panel.handleEscape()
+            },
+            Tide.Button {
                 objectName: "cardSave"
-                implicitHeight: 34
-                strong: true
+                variant: "primary"
                 enabled: !panel.busy && (panel.dirty || !panel.editing)
                 text: panel.busy ? "Zapisuję…" : panel.descriptionOnly ? "Zapisz opis" : panel.editing ? "Zapisz" : "Dodaj kartę"
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
                 onClicked: panel.save()
+            }
+        ]
+    }
+
+    // Menu ⋯: Rozwiń i Archiwizuj (róż). Klik obok zamyka.
+    MouseArea {
+        anchors.fill: parent
+        visible: panel.menuOpen
+        z: 50
+        onClicked: panel.menuOpen = false
+    }
+    Rectangle {
+        id: menuList
+        objectName: "cardMenuList"
+        visible: panel.menuOpen
+        z: 60
+        width: 230
+        x: sheet.sheetItem.x + sheet.sheetItem.width - width - 60
+        y: 54
+        height: menuColumn.implicitHeight + 16
+        radius: Tide.Tokens.radiusCard
+        color: Tide.Tokens.backgroundPanel
+        border.width: 1
+        border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
+        Accessible.role: Accessible.PopupMenu
+        Accessible.name: "Więcej akcji karty"
+        Column {
+            id: menuColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 8
+            spacing: 2
+            Tide.Button {
+                objectName: "cardExpand"
+                width: menuColumn.width
+                variant: "ghost"
+                alignment: Qt.AlignLeft
+                text: panel.expanded ? "Zwęź" : "Rozwiń"
+                toolTip: panel.expanded ? "Panel o zwykłej szerokości" : "Panel na prawie całe okno"
+                Accessible.role: Accessible.MenuItem
+                onClicked: {
+                    panel.expanded = !panel.expanded
+                    panel.menuOpen = false
+                }
+            }
+            Tide.Button {
+                objectName: "cardMenuArchive"
+                width: menuColumn.width
+                variant: "danger"
+                alignment: Qt.AlignLeft
+                text: "Archiwizuj"
+                toolTip: "Zdejmij kartę z tablicy (plik i historia zostają)"
+                Accessible.role: Accessible.MenuItem
+                onClicked: {
+                    panel.menuOpen = false
+                    panel.moveRequested("archived")
+                }
             }
         }
     }

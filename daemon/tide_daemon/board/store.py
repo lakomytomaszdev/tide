@@ -81,7 +81,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
-               *LAUNCH_KEYS, "maxTickets", "priority")
+               *LAUNCH_KEYS, "maxTickets", "priority", "startRef")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
@@ -869,6 +869,8 @@ class BoardStore:
             doc.set(MAX_TICKETS_KEY, v["maxTickets"])
         if v.get("priority", DEFAULT_PRIORITY) != DEFAULT_PRIORITY:
             doc.set(PRIORITY_KEY, v["priority"])
+        if v.get("startRef"):  # tylko ustawione — karta bez pola nie zmienia pliku
+            doc.set("start-ref", v["startRef"])
         if v.get("planPath"):
             doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
@@ -912,6 +914,8 @@ class BoardStore:
                     changed.append(PRIORITY_KEY)
             else:
                 changed += _doc_set(card.doc, PRIORITY_KEY, v["priority"])
+        if "startRef" in v and (v["startRef"] or card.doc.has("start-ref")):
+            changed += _doc_set(card.doc, "start-ref", v["startRef"])
         if "planPath" in v:
             project = board.projects.get(primary)
             checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
@@ -1487,7 +1491,7 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "moved": card.moved, "movedTs": parse_ts(card.moved or card.created), "movedFrom": card.moved_from,
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
-        "youtrack": card.youtrack,
+        "youtrack": card.youtrack, "startRef": card.start_ref,
         "baseRef": base["baseRef"], "baseBranch": base["baseBranch"], "baseCommit": base["baseCommit"],
         "baseVersion": flow.get("baseVersion", 0),
         "specRevision": {"repo": card.spec_revision_repo, "ref": card.spec_revision_ref,
@@ -1692,6 +1696,14 @@ def _card_values(data: dict, create: bool = False) -> dict:
         if not key:
             raise BoardError(f"pole youtrack to klucz zgłoszenia, np. LEGAL-35 („{out['youtrack']}”)")
         out["youtrack"] = key
+    if "startRef" in data:
+        start = _line(data["startRef"], PATH_MAX, "startRef")
+        if start:
+            from ..cardflow.gitops import FlowGit
+            error = FlowGit().ref_syntax_error("/", start)   # ta sama składnia co baza karty; bez dostępu do repo
+            if error:
+                raise BoardError(f"startRef: {error} („{start}”)")
+        out["startRef"] = start
     if "planPath" in data:
         path = _line(data["planPath"], PATH_MAX, "planPath")
         if path and (not os.path.isabs(path) or not path.lower().endswith(".md")):

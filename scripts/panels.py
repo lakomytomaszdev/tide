@@ -24,6 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts import activity_panels  # noqa: E402
 from scripts.appearance import DATA, PALETTE, STATE, run  # noqa: E402
 from theme.logo.generate import svg as logo_svg  # noqa: E402
 
@@ -61,6 +62,17 @@ def script(name: str, params: dict) -> str:
     return f"// tide:{name}\nvar P = {json.dumps(params, ensure_ascii=False)};\n{common}\n{body}"
 
 
+def outputs_disabled() -> bool:
+    """Strażnik instalatorów: przy wyłączonym wyjściu z układu Tide nie ruszamy paneli (ani skryptem, ani zapisem
+    stanu). Odczyt z kscreen-doctor, bez plasmashella; błąd odczytu tylko się zgłasza."""
+    disabled, failure = activity_panels.guard(lambda argv: run(*argv))
+    if failure:
+        print(f"Uwaga: {failure}.")
+    if disabled:
+        print(f"Panele pominięte: wyłączone wyjście {', '.join(disabled)} (włącz monitor i uruchom ponownie).")
+    return bool(disabled)
+
+
 def evaluate(js: str) -> dict:
     out = run("qdbus6", "org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", js)
     start = out.rfind(MARKER)
@@ -68,6 +80,14 @@ def evaluate(js: str) -> dict:
         raise SystemExit(f"Skrypt plasmashell nie zwrócił wyniku:\n{out}")
     value, _ = json.JSONDecoder().raw_decode(out[start + len(MARKER):].strip())
     return value
+
+
+def orphans_note(result: dict) -> None:
+    """Notka instalatora o panelach bez widoku, które skrypt pominął. Wynik starego skryptu bez klucza
+    `orphans` albo z pustą listą nie jest błędem i nie daje notki."""
+    ids = result.get("orphans") or []
+    if ids:
+        print(f"Panele bez widoku pominięte: {', '.join(str(i) for i in ids)}")
 
 
 def screens() -> dict:
@@ -151,6 +171,8 @@ def appmenu_module(enable: bool) -> bool:
 
 
 def install() -> None:
+    if outputs_disabled():
+        return
     palette = json.loads(PALETTE.read_text())
     for path, content in icons(palette).items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +185,7 @@ def install() -> None:
     enabled = appmenu_module(True) or installed.get("kdedAppmenuEnabled", False)
 
     result = evaluate(script("install", install_params(palette, installed)))
+    orphans_note(result)
     settle()
     order = evaluate(script("order", order_params(result)))
     for panel in order_params(result)["panels"]:
@@ -179,11 +202,16 @@ def install() -> None:
     for panel in order["panels"]:
         print(f"Panel {panel['id']}: {', '.join(t.rsplit('.', 1)[-1] for t in panel['order'])}")
     if result.get("side") is None:
-        print("Uwaga: nie ma drugiego monitora — pasek lewego monitora nie powstał.")
+        if result["screens"].get("side", -1) >= 0:
+            print("Uwaga: pasek lewego monitora nie ma widoku — pominięty, nowy nie powstał.")
+        else:
+            print("Uwaga: nie ma drugiego monitora — pasek lewego monitora nie powstał.")
     print("Górne paski Tide zainstalowane. Aplikacje uruchomione wcześniej pokażą globalne menu po restarcie.")
 
 
 def uninstall() -> None:
+    if outputs_disabled():
+        return
     previous, installed = load(PREVIOUS), load(INSTALLED)
     for panel in previous.get("panels", []):
         for widget in panel["widgets"]:
@@ -196,6 +224,11 @@ def uninstall() -> None:
               "mainCreated": installed.get("mainCreated", False),
               "changedKeys": CHANGED_KEYS, "defaults": DEFAULTS}
     result = evaluate(script("uninstall", params))
+    orphans_note(result)
+    if result.get("skipped"):
+        print(f"Główny pasek {result['skipped']} nie ma widoku — jego układ nie został przywrócony, "
+              "zrzut zachowany. Włącz monitor i ponów uninstall.")
+        return
     if result.get("main"):
         settle()
         evaluate(script("order", {**screens(), "panels": [{"id": result["main"], "order": result["mainOrder"]}]}))

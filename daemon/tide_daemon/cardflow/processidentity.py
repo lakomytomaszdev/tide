@@ -248,13 +248,15 @@ EVENTS = MappingProxyType({
     # K-109 PT-479 i PT-483: prośba kroku i próba testów po scaleniu zapisują już `command.*`; `outside.started`
     # i `outside.finished` zostają w historii przebiegów sprzed przełączenia (odczyt, odzyskiwanie i koniec przebiegu
     # w toku przez `commands.record_finished`, którego gałąź dawnej rodziny kończy tylko takie przebiegi).
+    # `loadavg`/`cores` (K-100, PT-423): obciążenie maszyny w chwili zapisu, bez roli dowodowej; wpisy bez nich legalne.
     "outside.started": _historical_event(Event("outside-start", _trace(
-        writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log"),
+        writer=("ticket", "worktree"), neutral=("command", "cores", "exitFile", "head", "loadavg", "log"),
         extra={"unit": OUTSIDE_UNIT_OWN,
                "rerunOf": Field("neutral", note="ponowienie padniętych modułów (prośba kroku sprzed PT-479)",
                                 source="historical")}))),
     "outside.finished": Event("outside-finish", _trace(
-        writer=("ticket",), neutral=("command", "exit", "tail"), extra={"unit": OUTSIDE_UNIT_INHERITED})),
+        writer=("ticket",), neutral=("command", "cores", "exit", "loadavg", "tail"),
+        extra={"unit": OUTSIDE_UNIT_INHERITED})),
     "outside.ticket-consent": Event("outside-trace", _trace(writer=("ticket",), neutral=("baseVersion", "orderSeq"))),
     # K-109 PT-481: nowa rodzina przebiegu (zamiar → start → wynik), czytana przez widok `commandruns` razem
     # z `outside.started`/`outside.finished`. Zamiar jest śladem procesu bez startu jednostki; od PT-485 zapisuje
@@ -381,8 +383,9 @@ EVENTS = MappingProxyType({
                                        "after", "before", "check", "command", "fallback", "mergeSeq", "reason",
                                        "retryOf", "source", "start", "ticket", "unavailable"),
     # Zapis: przebieg pod zgodą (PT-329), razem z `outside.finished` pseudokroku próby.
+    # `failedModules`/`failedTests` (K-100, PT-423): diagnostyka z summary.json uruchamiacza; wpisy bez nich legalne.
     "merge.check-finished": _metadata("wynik próby testów po scaleniu (zapis: przebieg pod zgodą, PT-329)",
-                                      "check", "exit", "log", "ticket"),
+                                      "check", "exit", "failedModules", "failedTests", "log", "ticket"),
     "merge.check-accepted": _metadata("akceptacja próby testów po scaleniu mimo porażki (PT-320); nie uruchamia "
                                       "polecenia", "after", "by", "check", "ticket"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),

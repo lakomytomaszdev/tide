@@ -310,12 +310,15 @@ class CharacterizationTest(FixtureCase):
             fx = self.fixture(family, unfinished=False)
             metrics = _metrics()
             with mock.patch.object(metrics, "events", lambda since: iter([(CARD, fx.events)])), \
-                    mock.patch.object(sys, "argv", ["metrics.py", "--since", "2026-11-01"]), \
+                    mock.patch.object(sys, "argv", ["metrics.py", "--since", "2026-11-01", "--log", os.devnull]), \
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 metrics.main()
             outputs.append(out.getvalue().splitlines()[1])
         # Dwa pełne przebiegi (S1 padł, S2 to ponowienie modułów — też liczone jako przebieg testów), oba naraz max 1.
-        self.assertEqual(outputs[0], "2026-11-10 |    2 (+0 czerw.) |    50% |   0 |   1 |    0 |   0 |      - | 0.00")
+        # Kolumny K-100 (PT-422): czerwone wśród wszystkich i bez celowo czerwonych; decyzje z pustego dziennika
+        # interwencji (`--log os.devnull`, nie dziennik repozytorium).
+        self.assertEqual(outputs[0], "2026-11-10 |    2 (+0 czerw.) |    50% |   0 |   1 |    0 |   0 |      - | 0.00 |"
+                                     " 50% (1/2) | 50% (1/2) | 0")
         self.assertEqual(outputs[1], outputs[0])
 
 

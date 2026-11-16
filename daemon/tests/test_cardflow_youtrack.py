@@ -244,15 +244,38 @@ class YouTrackFlowTest(FlowInProcess):
         # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.
         self.fake.comment_status = 503
         self.restart()
+        # PT-364: pierwszy tick nowego monitora rusza w start(); zegar trackera podmieniamy za barierą wątku,
+        # więc żadna operacja YouTracka nie biegnie z prawdziwym zegarem ani w trakcie podmiany.
+        self.stop_flow_worker()
         self.flow.engine.tracker.clock = lambda: 10**12
+        self.flow.start()
+        tickets = {'LOG-1', 'LOG-2'}
+
+        def keys(kind, action, ok=None):
+            return {e['key'] for e in self.of(card, kind)
+                    if e.get('action') == action and (ok is None or e.get('ok') is ok)}
+
+        # Po scaleniu LOG-1, a przed startem LOG-2 karta planu jest przez chwilę w kolumnie „review”
+        # („✓ LOG-1 na gałęzi karty”), dlatego sama kolumna nie jest końcem scenariusza (11.11, pętla PT-364).
+        # Czekamy na scalenie obu ticketów i na odrzucony komentarz każdego z nich (503 → youtrack.retry).
+        self.assertTrue(wait_until(lambda: keys('result', 'merge', ok=True) == tickets, timeout=60),
+                        self.events(card))
+        self.assertTrue(wait_until(lambda: keys('youtrack.retry', 'youtrack-note') == tickets, timeout=30),
+                        self.events(card))
         self.wait_column(card, 'review')
-        self.assertEqual({s['ticket'] for s in self.of(card, 'step.started') if s['kind'] == 'ticket'},
-                         {'LOG-1', 'LOG-2'})
+        self.assertEqual({s['ticket'] for s in self.of(card, 'step.started') if s['kind'] == 'ticket'}, tickets)
         self.assertTrue(self.of(card, 'youtrack.retry'))
+        self.assertEqual(self.fake.comments, {}, 'komentarze czekają na przywrócenie usługi')
+        # Przywrócenie usługi i przesunięcie zegara za termin ponowienia też za barierą: komentarz odrzucony
+        # w trakcie zmiany nie zapisze terminu liczonego od nowego zegara (wtedy nigdy by nie nadszedł).
+        self.stop_flow_worker()
         self.fake.comment_status = 200
         self.flow.engine.tracker.clock = lambda: 10**12 + 60
-        self.assertTrue(wait_until(lambda: len(self.fake.comments) == 2, timeout=10))
-        self.assertTrue(all(len(items) == 1 for items in self.fake.comments.values()))
+        self.flow.start()
+        self.assertTrue(wait_until(lambda: keys('result', 'youtrack-note', ok=True) == tickets, timeout=30),
+                        self.events(card))
+        self.assertEqual(sorted(self.fake.comments), sorted(tickets))
+        self.assertTrue(all(len(items) == 1 for items in self.fake.comments.values()), self.fake.comments)
 
     def test_plan_tracker_project_and_server_must_match_card_project(self):
         for tracker_project, tracker_url in (('LEGAL', self.fake.url), ('LOG', self.fake.url + '/other')):

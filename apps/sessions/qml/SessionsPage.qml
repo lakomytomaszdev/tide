@@ -191,6 +191,7 @@ Rectangle {
 
             Flickable {
                 id: sideFlick
+                objectName: "coordinatorFlick"
                 anchors.fill: parent
                 anchors.margins: 14
                 anchors.topMargin: 18
@@ -198,11 +199,11 @@ Rectangle {
                 contentWidth: width
                 contentHeight: side.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar { objectName: "coordinatorScrollBar" }
 
                 ColumnLayout {
                     id: side
-                    width: sideFlick.width
+                    width: sideFlick.width - Tide.Tokens.scrollbarWidth - 4   // miejsce na pasek (jak scrollbar-gutter makiety)
                     spacing: 8
 
                     Text {
@@ -459,21 +460,19 @@ Rectangle {
                                 }
                             }
                         }
-                        PillButton {
+                        Tide.Button {
                             Layout.alignment: Qt.AlignTop
                             text: page.youtrack ? "Plan z YouTracka ↻" : "Odśwież ↻"
                             toolTip: page.youtrack
                                      ? (page.board.tracker.error ? "YouTrack: " + page.board.tracker.error : "Odśwież tablicę i dane z YouTracka")
                                      : "Odśwież tablicę"
-                            textColor: page.youtrack && page.board.tracker.error ? Tide.Tokens.peach : Tide.Tokens.textSecondary
+                            tone: page.youtrack && page.board.tracker.error ? Tide.Tokens.peach : "transparent"
                             onClicked: page.refreshRequested(true)
                         }
-                        PillButton {
+                        Tide.Button {
                             Layout.alignment: Qt.AlignTop
                             text: "Przejdź do koordynatora"
-                            fill: Tide.Tokens.accent
-                            textColor: Tide.Tokens.backgroundDesktop
-                            strong: true
+                            variant: "primary"
                             toolTip: page.board && page.board.live ? "Okno sesji koordynatora" : "Wznów sesję w Konsoli"
                             onClicked: page.activateRequested(page.selectedId)
                         }
@@ -651,6 +650,8 @@ Rectangle {
         z: 35
         visible: page.fullOpen
         card: page.fullOpen ? page.fullCard : null
+        // Pasek górny (PT-502): „← Sesje” wraca do listy. Sesje nie mają renderera Markdown — opis renderuje prose.js.
+        backText: "Sesje"
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendCard("decision", page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.sendCard("fault-preview", page.fullCardId, decisionId, method, params)

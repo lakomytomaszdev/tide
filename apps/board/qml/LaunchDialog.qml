@@ -18,6 +18,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "git" as Git
 import "tide/agentmodel.js" as AgentModel
 import "board.js" as Logic
 
@@ -338,7 +339,7 @@ Rectangle {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: bodyFlick.interactive ? QQC2.ScrollBar.AsNeeded : QQC2.ScrollBar.AlwaysOff }
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: bodyColumn
@@ -490,7 +491,7 @@ Rectangle {
                                 contentWidth: width
                                 contentHeight: taskEdit.implicitHeight
                                 boundsBehavior: Flickable.StopAtBounds
-                                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                                 TextEdit {
                                     id: taskEdit
                                     readOnly: dialog.issueMode
@@ -1053,7 +1054,7 @@ Rectangle {
                     }
                 }
 
-                BranchPicker {
+                Git.BranchPicker {
                     id: basePicker
                     objectName: "basePicker"
                     Layout.fillWidth: true
@@ -1323,31 +1324,26 @@ Rectangle {
                         lineHeight: 1.1
                         wrapMode: Text.Wrap
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "launchCancel"
                         enabled: !dialog.busy
-                        outline: true
                         text: "Anuluj"
                         toolTip: dialog.fromMove ? "Karta wraca do Backlogu (Esc)" : "Zamknij bez uruchamiania (Esc)"
                         onClicked: dialog.cancelRequested()
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "launchMoveOnly"
                         visible: dialog.fromMove
                         enabled: !dialog.busy
-                        outline: true
                         text: "Tylko przenieś"
                         toolTip: "Karta zostaje w Do zrobienia, bez agenta"
                         onClicked: dialog.moveOnlyRequested()
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "launchStart"
                         enabled: dialog.canStart
-                        strong: true
-                        horizontalPadding: 16
+                        variant: "primary"
                         text: dialog.busy ? "Uruchamiam…" : dialog.issueMode ? "Przyjmij i zleć  Ctrl+↵" : "Uruchom agenta  Ctrl+↵"
-                        fill: Tide.Tokens.accent
-                        textColor: Tide.Tokens.backgroundDesktop
                         toolTip: "Uruchom agenta (Ctrl+Enter)"
                         onClicked: dialog.start()
                     }

@@ -68,19 +68,17 @@ Rectangle {
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
-            PillButton {
+            Tide.Button {
                 objectName: "importRefresh"
-                implicitHeight: 28
-                pixelSize: 12
-                flat: true
+                small: true
+                variant: "ghost"
                 enabled: !panel.loading
                 text: "Odśwież"
                 onClicked: panel.refreshRequested()
             }
-            PillButton {
-                implicitHeight: 28
-                pixelSize: 12
-                flat: true
+            Tide.Button {
+                small: true
+                variant: "ghost"
                 text: "Zamknij"
                 onClicked: panel.closeRequested()
             }
@@ -124,7 +122,7 @@ Rectangle {
             spacing: 4
             model: panel.rows
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
             delegate: Rectangle {
                 id: row
                 required property var modelData
@@ -231,23 +229,19 @@ Rectangle {
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
             }
-            PillButton {
-                implicitHeight: 30
-                pixelSize: 12
-                flat: true
+            Tide.Button {
+                small: true
+                variant: "ghost"
                 visible: panel.rows.some(r => !r.card)
                 text: "Zaznacz wszystkie"
                 onClicked: panel.pickAll()
             }
-            PillButton {
+            Tide.Button {
                 objectName: "importSubmit"
-                implicitHeight: 30
-                pixelSize: 12
-                strong: true
+                small: true
+                variant: "primary"
                 enabled: panel.pickedCount > 0 && !panel.busy
                 text: panel.busy ? "Importuję…" : "Importuj zaznaczone" + (panel.pickedCount > 0 ? " (" + panel.pickedCount + ")" : "")
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
                 onClicked: panel.importRequested(Object.keys(panel.picked).filter(k => panel.picked[k]))
             }
         }

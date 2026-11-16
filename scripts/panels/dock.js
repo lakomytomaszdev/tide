@@ -7,7 +7,9 @@ var tideMainScreen = tideScreens().main;
 var tideDock = null;
 var tideAll = panels();
 for (var tideI = 0; tideI < tideAll.length; ++tideI) {
-    if (tideAll[tideI].screen === tideMainScreen && tideAll[tideI].location === "bottom") {
+    // Panel bez widoku nie jest dockiem do ustawiania (jest tylko w `orphans`).
+    if (tidePanelHasView(tideAll[tideI]) && tideAll[tideI].screen === tideMainScreen
+            && tideAll[tideI].location === "bottom") {
         tideDock = tideAll[tideI];
         break;
     }
@@ -92,4 +94,4 @@ for (var tideM = 0; tideM < tideRest.length; ++tideM) {
 }
 
 tideResult({dock: tideDock.id, created: tideCreated, previous: tidePrevious, order: tideOrder,
-            tasks: tideTasks.id});
+            tasks: tideTasks.id, orphans: tideOrphanIds()});

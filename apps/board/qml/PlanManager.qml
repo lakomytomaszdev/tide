@@ -119,15 +119,15 @@ Rectangle {
                 elide: Text.ElideRight
                 Accessible.role: Accessible.Heading
             }
-            PillButton { text: "Szczegóły karty"; outline: true; onClicked: manager.cardRequested() }
-            PillButton {
+            Tide.Button { text: "Szczegóły karty"; onClicked: manager.cardRequested() }
+            Tide.Button {
                 objectName: "planManagerAddTicket"
                 text: "Dopisz ticket"
                 visible: !!manager.plan && manager.plan.canAppend === true && !manager.appending
                 enabled: !manager.busy
                 onClicked: manager.beginAppend()
             }
-            PillButton { text: "Zamknij"; outline: true; onClicked: manager.closeRequested() }
+            Tide.Button { text: "Zamknij"; onClicked: manager.closeRequested() }
         }
         Text {
             objectName: "planManagerStatus"
@@ -181,6 +181,8 @@ Rectangle {
         // Uwagi review bywają długie (K-33: 23 punkty) — mają własne przewijanie i limit wysokości, żeby lista
         // ticketów i „Zatwierdź plan” zawsze mieściły się w oknie.
         QQC2.ScrollView {
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+            QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
             id: reviewScroll
             objectName: "planManagerReview"
             property bool expanded: false
@@ -241,7 +243,7 @@ Rectangle {
                 currentIndex: -1
                 Accessible.name: "Model do przeglądu planu"
             }
-            PillButton {
+            Tide.Button {
                 objectName: "planManagerRunReview"
                 text: manager.plan && manager.plan.reviewStep ? "Przenieś przegląd" : "Uruchom przegląd tym modelem"
                 enabled: !manager.busy && !!reviewPicker.currentValue
@@ -280,7 +282,7 @@ Rectangle {
                     clip: true
                     spacing: 8
                     model: manager.rows
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     delegate: Rectangle {
                         required property var modelData
                         readonly property string ticketId: modelData.id || modelData.workId
@@ -426,6 +428,8 @@ Rectangle {
                     }
                 }
                 QQC2.ScrollView {
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                    QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     QQC2.TextArea {
@@ -439,7 +443,7 @@ Rectangle {
                         background: Rectangle { radius: 8; color: Tide.Tokens.backgroundPanel }
                     }
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "planManagerSaveTicket"
                     text: "Zapisz przydział i kartkę"
                     visible: !manager.appending
@@ -453,15 +457,14 @@ Rectangle {
                 }
                 RowLayout {
                     visible: manager.appending
-                    PillButton {
+                    Tide.Button {
                         objectName: "planManagerSubmitAppend"
                         text: "Zapisz propozycję do review"
                         enabled: !manager.busy
                         onClicked: manager.submitAppend()
                     }
-                    PillButton {
+                    Tide.Button {
                         text: "Anuluj"
-                        outline: true
                         onClicked: {
                             manager.appending = false
                             if (manager.rows.length) manager.selectTicket(manager.rows[0])
@@ -491,25 +494,24 @@ Rectangle {
                 visible: !!manager.plan && manager.plan.status === "pending" && !manager.appendRevision
                 placeholderText: "Uwagi, jeśli plan wymaga poprawy"
             }
-            PillButton {
+            Tide.Button {
                 objectName: "planManagerDiscardAppend"
                 visible: manager.appendRevision && manager.plan.status === "pending"
                 text: "Odrzuć dopisanie"
-                outline: true
                 enabled: !manager.busy
                 onClicked: manager.editRequested(manager.card.id, {action: "discard-revision"})
             }
-            PillButton {
+            Tide.Button {
                 objectName: "planManagerReturn"
                 visible: feedback.visible
                 text: "Odeślij do poprawy"
-                outline: true
                 enabled: !manager.busy && feedback.text.trim().length > 0
                 onClicked: manager.editRequested(manager.card.id, {action: "return", feedback: feedback.text.trim()})
             }
-            PillButton {
+            Tide.Button {
                 objectName: "planManagerApprove"
                 visible: !!manager.plan && manager.plan.status === "pending"
+                variant: "primary"
                 text: manager.approving ? "Zatwierdzanie…"
                       : manager.appendRevision ? "Zatwierdź różnicę i dopisz ticket" : "Zatwierdź plan i rozpocznij implementację"
                 enabled: !manager.busy && !manager.approving

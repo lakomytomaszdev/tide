@@ -33,10 +33,18 @@ windowconfig = load_common("windowconfig")  # tryb diffa zapamiętany w ustawien
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Worktrees", "org.tide.Daemon.Worktrees"
 GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
+BOARD_PATH, BOARD_IFACE = "/Board", "org.tide.Daemon.Board"
 DIFF_TIMEOUT_MS = 120_000  # odczyt gita w puli wątków usługi; duże repozytorium potrafi potrwać
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada. Spróbuj za chwilę."}
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są niedostępne."}
+PREVIEW_MAP_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — mapa gałęzi jest niedostępna."}
+PREVIEW_BOARD_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — scalanie jest niedostępne."}
+# Okno scalania z mapy gałęzi (K-99, PT-395): jedyne metody `/Board`, które Worktrees może wywołać. Ten sam kontrakt
+# co Tablica — lista celów, podgląd z tokenem i zgoda `{targetRef, previewToken}` bieżącego podglądu. Bez zakładania
+# kart i bez starej drogi scalenia bez tokenu.
+BOARD_CALLS = ("ListCardBranches", "PreviewCardMerge", "MergeCard")
+MERGE_TIMEOUT_MS = 10 * 60 * 1000  # podgląd i scalenie czekają na blokadę repozytorium; jak w Tablicy
 REMOVE_TIMEOUT_MS = 30 * 60 * 1000  # duże katalogi potrafią się usuwać długo
 FETCH_TIMEOUT_MS = 150_000  # limit pobierania w usłudze to 120 s (bez czekania na blokadę silnika, K-36 M1)
 PULL_TIMEOUT_MS = 120_000   # „Zaciągnij”: do 10 s czekania na blokadę repozytorium i 60 s na merge z checkoutem
@@ -66,6 +74,11 @@ class Backend(QObject):
     badgeChanged = pyqtSignal()
     replied = pyqtSignal(str, str)  # (tag z QML, odpowiedź `Git.Diff` jako JSON) — odbiera ją widok diffa
     diffModeChanged = pyqtSignal()
+    branchMapReplied = pyqtSignal(str, str)  # (tag z QML, odpowiedź `Git.BranchMap` jako JSON) — odbiera ją tryb Gałęzie
+    boardChanged = pyqtSignal()               # Tablica się zmieniła (Changed usługi) — mapa gałęzi do odświeżenia
+    boardReplied = pyqtSignal(str, str)       # (tag z QML, odpowiedź metody `/Board` z BOARD_CALLS) — okno scalania
+    viewModeChanged = pyqtSignal()
+    branchProjectChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: list | None = None, parent=None):
         super().__init__(parent)
@@ -78,6 +91,10 @@ class Backend(QObject):
         self._badge = ""
         self._diff_mode = windowconfig.DIFF_MODE_DEFAULT
         self._diff_unsaved = False   # zapis się nie udał: do końca sesji obowiązuje wybór z pamięci
+        # Tryb okna (Katalogi/Gałęzie) i projekt trybu Gałęzie (PT-388): w ustawieniach okna jak tryb diffa;
+        # podgląd z pliku trzyma je tylko w pamięci.
+        self._view_mode = windowconfig.WORKTREES_MODE_DEFAULT if data is not None else windowconfig.worktrees_mode()
+        self._branch_project = "" if data is not None else windowconfig.worktrees_project()
         self.listChanged.connect(self._update_badge)
         self.availableChanged.connect(self._update_badge)
         if data is not None:
@@ -88,6 +105,7 @@ class Backend(QObject):
         if bus is None:
             return
         bus.connect(SERVICE, PATH, IFACE, "Changed", self._changed)
+        bus.connect(SERVICE, BOARD_PATH, BOARD_IFACE, "Changed", self._board_changed)
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: self.reload())
@@ -248,6 +266,100 @@ class Backend(QObject):
 
         self._call("Diff", [request], done, timeout=DIFF_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
 
+    # Tryb okna i projekt mapy gałęzi (PT-388). Wartości niezapisane (błąd zapisu, podgląd) działają do końca sesji.
+    @pyqtProperty(str, notify=viewModeChanged)
+    def viewMode(self) -> str:
+        return self._view_mode
+
+    @pyqtSlot(str, result=str)
+    def setViewMode(self, value: str) -> str:
+        """Zapisuje tryb okna („dirs” albo „branches”); pusty tekst albo powód, gdy zapis się nie udał."""
+        if value not in windowconfig.WORKTREES_MODE_VALUES:
+            return "Nieznany tryb okna."
+        problem = self._persist(windowconfig.set_worktrees_mode, value)
+        if value != self._view_mode:
+            self._view_mode = value
+            self.viewModeChanged.emit()
+        return problem
+
+    @pyqtProperty(str, notify=branchProjectChanged)
+    def branchProject(self) -> str:
+        return self._branch_project
+
+    @pyqtSlot(str, result=str)
+    def setBranchProject(self, slug: str) -> str:
+        """Zapisuje projekt trybu Gałęzie (slug z `Git.BranchMap({})`); pusty tekst albo powód błędu zapisu."""
+        if not slug or len(slug) > windowconfig.PROJECT_MAX:
+            return "Nieprawidłowy projekt."
+        problem = self._persist(windowconfig.set_worktrees_project, slug)
+        if slug != self._branch_project:
+            self._branch_project = slug
+            self.branchProjectChanged.emit()
+        return problem
+
+    def _persist(self, setter, value: str) -> str:
+        if self._preview:
+            return ""
+        try:
+            setter(value)
+        except OSError as exc:
+            return f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        return ""
+
+    @pyqtSlot(str, str)
+    def branchMap(self, tag: str, request: str) -> None:
+        """`Git.BranchMap` (K-99, PT-387): `{}` — projekty Tablicy z repozytorium, `{project}` — drzewo gałęzi kart
+        i ticketów. Żądanie JSON, odpowiedź w `branchMapReplied(tag, json)`. Odczyt — nie zmienia Tablicy ani
+        repozytorium; ścieżki repozytorium z UI nie ma (usługa bierze ją z projektu Tablicy)."""
+        if self.bus is None:
+            self.branchMapReplied.emit(tag, json.dumps(PREVIEW_MAP_REPLY if self._preview else NO_SERVICE_REPLY,
+                                                       ensure_ascii=False))
+            return
+
+        def done(ok: bool, value) -> None:
+            self.branchMapReplied.emit(tag, value if ok and isinstance(value, str)
+                                       else json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+
+        self._call("BranchMap", [request], done, timeout=DIFF_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
+
+    # Okno scalania z mapy gałęzi (K-99, PT-395): wspólny komponent git/MergeWindow.qml. Backend tylko przekłada
+    # sygnały okna na wywołania usługi — sam nie buduje żądań scalenia, nie pamięta tokenów i niczego nie ponawia.
+    # Odpowiedź (także odmowa usługi) wraca jedną emisją `boardReplied(tag, json)`.
+
+    @pyqtSlot(str, str, str)
+    def listCardBranches(self, tag: str, card_id: str, request: str) -> None:
+        """`ListCardBranches(id, {purpose: "merge", text, limit})` — cele scalenia i skróty dla okna (odczyt)."""
+        self._board(tag, "ListCardBranches", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def previewCardMerge(self, tag: str, card_id: str, request: str) -> None:
+        """`PreviewCardMerge(id, {targetRef})` — podgląd z `previewToken` (odczyt, bez zgody)."""
+        self._board(tag, "PreviewCardMerge", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def mergeCard(self, tag: str, card_id: str, request: str) -> None:
+        """`MergeCard(id, {targetRef, previewToken})` — zgoda z kliknięcia „Scal do <cel>”; żądanie przekazane
+        bez zmian, jedno wywołanie na jedno kliknięcie."""
+        self._board(tag, "MergeCard", [card_id, request])
+
+    def _board(self, tag: str, member: str, args: list) -> None:
+        if member not in BOARD_CALLS:
+            self.boardReplied.emit(tag, json.dumps({"ok": False, "error": "not-allowed",
+                                                    "message": f"Okno Worktrees nie wywołuje {member}."},
+                                                   ensure_ascii=False))
+            return
+        if self.bus is None:
+            self.boardReplied.emit(tag, json.dumps(PREVIEW_BOARD_REPLY if self._preview else NO_SERVICE_REPLY,
+                                                   ensure_ascii=False))
+            return
+
+        def done(ok: bool, value) -> None:
+            self.boardReplied.emit(tag, value if ok and isinstance(value, str)
+                                   else json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+
+        timeout = 25_000 if member == "ListCardBranches" else MERGE_TIMEOUT_MS
+        self._call(member, args, done, timeout=timeout, path=BOARD_PATH, iface=BOARD_IFACE)
+
     @pyqtSlot(str, str)
     def open(self, path: str, app: str) -> None:
         if self.bus is not None:
@@ -258,6 +370,10 @@ class Backend(QObject):
     @pyqtSlot()
     def _changed(self) -> None:
         self._load()
+
+    @pyqtSlot()
+    def _board_changed(self) -> None:
+        self.boardChanged.emit()
 
     def _load(self) -> None:
         self._call("List", [], self._got_list)

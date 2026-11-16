@@ -14,7 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.appearance import DATA, PALETTE, STATE  # noqa: E402
-from scripts.panels import evaluate, load, persist_thickness, save, screens, script, settle  # noqa: E402
+from scripts.panels import (evaluate, load, orphans_note, outputs_disabled, persist_thickness, save, screens,  # noqa: E402
+                            script, settle)
 
 INSTALLED = STATE / "tide" / "dock-installed.json"
 # Kafelki, które wyszły z docka, ale mogą w nim jeszcze stać po starej instalacji: instalacja zdejmuje je
@@ -62,6 +63,7 @@ def params() -> dict:
 
 def install() -> None:
     result = evaluate(script("dock", params()))
+    orphans_note(result)
     settle()
     evaluate(script("order", {**screens(), "panels": [{"id": result["dock"], "order": result["order"]}]}))
     persist_thickness(result["dock"], params()["dockHeight"])
@@ -78,11 +80,18 @@ def install() -> None:
 
 
 def uninstall() -> None:
+    if outputs_disabled():
+        return
     installed = load(INSTALLED)
     if not installed:
         print("Dock Tide nie był instalowany.")
         return
-    evaluate(script("dock-uninstall", {**screens(), **installed, "widgets": DOCK_WIDGETS + DOCK_RETIRED}))
+    result = evaluate(script("dock-uninstall", {**screens(), **installed, "widgets": DOCK_WIDGETS + DOCK_RETIRED}))
+    orphans_note(result)
+    if result.get("skipped"):
+        print("Dock nie ma widoku — jego wymiary nie zostały przywrócone, stan zachowany. "
+              "Włącz monitor i ponów uninstall.")
+        return
     INSTALLED.unlink(missing_ok=True)
     print("Dock Tide odinstalowany, przywrócono poprzedni układ dolnego panelu.")
 
@@ -94,6 +103,8 @@ def show() -> None:
 def install_in_activity() -> None:
     """Instalacja i od razu panele z opisu bieżącej aktywności, pod blokadą nałożeń wyglądu (decyzja 80):
     w aktywności Stream dock pracy nie zostaje w stanie pracy nad konsolą — silnik chowa go z powrotem."""
+    if outputs_disabled():
+        return
     from scripts import activity_look
     activity_look.apply_current(["panels"], before=install)
 

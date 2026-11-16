@@ -163,16 +163,17 @@ Rectangle {
             // Zmiany w widoku diffa (PT-360): bez terminala, Esc wraca na listę.
             Row {
                 objectName: "worktreeChangeActions"
-                visible: changes.visible || branchChanges.visible || pull.visible
+                // Jawne warunki, nie visible dzieci: to widoczność efektywna, więc po ukryciu strony (przełącznik
+                // Katalogi/Gałęzie, inny widok okna) wiersz zostawał ukryty na stałe.
+                visible: Logic.canShowChanges(row.worktree) || Logic.canShowBranchChanges(row.worktree)
+                         || Logic.canOfferPull(row.worktree)
                 spacing: 8
                 topPadding: 2
-                PillButton {
+                Tide.Button {
                     id: pull
                     objectName: "pullButton"
                     visible: Logic.canOfferPull(row.worktree)
-                    implicitHeight: 26
-                    horizontalPadding: 10
-                    pixelSize: 12
+                    small: true
                     text: Logic.pullButtonText(row.pullBusy, row.worktree)
                     enabled: !row.pullBusy && row.pullBlocker === null
                     toolTip: row.pullBlocker !== null ? "Nie można zaciągnąć: " + row.pullBlocker.text
@@ -182,31 +183,27 @@ Rectangle {
                 }
                 Text {
                     objectName: "pullReason"
-                    visible: pull.visible && !row.pullBusy && row.pullBlocker !== null
+                    visible: Logic.canOfferPull(row.worktree) && !row.pullBusy && row.pullBlocker !== null
                     anchors.verticalCenter: pull.verticalCenter
                     text: row.pullBlocker !== null ? row.pullBlocker.text : ""
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 11
                 }
-                PillButton {
+                Tide.Button {
                     id: changes
                     objectName: "worktreeChanges"
                     visible: Logic.canShowChanges(row.worktree)
-                    implicitHeight: 26
-                    horizontalPadding: 10
-                    pixelSize: 12
+                    small: true
                     text: "Zmiany w katalogu"
                     toolTip: "Niezacommitowana praca: w indeksie, poza indeksem i pliki nieśledzone"
                     onClicked: row.diffRequested(row.worktree.path, "worktree")
                 }
-                PillButton {
+                Tide.Button {
                     id: branchChanges
                     objectName: "worktreeBranchChanges"
                     visible: Logic.canShowBranchChanges(row.worktree)
-                    implicitHeight: 26
-                    horizontalPadding: 10
-                    pixelSize: 12
+                    small: true
                     text: "Zmiany względem głównej"
                     toolTip: "Zmiany gałęzi " + (row.worktree.branch || "") + " względem " + (row.worktree.mainBranch || "")
                     onClicked: row.diffRequested(row.worktree.path, "range")
@@ -265,24 +262,17 @@ Rectangle {
             spacing: 6
             visible: row.kind !== "clean" && !row.worktree.missing
 
-            PillButton {
+            Tide.Button {
                 visible: row.canRider
-                implicitWidth: 30
-                implicitHeight: 30
-                horizontalPadding: 0
+                iconOnly: true
                 text: "RD"
-                pixelSize: 11
-                strong: true
                 toolTip: "Otwórz w Riderze"
                 onClicked: row.openRequested(row.worktree.path, "rider")
             }
-            PillButton {
+            Tide.Button {
                 visible: row.canTerminal
-                implicitWidth: 30
-                implicitHeight: 30
-                horizontalPadding: 0
+                iconOnly: true
                 text: "›_"
-                mono: true
                 toolTip: "Otwórz w terminalu"
                 onClicked: row.openRequested(row.worktree.path, "terminal")
             }

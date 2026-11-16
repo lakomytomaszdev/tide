@@ -83,7 +83,7 @@ Rectangle {
             contentWidth: width
             contentHeight: scroll.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: scroll
@@ -277,30 +277,30 @@ Rectangle {
             spacing: 8
             visible: detail.ticket !== null
 
-            PillButton {
+            Tide.Button {
                 visible: detail.resultRun !== ""
                 text: "Pokaż wynik"
                 toolTip: "Raport podagenta i wycinek jego pracy"
                 onClicked: detail.resultRequested(detail.resultRun)
             }
-            PillButton {
+            Tide.Button {
                 text: "Przejdź do koordynatora"
                 toolTip: detail.board && detail.board.live ? "Okno sesji koordynatora" : "Wznów sesję koordynatora w Konsoli"
                 onClicked: detail.activateRequested()
             }
-            PillButton {
+            Tide.Button {
                 visible: detail.ticket !== null && (detail.ticket.branch || "") !== "" && detail.canDiff
                 text: "Diff gałęzi"
                 toolTip: "git diff gałęzi ticketu względem gałęzi głównej (Konsola)"
                 onClicked: detail.diffRequested(detail.ticket.key)
             }
-            PillButton {
+            Tide.Button {
                 visible: detail.ticket !== null && (detail.ticket.url || "") !== ""
                 text: "Otwórz w YouTracku"
                 toolTip: detail.ticket ? (detail.ticket.url || "") : ""
                 onClicked: detail.urlRequested(detail.ticket.url)
             }
-            PillButton {
+            Tide.Button {
                 visible: detail.ticket !== null && (detail.ticket.worktree || "") !== ""
                 text: "Worktree"
                 toolTip: detail.ticket ? (detail.ticket.worktree || "") : ""

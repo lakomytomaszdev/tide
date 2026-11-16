@@ -102,6 +102,19 @@ function __widget(panel, data) {
     return widget;
 }
 
+// Panel ze `screen` poza 0..screenCount-1 nie ma widoku (jak lastScreen=1 przy wyłączonym DP-2):
+// właściwości widoku w prawdziwym plasmashell kończą się wyjątkiem. Atrapa rzuca naprawdę, samo logowanie
+// nie wystarcza. `location` należy do kontenera, nie widoku, więc zostaje dostępne.
+var __viewProperties = ["height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
+                        "minimumLength", "maximumLength"];
+
+function __needView(data, name) {
+    if (__viewProperties.indexOf(name) >= 0 && !(data.screen >= 0 && data.screen < screenCount)) {
+        data.log.push("view:" + name);  // ślad próby dla testów; sam wyjątek też przerywa skrypt
+        throw new Error("panel bez widoku:" + name + " panelu " + data.id + " (ekran " + data.screen + ")");
+    }
+}
+
 function __panel(data) {
     if (__objects[data.id]) {
         return __objects[data.id];
@@ -111,8 +124,12 @@ function __panel(data) {
     ["location", "height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
      "minimumLength", "maximumLength"].forEach(function (name) {
         Object.defineProperty(panel, name, {
-            get: function () { return data[name]; },
-            set: function (value) { data[name] = value; data.log.push(name + "=" + value); }
+            get: function () { __needView(data, name); return data[name]; },
+            set: function (value) {
+                __needView(data, name);
+                data[name] = value;
+                data.log.push(name + "=" + value);
+            }
         });
     });
     Object.defineProperty(panel, "screen", {
@@ -164,6 +181,9 @@ var screenCount = 0;
 
 // Geometria ekranu: state.geometries[numer] albo 1920×1080.
 function screenGeometry(screen) {
+    if (!(screen >= 0 && screen < screenCount)) {
+        throw new Error("screenGeometry: ekran " + screen + " nie istnieje (screenCount " + screenCount + ")");
+    }
     var all = __state.geometries || [];
     return all[screen] || {x: 1920 * screen, y: 0, width: 1920, height: 1080};
 }
@@ -190,6 +210,10 @@ function currentActivity() {
 
 function __desktop(data) {
     var desktop = {id: data.id, screen: data.screen, type: data.type || "org.kde.plasma.folder", __data: data};
+    // Tapeta pulpitu: wallpaperPlugin i grupa Wallpaper/… w konfiguracji (odczyt pulpitów w activity_look.py).
+    data.config = data.config || {};
+    __configurable(desktop, data.config);
+    Object.defineProperty(desktop, "wallpaperPlugin", {get: function () { return data.plugin; }});
     desktop.widgets = function () {
         // Widget.remove() zdejmuje aplet z pulpitu (state.removedFromDesktops: [{desktop, id, type}]).
         return data.widgets.map(function (w) {

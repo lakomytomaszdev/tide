@@ -48,3 +48,52 @@ function tileModel(card, answeredIds) {
             executor: ticketStep && ticketStep.executor || flow.executor || "",
             reviewer: reviewStep && reviewStep.executor || ""}
 }
+
+// --- tabela planu (PT-503, K-128): wybór bieżącej fali i wiersze ---------------------------------------------
+// Czyste funkcje, bez dostępu do QML: widok tylko je woła, a test tabelaryczny sprawdza je bez okna.
+
+var FINISHED_STATES = ["gotowe", "odrzucone"]
+var FINISHED_STATUSES = ["merged", "rejected"]
+
+// Ticket zakończony: `state` z usługi (`gotowe`, `odrzucone`), a bez niego `status` (`merged`, `rejected`).
+function isFinished(ticket) {
+    if (!ticket) return false
+    if (ticket.state) return FINISHED_STATES.indexOf(ticket.state) >= 0
+    return FINISHED_STATUSES.indexOf(ticket.status) >= 0
+}
+
+// Indeks (od 0) najniższej fali z ticketem w stanie innym niż gotowe/odrzucone; -1, gdy wszystkie fale są
+// zakończone albo planu nie ma. Ticket spoza karty (brak w `tickets`) nie czyni fali bieżącą.
+function currentWave(waves, tickets) {
+    const list = Array.isArray(tickets) ? tickets : []
+    return (Array.isArray(waves) ? waves : []).findIndex(
+        wave => (Array.isArray(wave) ? wave : []).some(id => {
+            const ticket = list.find(t => t.id === id)
+            return !!ticket && !isFinished(ticket)
+        }))
+}
+
+// Wiersze tabeli planu w kolejności fal: {id, wave (od 1), item, title, note, question, current}.
+// `item` — `derived.tickets[]` albo null (ticket spoza karty: wiersz przygaszony); `note` — uwagi z wiersza planu
+// (`flow.plan.rows[].note`); `question` — zdanie nieodpowiedzianej decyzji tego ticketu (`flow.decisions[].happened`).
+function planRows(waves, tickets, planRowList, decisions) {
+    const list = Array.isArray(tickets) ? tickets : []
+    const rows = Array.isArray(planRowList) ? planRowList : []
+    const open = Array.isArray(decisions) ? decisions : []
+    const now = currentWave(waves, list)
+    const out = []
+    const all = Array.isArray(waves) ? waves : []
+    for (let index = 0; index < all.length; index++) {
+        for (const id of Array.isArray(all[index]) ? all[index] : []) {
+            const item = list.find(t => t.id === id) || null
+            const row = rows.find(r => (r.id || r.workId) === id) || null
+            const asked = open.find(d => d.ticket === id)
+            out.push({id: id, wave: index + 1, item: item,
+                      title: item && item.title || row && row.title || id,
+                      note: row && row.note || "",
+                      question: asked ? asked.happened || asked.question || "" : "",
+                      current: index === now})
+        }
+    }
+    return out
+}

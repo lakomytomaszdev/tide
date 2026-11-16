@@ -62,7 +62,7 @@ class PackageTest(unittest.TestCase):
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
 
     def test_no_hardcoded_colors_and_plain_texts(self):
-        for name in os.listdir(os.path.join(APP_DIR, "qml")):
+        for name in (n for n in os.listdir(os.path.join(APP_DIR, "qml")) if n.endswith((".qml", ".js"))):
             with open(os.path.join(APP_DIR, "qml", name), encoding="utf-8") as fh:
                 source = fh.read()
             self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
@@ -742,6 +742,8 @@ out["selected"] = js("page.selectedId")
         out = self.probe("""
 click(card("K-12"))
 out["panel"] = js("page.cardPanel.card.id")
+js("page.cardPanel.setMode('edit')")   # PT-504: kliknięcie karty otwiera czytanie, formularz jest w trybie Edytuj
+wait(60)
 out["dirty0"] = js("page.cardPanel.dirty")
 out["inherited"] = js("page.cardPanel.inherited")
 obj("cardNote").setProperty("text", "do faktury na 1. listopada")
@@ -749,6 +751,7 @@ out["dirty1"] = js("page.cardPanel.dirty")
 key(Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
 wait(100)
 out["update"] = calls()[-1]
+js("page.closePanel()")   # PT-504: klik poza szufladą (przyciemnienie) tylko zamyka panel
 click(card("K-13"))
 js("page.cardPanel.moveRequested('archived')")
 wait(100)
@@ -775,6 +778,8 @@ out["esc"] = js("page.panelOpen")
         out = self.probe("""
 import copy
 click(card("K-12"))
+js("page.cardPanel.setMode('edit')")   # PT-504: formularz jest w trybie Edytuj
+wait(60)
 snap = copy.deepcopy(data)
 for c in snap["cards"]:
     if c["id"] == "K-12":
@@ -804,12 +809,12 @@ wait(150)
 out["requests"] = backend.docsRequests
 out["tabs"] = js("page.cardPanel.docTabs.map(t => t.label)")
 out["tabsVisible"] = obj("cardTabs").property("visible")
-out["width0"] = js("page.cardPanel.width")
+out["width0"] = js("page.cardPanel.sheet.sheetWidth")
 js("page.cardPanel.tab = 'plan'")
 wait(300)
 out["shown"] = js("page.cardPanel.shownTab")
 out["formHidden"] = not obj("cardTitle").property("visible") or not js("page.cardPanel.docView.visible === false")
-out["width1"] = js("page.cardPanel.width")
+out["width1"] = js("page.cardPanel.sheet.sheetWidth")
 out["title"] = obj("docTitle").property("text")
 out["status"] = obj("docStatus").property("word")
 out["tickets"] = js("page.cardPanel.docView.tickets.map(t => t.id + ':' + t.state)")
@@ -825,9 +830,11 @@ js("page.cardPanel.docView.markdownItem.linkActivated('file:///etc/passwd')")
 js("page.cardPanel.docView.markdownItem.linkActivated('https://example.com/tide/docs/tide-daemon.md')")
 out["links"] = [c for c in calls() if c[0] == "openLink"]
 out["foreign"] = backend.openFile("/etc/passwd")
+click(named("cardMenu"))   # „Rozwiń” jest w menu ⋯
+wait(60)
 click(named("cardExpand"))
 wait(300)
-out["width2"] = js("page.cardPanel.width")
+out["width2"] = js("page.cardPanel.sheet.sheetWidth")
 out["pageWidth"] = js("page.width")
 js("page.cardPanel.tab = 'spec'")
 wait(200)
@@ -837,15 +844,16 @@ out["manual"] = js("(function () { const m = page.cardPanel.docView.manualItem; 
 out["manualShown"] = obj("docManual").property("visible")
 js("page.cardPanel.tab = 'opis'")
 wait(200)
-out["width3"] = js("page.cardPanel.width")
+out["width3"] = js("page.cardPanel.sheet.sheetWidth")
 out["titleField"] = obj("cardTitle").property("visible")
+out["readTitle"] = obj("cardReadTitle").property("visible")
 """)
         self.assertGreaterEqual(out["requests"], 1, "panel prosi o CardDocs przy otwarciu")
         self.assertEqual(out["tabs"], ["Opis", "Plan · 2/6", "Specyfikacja"])
         self.assertTrue(out["tabsVisible"])
-        self.assertEqual(out["width0"], 420, "Opis — zwykła szerokość")
+        self.assertGreaterEqual(out["width0"], 0.6 * out["pageWidth"], "Opis — duża szuflada")
         self.assertEqual(out["shown"], "plan")
-        self.assertEqual(out["width1"], 860, "dokument — szerszy panel")
+        self.assertEqual(out["width1"], out["width0"], "zakładka dokumentu nie zmienia szerokości szuflady")
         self.assertEqual((out["title"], out["status"]), ("Tablica pracy z backlogiem i tagami", "aktywny"))
         self.assertEqual(out["tickets"], ["PT-1:gotowe", "PT-2:gotowe", "PT-3:review", "PT-4:w-toku", "PT-5:czeka",
                                           "PT-6:todo"])
@@ -858,12 +866,14 @@ out["titleField"] = obj("cardTitle").property("visible")
         self.assertEqual(out["links"], [["openLink", "https://example.com/tide/docs/tide-daemon.md"]],
                          "tylko http(s)")
         self.assertFalse(out["foreign"], "ścieżka spoza odpowiedzi CardDocs się nie otwiera")
-        self.assertEqual(out["width2"], out["pageWidth"] - 24, "Rozwiń — prawie całe okno")
+        self.assertGreater(out["width2"], out["width0"], "Rozwiń — szersza szuflada")
+        self.assertGreaterEqual(out["width2"], 0.9 * out["pageWidth"], "Rozwiń — prawie całe okno")
         self.assertEqual((out["specTitle"], out["specStatus"]), ("K-5: Tablica pracy z backlogiem i tagami", "gotowa"))
         self.assertTrue(out["manualShown"])
         self.assertIn("Przeciągnij kartę z Backlogu", out["manual"])
-        self.assertEqual(out["width3"], 420)
-        self.assertTrue(out["titleField"])
+        self.assertEqual(out["width3"], out["width2"], "zakładka nie zmienia rozwinięcia")
+        self.assertFalse(out["titleField"], "tryb Czytaj nie pokazuje formularza")
+        self.assertTrue(out["readTitle"])
 
     def test_markdown_rendering_has_no_images_html_or_foreign_links(self):
         # Regresje z review: każdy przypadek, w którym wyrażenia regularne rozjeżdżały się z md4c.
@@ -934,7 +944,7 @@ out["afterReply"] = backend.docsRequests - first
 click(card("K-12"))
 wait(150)
 out["noDocsTabs"] = obj("cardTabs").property("visible")
-out["noDocsReading"] = js("page.cardPanel.reading")
+out["noDocsReading"] = js("page.cardPanel.docShown")
 js("page.closePanel()")
 click(card("K-14"))
 wait(150)
@@ -1032,8 +1042,8 @@ out["panel"] = js("page.panelOpen && page.cardPanel.column")
 bar = obj("boardErrors")
 out["visible"] = bar.property("visible")
 out["lines"] = js("page.errorLines")
-out["rail"] = js("[railInfo.label, railInfo.value, railInfo.note, railInfo.link.text]")
-js("railInfo.link.activate()")
+out["rail"] = js("[railInfo.label, railInfo.value, railInfo.note, typeof railInfo.link]")
+js("showItem('projekty')")
 out["managing"] = js("page.managing")
 key(Qt.Key.Key_Escape)
 out["back"] = js("page.managing")
@@ -1042,8 +1052,8 @@ out["badge"] = [backend.badgeText, backend.badgeTone]
         self.assertTrue(out["visible"])
         self.assertEqual(out["lines"], ["cards/K-30.md: <b>brak</b> frontmattera"])
         self.assertEqual(out["rail"], ["Dane tablicy", "~/DevWorkspace/tide-board", "lokalne repo · zapisano 12:04",
-                                       "Projekty i tagi"])
-        self.assertTrue(out["managing"], "link „Projekty i tagi” otwiera stronę")
+                                       "undefined"])
+        self.assertTrue(out["managing"], "pozycja panelu okna otwiera stronę (showItem projekty), zielonego linku w railInfo nie ma")
         self.assertFalse(out["back"], "Esc wraca do tablicy")
         self.assertEqual(out["badge"], ["● 1", "waiting"])
 
@@ -1102,6 +1112,34 @@ out["save"] = calls()[-1]
         self.assertEqual(out["spec"], ["spec", False], "Tylko specyfikacja: bez wyboru trybu")
         self.assertEqual(out["planning"], ["planning", True, "light"])
         self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
+
+    def test_manage_page_back_is_first_in_top_bar(self):
+        # K-128, PT-507: Projekty i tagi mają Tide.TopBar; „← Tablica” jest pierwszym elementem od lewej, klik i Esc wracają.
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("showItem('projekty')")
+wait(100)
+out["open"] = js("page.managing")
+out["backText"] = js(find("manageBack") + ".text")
+out["backX"] = js(find("manageBack") + ".mapToItem(page.managePage, 0, 0).x")
+out["titleX"] = js(find("manageHeading") + ".mapToItem(page.managePage, 0, 0).x")
+out["titleText"] = js(find("manageHeading") + ".text")
+click(at(find("manageBack")))
+wait(80)
+out["afterClick"] = js("page.managing")
+js("showItem('projekty')")
+wait(60)
+key(Qt.Key.Key_Escape)
+wait(60)
+out["afterEsc"] = js("page.managing")
+""", self.data)
+        self.assertTrue(out["open"])
+        self.assertEqual(out["backText"], "← Tablica")
+        self.assertEqual(out["titleText"], "Projekty i tagi")
+        self.assertLess(out["backX"], out["titleX"], "powrót jest pierwszy od lewej")
+        self.assertLess(out["backX"], 40)
+        self.assertFalse(out["afterClick"], "klik w „← Tablica” wraca do tablicy")
+        self.assertFalse(out["afterEsc"], "Esc wraca do tablicy")
 
     def test_project_review_independence_in_manage_page(self):
         # PT-330: projekt bez ustawienia pokazuje „Dowolny”; Inna rodzina z listą klas trafia do UpsertProject.
@@ -2659,7 +2697,7 @@ out["call"] = calls()[-1]
 
 
 class ClosingPanelTest(ProbeCase):
-    def test_panel_merge_preview_uses_named_target_and_closes_without_writing(self):
+    def test_panel_merge_opens_window_with_default_target_and_closes_without_writing(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:
             if card["id"] == "K-6":
@@ -2670,21 +2708,94 @@ class ClosingPanelTest(ProbeCase):
                 card["boardColumn"] = "review"
         out = self.probe(FIND_PY + '''
 click(card("K-6"))
-out["label"] = obj("cardPreviewMerge").property("text")
+out["label"] = obj("cardMerge").property("text")
 replies.append({"ok": False, "error": "git-error", "message": "Nie można odczytać drzewa"})
-click(at(FIND + "(page.cardPanel, 'cardPreviewMerge')"))
-until(lambda: not obj("mergePreview").property("busy"))
-out["text"] = obj("mergePreviewText").property("text")
-click(named("mergePreviewClose"))
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
+until(lambda: not obj("mergeWindow").property("busy"))
+out["text"] = obj("mergeWindowError").property("text")
+out["state"] = obj("mergeWindowState").property("text")
+out["target"] = [obj("mergeWindowTarget").property("text"), obj("mergeWindow").property("targetRef")]
+click(named("mergeWindowClose"))
 out["calls"] = calls()
 out["busy"] = js("page.cardPanel.busy")
 out["column"] = js("page.cardPanel.card.boardColumn")
 ''', data=data)
-        self.assertEqual(out["label"], "Podgląd scalenia do release/full-target")
+        self.assertEqual(out["label"], "Scal…")
         self.assertEqual(out["text"], "Nie można odczytać drzewa")
+        self.assertEqual(out["state"], "Podgląd nieudany")
+        # PT-390: „Scal…” z panelu otwiera okno scalania z domyślnym celem (tylko do odczytu).
+        self.assertEqual(out["target"], ["K-6 → release/full-target", "refs/heads/release/full-target"])
         self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/release/full-target"}])
         self.assertFalse(out["busy"])
         self.assertEqual(out["column"], "review")
+
+    COUNT_MERGE = ("(function n(it) { if (!it) return 0; let k = (it.visible && it.text === 'Scal…' "
+                   "&& it.objectName !== '') ? 1 : 0; "
+                   "for (const c of it.children) k += n(c); return k })")
+
+    def merge_card(self, derived_flow):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "mainBranch": "develop", "cardBranch": "card/k-6-eksport",
+                    "base": {"status": "known", "baseRef": "refs/heads/develop"},
+                    "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}, **derived_flow}}
+                card["boardColumn"] = "review"
+        return data
+
+    def test_panel_has_exactly_one_merge_button_for_closed_unmerged_card(self):
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+out["merged"] = js(FIND + "(page.cardPanel, 'cardMerged').visible")
+''', data=data)
+        self.assertEqual(out["count"], 1)
+        self.assertFalse(out["merged"])
+
+    def test_panel_merge_button_opens_window_and_previews_default_target(self):
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + '''
+click(card("K-6"))
+replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/develop", "targetBranch": "develop",
+                "previewToken": "t"})
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
+until(lambda: not obj("mergeWindow").property("busy"))
+out["window"] = [obj("mergeWindow").property("opened"), obj("mergeWindowTarget").property("text")]
+out["calls"] = calls()
+''', data=data)
+        self.assertEqual(out["window"], [True, "K-6 → develop"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["PreviewCardMerge", "K-6"]])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/develop"})
+
+    def test_panel_card_in_progress_has_no_merge_button(self):
+        data = self.merge_card({"closed": False, "merged": False, "mainMerged": False})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+out["closing"] = obj("cardFlowClosing").property("visible")
+''', data=data)
+        self.assertEqual(out["count"], 0)
+        self.assertFalse(out["closing"])
+
+    def test_panel_merged_card_shows_merged_line_instead_of_button(self):
+        merge = {"targetBranch": "master", "targetRef": "refs/heads/master", "ts": "2026-11-11T18:02:00Z"}
+        data = self.merge_card({"closed": True, "summary": "Gotowe", "merged": True, "mainMerged": True,
+                                "merge": merge})
+        out = self.probe(FIND_PY + "\nCOUNT = " + repr(self.COUNT_MERGE) + '''
+click(card("K-6"))
+out["count"] = js(COUNT + "(page.cardPanel)")
+merged = obj("cardMerged")
+out["line"] = [merged.property("visible"), merged.property("text")]
+out["expected"] = js("(function () { const d = new Date('2026-11-11T18:02:00Z'); const p = n => (n < 10 ? '0' : '') + n; "
+                     "return 'Scalono do master (' + d.getDate() + '.' + p(d.getMonth() + 1) + ' ' "
+                     "+ p(d.getHours()) + ':' + p(d.getMinutes()) + ')' })()")
+''', data=data)
+        self.assertEqual(out["count"], 0)
+        self.assertTrue(out["line"][0])
+        self.assertEqual(out["line"][1], out["expected"])
+        self.assertRegex(out["line"][1], r"^Scalono do master \(\d{1,2}\.\d{2} \d{2}:\d{2}\)$")
 
     def test_closed_card_exposes_diff_main_merge_and_return(self):
         data = json.loads(json.dumps(self.data))
@@ -2708,9 +2819,12 @@ out["panelStays"] = js("page.panelOpen")
 obj("cardClosingFeedback").setProperty("text", "Dopisz błąd eksportu")
 click(at(FIND + "(page.cardPanel, 'cardReturnForChanges')"))
 out["returnCall"] = calls()[-1]
-click(at(FIND + "(page.cardPanel, 'cardMergeMain')"))
+click(at(FIND + "(page.cardPanel, 'cardMerge')"))
 out["mergeCall"] = calls()[-1]
+until(lambda: not obj("mergeWindow").property("busy"))
+out["window"] = [obj("mergeWindow").property("opened"), obj("mergeWindowTarget").property("text")]
 """, data=data)
+        self.assertEqual(out["window"], [True, "K-6 → develop"], "„Scal…” otwiera okno scalania z podglądem")
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
         # K-36 #17: „Diff gałęzi” (usługowe CardBranchDiff + pole tekstowe) → „Zmiany gałęzi” (Git.Diff, widok diffa).

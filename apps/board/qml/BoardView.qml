@@ -7,8 +7,9 @@
 // karcie (K-12: zaznaczona i przewinięta; przed pierwszą migawką czeka na nią; launch:K-12 — do tego
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
-// railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
-// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
+// railInfo — ramka „Dane tablicy” na dole paska („Projekty i tagi” to pozycja paska okna: showItem("projekty"), wybrana, gdy `managing`; showItem("tablica") wraca z niej); import=1 — strona „Projekty i tagi”
+// z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132); full=K-8[,end] — pełna karta
+// (z `end` przewinięta do końca treści, zrzuty PT-502). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
 // shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
 // Zrzuty ekranu i model okna „Co ma zrobić agent?” idą przez backend (imagesJson, modelsJson, tasksJson,
 // pasteImage, addFiles, capture…); na czas „Zrób zrzut” widok chowa całe okno Tide i przywraca je po Spectacle.
@@ -34,11 +35,11 @@ Item {
                                                         && Window.window.visibility !== Window.Hidden : true
     readonly property var snapshot: backend ? Logic.parse(backend.snapshotJson, null) : null
     readonly property bool available: backend ? backend.available : false
+    readonly property bool managing: page.managing   // strona Projekty i tagi (pozycja panelu okna Tide jest wybrana)
     readonly property var railInfo: ({
         label: "Dane tablicy",
         value: snapshot && snapshot.boardDir ? Logic.shortPath(snapshot.boardDir, backend ? backend.homeDir : "") : "",
-        note: Logic.railNote(snapshot, nowTs),
-        link: { text: "Projekty i tagi", activate: function () { view.openManage() } }
+        note: Logic.railNote(snapshot, nowTs)
     })
 
     function openManage() {
@@ -50,6 +51,10 @@ Item {
     // Karta przychodzi zwykle przed migawką — wtedy czeka na pierwszą niepustą.
     function showItem(item) {
         if (!item) return
+        if (item === "tablica") {
+            page.managing = false
+            return
+        }
         if (item === "projekty" || item === "manage") {
             openManage()
             return
@@ -127,7 +132,6 @@ Item {
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
         onEnvironmentApproveRequested: (tag, id, yaml, onlyPlan) => view.backend.approveCardEnvironment(tag, id, yaml, onlyPlan)
-        onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)
         onMergeRequested: (tag, id, request) => view.backend.mergeCard(tag, id, request)
         onPreviewBaseChangeRequested: (tag, id, request) => view.backend.previewCardBaseChange(tag, id, request)
@@ -223,7 +227,18 @@ Item {
             }
             if (view.previewValue("import")) openImport()
             if (view.previewValue("decide")) openDecisions(view.previewValue("decide"))
+            if (view.previewValue("full")) {
+                const parts = view.previewValue("full").split(",")
+                if (openFull(parts[0]) && parts.indexOf("end") >= 0) previewEnd.start()
+            }
         }
+    }
+
+    // Podgląd full=K-8,end: przewinięcie dopiero po ułożeniu treści pełnej karty (zrzut okna robi się po 900 ms).
+    Timer {
+        id: previewEnd
+        interval: 400
+        onTriggered: page.cardFullView.showEnd()
     }
 
     Connections {

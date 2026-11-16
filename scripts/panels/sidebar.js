@@ -14,7 +14,7 @@
 
 var tideScreensNow = tideScreens();
 var tideOut = {screens: tideScreensNow, sidebar: null, created: false, header: null, order: [],
-               shortcut: "", removed: []};
+               shortcut: "", removed: [], orphans: tideOrphanIds()};
 
 // Ile miejsca u góry ekranu zajmują stałe górne panele (smukły pasek): pasek boczny
 // zaczyna się pod nimi, żeby nie zasłaniał globalnego menu, tak jak na mocku.
@@ -23,37 +23,53 @@ function tideTopReserved(screen, self) {
     var all = panels();
     for (var i = 0; i < all.length; ++i) {
         var panel = all[i];
-        if (panel.id !== self && panel.screen === screen && panel.location === "top" && panel.hiding === "none") {
+        // Panel bez widoku nie zajmuje miejsca i nie wolno czytać jego `hiding` ani `height`.
+        if (tidePanelHasView(panel) && panel.id !== self && panel.screen === screen && panel.location === "top"
+                && panel.hiding === "none") {
             reserved = Math.max(reserved, panel.height + (panel.floating ? P.floatingGap : 0));
         }
     }
     return reserved;
 }
 
+// Pasek boczny z widokiem (podpowiedź, potem wyszukiwanie po roli). Pasek bez widoku nie jest zwracany,
+// ale `tideOrphanSidebar` zapamiętuje, że taki jest: wtedy nie zakładamy drugiego paska tej samej roli.
+var tideOrphanSidebar = false;
+
 function tideFindSidebar() {
     if (P.sidebarPanel) {
         var known = panelById(P.sidebarPanel);
         if (known && tideRole(known) === "sidebar") {
-            return known;
+            if (tidePanelHasView(known)) {
+                return known;
+            }
+            tideOrphanSidebar = true;
         }
     }
     var all = panels();
     for (var i = 0; i < all.length; ++i) {
         if (tideRole(all[i]) === "sidebar") {
-            return all[i];
+            if (tidePanelHasView(all[i])) {
+                return all[i];
+            }
+            tideOrphanSidebar = true;
         }
     }
     return null;
 }
 
+var tideSidebar = null;
 if (tideScreensNow.side >= 0) {
-    var tideSidebar = tideFindSidebar();
-    if (!tideSidebar) {
+    tideSidebar = tideFindSidebar();
+    if (!tideSidebar && !tideOrphanSidebar) {
         // Nowy panel Plasma stawia na aktywnym monitorze — przenosimy go na lewy.
         tideSidebar = new Panel("org.kde.panel");
         tideMarkRole(tideSidebar, "sidebar");
         tideOut.created = true;
     }
+}
+// Bez paska z widokiem (pasek bez widoku jest tylko w `orphans`) nie ma czego ustawiać.
+if (tideSidebar) {
     if (tideSidebar.screen !== tideScreensNow.side) {
         tideSidebar.screen = tideScreensNow.side;
     }

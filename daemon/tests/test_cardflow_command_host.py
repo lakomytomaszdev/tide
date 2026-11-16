@@ -180,6 +180,8 @@ class CommandRunTickTest(FlowInProcess):
     def engine_now(self):
         engine = self.flow.engine
         engine._read_load = lambda: heavyqueue.Load(1.5, 8)
+        # Pola `loadavg`/`cores` zdarzeń przebiegu: odczyt w kształcie K-100 PT-423 (`FlowEngine.machine_load`).
+        engine.machine_load = lambda: ([1.5, 1.25, 1.0], 8)
         return engine
 
     def restarted(self):
@@ -229,8 +231,8 @@ class CommandRunTickTest(FlowInProcess):
             {"step": name, "command": "printenv TIDE_PT479", "unit": unit,
              "exitFile": os.path.join(step_dir, "outside", unit, "exit-code"),
              "log": os.path.join(step_dir, "outside", unit, "outside.log"), "executor": "host-isolated",
-             "isolation": "none", "class": "", "consentVersion": "", "loadavg": 1.5, "cores": 8, "source": "step",
-             "head": "", "rerunOf": ""})
+             "isolation": "none", "class": "", "consentVersion": "", "loadavg": [1.5, 1.25, 1.0], "cores": 8,
+             "source": "step", "head": "", "rerunOf": ""})
         self.assertEqual(set(finished), FINISH_KEYS)
         # Klient-obserwator skończył się kodem 42; wynik to kod polecenia z pliku `exit-code`.
         self.assertEqual((finished["exit"], finished["tail"]), (0, "z-srodowiska\n"))

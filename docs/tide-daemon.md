@@ -346,6 +346,7 @@ Odczyty gita jako dane (K-36): „co zmieniła ta karta” bez UI. Obiekt `/Git`
 | Składnik | Sygnatura | Opis |
 | --- | --- | --- |
 | `Diff(s request)` | `→ s` | Diff jako dane. `request` to obiekt JSON ze źródłem (niżej). Odpowiedź `{ok: true, …DiffData}` albo `{ok: false, error, message}`; opóźniona — git działa w puli wątków runnera odczytu (`GitReader.submit`), pętla usługi w tym czasie obsługuje inne wywołania |
+| `BranchMap(s request)` | `→ s` | Mapa gałęzi kart i ticketów projektu jako dane (K-99, PT-387; opis niżej, „Mapa gałęzi”). Odpowiedź opóźniona: projekcja dzienników kart biegnie w tej samej puli wątków runnera odczytu, nie w wątku głównym |
 
 **Źródło `card`** (PT-357): `{"source": "card", "card": "K-N", "targetRef": "refs/heads/master"}` (`targetRef`
 opcjonalny; pusty napis = brak). Działa w każdym stanie karty, która ma gałąź (także po domknięciu i scaleniu,
@@ -427,7 +428,7 @@ i działają bez zmian; widok diffa traktuje brak `groups[]` jak dotąd (sama li
 
 **Walidacja wejścia `commit`, `range` i `worktree`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`
 — `known_repo` — którą `path` źródła `worktree` (PT-360) wywołuje tak samo jak `repo`, bez drugiej kopii; użyje jej
-też K-99 dla `Git.Commits` i `Git.BranchMap`):
+też K-99 dla `Git.Commits`; `Git.BranchMap` nie przyjmuje ścieżek — repozytorium bierze z projektu Tablicy):
 
 - `repo` (dla `worktree` — `path`) musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
   kanonicznej (`realpath`, bez dowiązań) równą repozytorium projektu Tablicy (`repo` z projektu) albo worktree
@@ -504,6 +505,53 @@ wybierz plik, żeby doczytać”, a wybór pliku bez treści (`truncated`) sam d
 doczytania pokazuje komunikat i „Spróbuj ponownie”; „Odśwież” (`r`) czyta całość od nowa i odrzuca spóźnione
 odpowiedzi doczytywania.
 
+**Okno scalania** (`apps/common/qml/git/MergeWindow.qml`, K-99 PT-390): wspólna nakładka (zastąpiła dawny podgląd
+Tablicy). Strefa celu tylko do odczytu („K-12 → master”, pełny ref w podpowiedzi, „Start od: …” z `start.js`), minimalny
+podgląd odpowiedzi `PreviewCardMerge` (stan zdaniem: „Można scalić” / „Konflikty w N plikach” / „Scalenie zablokowane”,
+pliki w konflikcie, `message` i `blockedReasons[].message`, ostrzeżenia, zwijane „Szczegóły” z SHA, drzewem wyniku,
+kodami i dotychczasową treścią podglądu) oraz zawsze widoczne przyciski „Scal do <cel>”, „Zmiany gałęzi”, „Odśwież”,
+„Zamknij”. Komponent nie woła usługi: gospodarz odbiera `previewRequested(targetRef)`,
+`mergeRequested({targetRef, previewToken})`, `changesRequested(cardId)` i `closed()`, przypina tag wysłanego żądania
+(`track(tag)`) i oddaje odpowiedź przez `receive(tag, błąd, odpowiedź)`; odpowiedź z innym tagiem jest pomijana.
+Zgodą jest wyłącznie `mergeRequested` z polami bieżącego podglądu (`canMerge === true` i niepusty `previewToken`);
+zamknięcie, Esc i odświeżenie jej nie wysyłają, a błąd `MergeCard` blokuje przycisk do nowego udanego podglądu.
+Tablica zamyka okno przy zmianie kontekstu karty (`mergeContext`) i po sukcesie pokazuje „Scalono K-12 do master.”.
+Panel karty i pełna karta mają jedno „Scal…” (`cardMerge`, `fullMerge`; K-99 #16) dla karty domkniętej i niescalonej:
+otwiera okno scalania (`BoardPage.openMergeWindow`) i od razu liczy podgląd dla bazy karty, gdy jest znana lokalną
+gałęzią, a bez niej otwiera wybór celu. Karta w toku nie ma przycisku; karta scalona pokazuje zamiast niego napis
+„Scalono do master (11.11 19:02)” (`start.js` `mergedLine`: cel z `flow.merge`, czas zdarzenia `ts`).
+Dawne komponenty scalania Tablicy i droga scalenia bez tokenu z okien (sygnał `mergeMainRequested`, slot backendu,
+wpis na liście zapisów) zostały usunięte; metoda usługi `/Board MergeCardToMain` zostaje.
+
+**Wybór celu w oknie scalania** (K-99 #6): strefa celu to wybór. Okno bez wskazanego celu (`open(card, "", "")`)
+prosi gospodarza o `ListCardBranches` (`branchesRequested(text)` → `purpose: merge`, `trackBranches(tag)`; odpowiedź
+`receiveBranches(tag, odpowiedź)`) i bierze z niej wyłącznie `defaultTargetRef`, `mainRef` i `recentTargets` — w QML okna
+nie ma nazw `master` ani `origin`, a odpowiedź bez `mainRef` ukrywa skrót „Główna” i niczego nie zgaduje. Domyślny
+cel wybieralny dostaje podgląd od razu; przy bazie nieznanej (`baseRef` puste) i bez `defaultTargetRef` nazwana główna
+jest tylko propozycją: podgląd idzie, ale „Scal do” czeka na świadomy wybór celu (kliknięcie propozycji albo innego
+celu). Skrót (baza karty, główna, ostatnie cele) i wynik wyszukiwania lokalnych gałęzi to `BranchPicker`
+(`apps/common/qml/git/BranchPicker.qml`, wspólny z oknem zlecenia Tablicy i przyszłym oknem Worktrees); każda zmiana
+celu zeruje podgląd (`previewRequested`, „Scal do” wyłączone do odpowiedzi), a cel `selectable: false` pokazuje
+powód i nie wysyła podglądu. Nazwa nowego lokalnego celu (baza zdalna bez śledzącej) ma osobny przycisk „Podgląd
+nowego celu”. Wybór celu nie zmienia bazy karty i nie jest zgodą.
+
+**Okno scalania w Worktrees** (K-99 #10, PT-395): w trybie „Gałęzie” zaznaczona gałąź karty domkniętej i niescalonej
+(`state: closed` z `Git.BranchMap`) ma przycisk „Scal…”; karta w toku, scalona, ticket i baza go nie mają. „Scal…”
+otwiera to samo okno (`MergeWindow.qml`) bez wskazanego celu: znana baza karty to `started.ref` węzła (pusty — baza
+nieznana, cel to propozycja), „Start od: …” liczy `cardStartLine` z `start.js` na polach `started` węzła. Strona
+(`apps/worktrees/qml/BranchesPage.qml`) tylko przekłada sygnały okna na sloty backendu `listCardBranches`,
+`previewCardMerge`, `mergeCard` (tagi `merge-targets:`, `preview-merge:`, `merge-card:` przypięte przez
+`track`/`trackBranches`) i oddaje odpowiedzi z sygnału `boardReplied(tag, json)`. Backend Worktrees
+(`apps/worktrees/backend.py`) ma na liście dozwolonych wywołań `/Board` (`BOARD_CALLS`) dokładnie `ListCardBranches`,
+`PreviewCardMerge` i `MergeCard` — inna nazwa daje odpowiedź `not-allowed` bez wywołania usługi; nie zakłada kart
+i nie ma starej drogi scalenia bez tokenu. Żądanie zgody przechodzi bez zmian (jedno kliknięcie — jedno `MergeCard`),
+backend nie pamięta tokenów i niczego nie ponawia; odmowa (np. `stale-preview`, gdy tę samą kartę scaliło okno
+Tablicy) pokazuje powód i blokuje „Scal do” do nowego podglądu. Zmiana projektu i zniknięcie karty z mapy zamykają
+okno, odświeżenie mapy go nie zamyka. Po sukcesie strona pokazuje „Scalono K-5 do main.” (przy `already: true` —
+„gałąź karty była już w celu, bez nowego commita”) i czyta mapę od nowa, więc węzeł ma „scalona do <cel>”.
+„Zleć rozwiązanie konfliktów” w Worktrees nie ma (karta konfliktów — z Tablicy). Podgląd z pliku (`--data`)
+odpowiada `preview` bez wywołań.
+
 **Grupy plików i nieśledzone w widoku** (PT-360): przy odpowiedzi z `groups[]` lista plików ma nagłówek każdej
 niepustej grupy z liczbą plików i sumą (`W indeksie · 2 pliki · +3 −1`), a pod plikami — nagłówek „Nieśledzone · N plików
 (bez treści)” i same ścieżki (zwykły tekst, bez wyboru i bez podglądu). Plik w obu grupach to dwa wiersze; `]`/`[`
@@ -529,6 +577,66 @@ zmian.”. Odpowiedź bez `groups[]` wygląda jak dotąd.
 | `no-worktree` | źródło `worktree`: `path` jest na liście Worktrees, ale katalogu już nie ma (usunięty po odczycie listy); `message`: „Katalog worktree nie istnieje (został usunięty?): <ścieżka>” (PT-360) |
 | `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
 | `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
+
+### Mapa gałęzi (`Git.BranchMap`, K-99, PT-387)
+
+Jak gałęzie kart i ticketów projektu wiszą na sobie — dane dla trybu „Gałęzie” okna Worktrees. Ta część to **czysta
+projekcja dzienników kart i Tablicy, bez uruchamiania gita** (`gitread/branchmap.py`); metryki gita (istnienie
+gałęzi, stary start, worktree, upstream) dochodzą w #11 jako nowe pola węzła, bez zmiany istniejących.
+
+- `GitMonitor` dostaje obok źródła dziennika źródło Tablicy (`board_source`: projekty `slug`, `name`, `repo` i karty
+  `project`, `title`, `column`; tylko odczyt). Źródło Tablicy jest wołane w wątku głównym, jak lista repozytoriów
+  `Diff`, a projekcja wielu dzienników — w puli runnera odczytu. **Repozytorium mapy pochodzi z projektu Tablicy,
+  nigdy z żądania.** Stan kart czytają wyłącznie istniejące funkcje (`Journal.state` → `fold`, `base_of`,
+  `ticket_of`, `merge_of`); odczyt nie dopisuje zdarzeń do dziennika, nie zapisuje Tablicy i nie zmienia refów.
+- **Bez pola `mainRef`** (także po #11): mapa nie potrzebuje gałęzi głównej — drzewo wisi pod refami baz z dzienników.
+  „Nazwaną główną” dla okna scalania podaje `ListCardBranches` (`mainRef`), a karta ma `flow.mainBranch` w migawce.
+
+**Żądanie `{}`** — projekty Tablicy z repozytorium (lista wyboru w Worktrees), po nazwie:
+`{ok: true, projects: [{slug, name, repo, cards}]}`; `cards` to liczba kart Tablicy z tym projektem głównym. Projekt
+bez repozytorium nie jest na liście.
+
+**Żądanie `{"project": "<slug>", "limit"?: N}`** — mapa projektu:
+`{ok: true, project, repo, nodes, edges, total, truncated, warnings}`.
+
+- Karta należy do mapy, gdy jej ostatnie zlecenie (`card.started`) dotyczy tego projektu (`project`) albo jego
+  repozytorium (ścieżka kanoniczna). Karta bez gałęzi (brak udanego `card-branch`) nie ma węzła.
+- `nodes[]` — najpierw węzły `base` (po refie) i `unknown-base`, potem karty od najnowszej, każda ze swoimi ticketami:
+
+| Pole | Opis |
+| --- | --- |
+| `id` | `base:<ref>`, `unknown-base`, `card:K-N`, `ticket:K-N:PT-M` |
+| `kind` | `base` — ref użyty w dziennikach jako baza startu albo cel scalenia karty (np. `refs/heads/develop`, `refs/remotes/origin/main`; nie powstaje dla `master`, którego dzienniki nie wymieniają), `card` — gałąź karty z wyniku `card-branch`, `ticket` — gałąź ticketu z wyniku `ticket-branch`, `unknown-base` — jedna grupa kart z bazą `unknown` |
+| `ref`, `branch` | pełny ref i krótka nazwa (`refs/remotes/origin/develop` → `origin/develop`); dla `unknown-base` puste |
+| `card`, `ticket` | `K-N` (karta i ticket), `PT-M` (ticket) |
+| `title` | karta — tytuł z Tablicy; ticket — tytuł z zatwierdzonego planu albo rezerwacji; `unknown-base` — „Nieznana baza” (pole pomijane, gdy brak) |
+| `column` | tylko karta: kolumna z pliku karty Tablicy |
+| `state` | `active`; `closed` — karta domknięta (`card.finished`/`card.closed`) albo w Gotowe/Archiwum, ticket niescalony takiej karty; `merged` — karta scalona do celu (`card.merged`/`card.main-merged`), ticket scalony do gałęzi karty (wynik `merge`); `rejected` — odrzucony ticket (`ticket.rejected`); węzły `base` i `unknown-base` — `active` |
+| `started` | `{ref, sha, date}`: karta — baza z `base_of` (po skutecznej korekcie bazy `card.base-changed` nowa baza, a pierwotna w `started.initial: {ref, sha}`; baza `unknown` — puste `ref` i `sha`), `date` — czas zlecenia albo korekty; ticket — gałąź karty, SHA startu z wyniku `ticket-branch` i jego czas |
+| `merged` | `{targetRef, sha, date}`: karta — cel, `resultCommit` i czas z `card.merged` (stare `card.main-merged` przez `merge_of`); ticket — gałąź karty, commit i czas wyniku `merge` |
+
+- `edges[]` — `{kind, from, to}`. `start`: od rodzica do gałęzi — karta od węzła swojej bazy, od gałęzi innej karty
+  z mapy (dopasowanie po pełnym refie: karta wystartowana od `refs/heads/card/k-12-…` wisi pod `card:K-12`) albo od
+  `unknown-base`; ticket od gałęzi karty. `merge`: od scalonej gałęzi do celu — ticket → karta (z wyniku `merge`,
+  także gdy gałąź ticketu usunięto: dane pochodzą z dziennika), karta → cel z `card.merged` (gałąź innej karty
+  z mapy albo węzeł `base`). Każdy koniec krawędzi jest węzłem odpowiedzi.
+- **Limit:** `limit` to liczba gałęzi kart i ticketów, domyślnie 200, najwyżej 500 (większy jest obcinany do 500;
+  zero, liczba ujemna albo nie-liczba to `bad-request`). Wybierane są najnowsze karty — po ostatnim zdarzeniu karty
+  albo któregoś z jej ticketów — razem z ich najnowszymi ticketami, więc ticket nigdy nie zostaje bez swojej karty.
+  `total` to liczba wszystkich gałęzi kart i ticketów projektu, `truncated: true` — część pominięto. Gdy pominięto
+  kartę, z której wystartowała inna, ta druga wisi pod węzłem `base` o refie gałęzi pominiętej karty.
+- `warnings[]` — zdania po polsku, np. dziennik karty, którego nie dało się odczytać (karta jest pomijana, reszta
+  mapy zostaje), albo scalenie karty bez zapisanego celu.
+
+**Błędy** (`{ok: false, error, message}`; nieoczekiwany wyjątek nie trafia do odpowiedzi — tylko do dziennika usługi):
+
+| `error` | Kiedy |
+| --- | --- |
+| `bad-request` | żądanie nie jest obiektem JSON, `project` nie jest niepustym napisem, zły `limit` |
+| `unknown-project` | nie ma projektu Tablicy o tym slugu |
+| `no-repo` | projekt nie ma repozytorium |
+| `unavailable` | Tablica albo przepływ karty (dziennik kart) są wyłączone w usłudze, albo nie dało się odczytać Tablicy |
+| `cancelled`, `failed` | zamykanie usługi; nieoczekiwany błąd projekcji (ogólny komunikat) |
 
 ## Nowe zadanie
 
@@ -794,6 +902,39 @@ Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tes
   progu; rozstrzyga tryb 10 okien”. Zostaje tylko ważność (loadavg).
 - **Porównywalność.** Reproduktor nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` ani
   `scanner` (~15 % próbek produkcji), więc jest wskaźnikiem. Rozstrzyga pomiar produkcji.
+- **Stany produkcji (K-125, PT-486).** Dane skali (`perf_idle_scale.assign_roles`/`build_card`/`populate`) mają poza
+  kartami zakończonymi i aktywnymi także: 4 karty **wstrzymane** z 7 prośbami outside bez decyzji (3, 2, 1, 1 — krok
+  `denied` + `outside`, polecenie to skrypt powłoki w worktree, więc zgoda zawsze od człowieka), kartę **z trzymanym
+  procesem K-38** (chronione tickety, kroki zakończone, jednostki dla atrapy `systemctl` aktywne; od 12 kart
+  `PROD_HELD_STEPS` = 135 kroków jak na produkcji — kroki `fix` wracają do 7 chronionych ticketów, więc tick pyta atrapę
+  o każdą jednostkę) oraz kartę
+  **z zatwierdzonym planem w spoczynku** (wyniki `card-branch` i `plan-commit`, tickety czekają na bloker z innej
+  karty). Wszystkie są niezakończone, więc co tick przechodzą pełny przebieg karty i uruchamiają `_consent_recheck`,
+  `_plan_next` i `trialhold.inventory`. `populate` sprawdza każdą rolę (`check_roles`: `permission`, `paused`, `held`,
+  zatwierdzony plan, brak kroków w toku) i odrzuca dane, które stanu nie dają. Numery ticketów generatora zaczynają się
+  od `PT-1011`, żeby przypadkowy ticket chronionej próby nie robił z karty karty z trzymanym procesem.
+- **Atrapa `systemctl`.** `perf_idle_cpu.isolated_env` kładzie w `bin` reproduktora (obok atrapy `incus`, pierwszy w
+  `PATH` usługi) krótki skrypt `/bin/sh`: `is-active` jednostki trzymanego procesu → `active` (kod 0), inna jednostka →
+  `inactive` (kod 3), pozostałe podpolecenia → kod 0 bez wyjścia; każde wywołanie dopisuje linię do `systemctl.log`.
+  Bez niej `stepstop.unit_state` w izolowanym środowisku zwracałby `unknown`. Wynik pomiaru ma `fakeSystemctl` (wywołania
+  w oknie CPU, ticki, wywołania na tick). Atrapa nie działa w testach silnika ani na produkcji.
+- **Profil z drogami produkcji.** Podział próbek (`parse_profile`) ma pole `components`: `outside`
+  (`engine.py:_consent_recheck`), `plan` (`engine.py:_plan_next`), `inventory` (`trialhold.py:inventory`) — próbki
+  i udział **względem próbek `engine.py:tick`**; to ramki składowe ticku, więc nie zmieniają `rest`. Miara CPU (okno bez
+  próbnika) pozostaje bez zmian. Kryteria rzędu produkcji „przed” (`perf_idle_scale.profile_check`): `tick` ≥ 40 %
+  próbek pracy, `outside` 30–50 %, `plan` i `inventory` ≥ 5 % próbek ticku, atrapa `systemctl` co najmniej raz na tick.
+  Raport „przed” składa `perf_k125_report.py` z wyników kolejki do
+  `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`. Próbki **pracy** (`work`) nie liczą bezczynnych ramek
+  własnych puli wątków i pętli zdarzeń (`thread.py:_worker`, `app.py:main`); udział `tick` w kryteriach jest liczony
+  względem nich (`share` względem wszystkich próbek poza czekaniem zostaje w wyniku).
+- **Kształt produkcji (`--shape`).** `perf_prod_shape.py` czyta **tylko do odczytu** dzienniki kart Tablicy
+  (`~/DevWorkspace/tide-board/flow/K-*/journal.jsonl`) i zapisuje do `build/prod-shape.json` wyłącznie liczby i znaczniki
+  każdej karty (rozmiar, liczba zdarzeń i kroków, zakończona/wstrzymana/trzymany proces i liczba trzymanych kroków/
+  zatwierdzony plan/prośby outside bez decyzji, policzone `state.fold` usługi) — bez treści, tytułów i poleceń; plik nie
+  trafia do repozytorium. `perf_k105_queue.py build-data --shape build/prod-shape.json` (i `perf_idle_cpu.py --shape`)
+  generuje dane syntetyczne o tej samej liczbie kart, rozmiarach dzienników i rolach (`shape_plan`: liczba próśb
+  wstrzymanych kart i trzymanych kroków z produkcji, do 7 chronionych ticketów K-38). Atrapa `systemctl` uznaje za
+  aktywne jednostki wszystkich ticketów prób K-38.
 
 ### Reproduktor: skrypt kolejki koordynatora
 
@@ -980,6 +1121,82 @@ w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i rap
 5. **Domknięcie karty kończy się pytaniem do właściciela o wynik pomiaru produkcji.** Wynik powyżej progu —
    CPU któregokolwiek okna w którymkolwiek ustawieniu `box.enabled`, `Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s —
    to **otwarty bloker M0**. Ten sam pomiar powtarza się po następnej instalacji (regresja).
+
+### Zmiany K-125 i wyniki przed/po K-125 (PT-489, 15.11.2026)
+
+K-125 usuwa z postoju koszt, który na produkcji dawał ok. 62,7 % CPU procesu przy wiszących prośbach „uruchom poza
+piaskownicą” we wstrzymanych kartach. Spis zmian (opisy pełne w sekcji „Przepływ karty: „Od razu” (PT-58)”):
+
+- **#1 (PT-486) — reproduktor ze stanami produkcji.** 7 próśb outside bez decyzji w 4 wstrzymanych kartach (3, 2, 1, 1),
+  1 aktywna prośba outside, karta z trzymanym procesem K-38, karta z zatwierdzonym planem w spoczynku, atrapa `systemctl`
+  w `PATH` reproduktora (zwraca `active`, liczy wywołania) i profil z kategoriami `outside`, `plan`, `inventory`.
+- **#2 (PT-487) — pauza przed oceną próśb.** Tick sprawdza pauzę karty na stanie ticku przed oceną prośby outside
+  i planowania: bez odczytu Tablicy, bez zapisu. Prośba pozostaje rozstrzygalna w panelu, a ocena rusza w pierwszym
+  ticku po wznowieniu.
+- **#3 (PT-488) — pamięć stanu jednostek 30 s i commit planu z dziennika.** Inwentaryzacja K-38 pamięta stan jednostki
+  przez 30 s, wyłącznie `active`/`inactive` (`unknown` nigdy nie jest pamięcią). Commit planu w spoczynku bierze wynik
+  z dziennika i nie czyta Tablicy, gdy wynik jest zapisany.
+- **#5 (pamięć wyniku negatywnego dla aktywnej prośby) jest warunkowe.** Startuje tylko, gdy reproduktor przy
+  `threshold: fail` pokaże udział `outside` ≥ 10 % próbek ticku w którymś trybie `box.enabled`. Wynik poniżej zostawia
+  #5 i #6 odrzucone, a niezaliczony próg bez istotnego udziału `outside` kończy się pytaniem o kolejny krok bez zmian kodu.
+
+Raporty składają `perf_k125_report.py` („przed”) i `perf_k125_after.py` („po”, z werdyktami `threshold`, `outsideShare`
+i `recommendation`); każde okno rozstrzyga osobno (średnia nie ma znaczenia). Pliki: `docs/agents/masterplan/2026-11-15/pomiar-k125-przed.json`
+(SHA bazy `ec94a8188ccdf0423a7f670a83f16b6032518510`) i `pomiar-k125-po.json` (SHA `59f97ca0211ce0cd927df838b036432996d91e64`:
+kod usługi z #1–#3 bez zmian w PT-489, dodany tylko raport „po”). Te same dane (46 kart; dzienniki 58,25 MB „przed” i 58,3 MB „po” wg `scale.disk.totalMb`, te same role), ta sama
+atrapa `systemctl`, `--scale prod --windows 10`, osobne polecenie `outside` z `"exclusive": true` na tryb. Wynik reproduktora
+jest wskaźnikiem: o „Gotowe (M0)” rozstrzyga pomiar produkcji (niżej).
+
+| Konfiguracja | Próba | Ważność | Okna CPU (% rdzenia) | Średnia / maks. | Ocena |
+|---|---|---|---|---|---|
+| przed K-125, `box.enabled=false` | 1 | ważna | 16,4; 16,23; 15,98; 16,28; 16,27; 24,63; 18,9; 17,15; 16,3; 18,6 | 17,67 / 24,63 | spełniony (0 z 10 okien ponad 30 %) |
+| przed K-125, `box.enabled=true` | 1 | ważna | 16,98; 16,7; 16,87; 16,92; 16,78; 17,08; 16,58; 16,8; 16,88; 18,83 | 17,04 / 18,83 | spełniony (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=false` | 2 (1 nieważna: loadavg po 27,28) | ważna | 6,7; 6,3; 6,57; 6,47; 6,38; 6,28; 6,3; 6,05; 6,32; 9,28 | 6,67 / 9,28 | **spełniony** (0 z 10 okien ponad 30 %) |
+| po K-125, `box.enabled=true` | 1 | ważna | 7,08; 6,7; 6,65; 6,68; 6,32; 5,72; 5,97; 6,3; 5,73; 8,47 | 6,56 / 8,47 | **spełniony** (0 z 10 okien ponad 30 %) |
+
+Werdykt: **`threshold: pass`** (każde okno w obu trybach ≤ 30 %), `outsideShare` 0,4071 (`false`) i 0,415 (`true`),
+rekomendacja „#5 i #6 odrzucić”. Reguła „#5 potrzebny” dotyczy tylko `fail`, więc wysoki udział `outside` w tiku sam jej nie
+uruchamia: tick wzięty w całości zmalał z 886 do 312 próbek (`false`) i z 895 do 294 (`true`).
+Uwaga o miarze „przed”: reproduktor „przed” dał ok. 17 %, nie ponad 30 % z produkcji (62,7 %), więc poprawę widać, ale
+reproduktor nie odtwarza w pełni kosztu produkcji (m.in. liczba i rozmiar dzienników, obciążenie pudełek).
+
+Diagnostyka bez progu:
+
+| Metryka | `false` przed → po | `true` przed → po |
+|---|---|---|
+| udział ticku w próbkach pracy | 0,9662 → 0,9043 | 0,9501 → 0,8776 |
+| próbki `engine.tick` | 886 → 312 | 895 → 294 |
+| `outside` (`_consent_recheck`), próbki / udział ticku | 390 / 0,4402 → 127 / 0,4071 | 376 / 0,4201 → 122 / 0,415 |
+| `plan` (`_plan_next`), próbki / udział ticku | 326 / 0,3679 → 0 / 0 | 334 / 0,3732 → 0 / 0 |
+| `inventory` (`trialhold.inventory`), próbki / udział ticku | 38 / 0,0429 → 0 / 0 | 37 / 0,0413 → 0 / 0 |
+| `_resume_step` / `store._inside` (próbki, „po”) | 0 / 50 | 0 / 62 |
+| wywołania atrapy `systemctl` w oknie CPU (na tick) | 16065 (133,9) → 2430 (20,25) | 16200 (135,0) → 2565 (21,4) |
+| `Snapshot` p95 | 10,4 → 10,4 ms | 18,8 → 10,0 ms |
+| `VmRSS` początek → koniec okien | 566,2 → 594,4 → „po” 550,1 → 572,9 MB | 586,5 → 618,0 → „po” 580,4 → 614,4 MB |
+
+Ramek `_resume_step` i `store._inside` nie ma wśród 15 najcięższych ramek „przed”, więc „przed” nie ma ich próbek (mniej
+niż najmniejsza z tych 15); „po” zapisuje je z raportu próbnika (`resumeStoreFrames`).
+
+**Decyzja o #5 i #6 (PT-490, właściciel, 15.11.2026): odrzucone.** Warunek startu #5 na `pomiar-k125-po.json`:
+`threshold: pass` w obu trybach (17,67 → 6,67 % i 17,04 → 6,56 %), a #5 dałby w reproduktorze ok. 2–3 pp CPU (tick to
+ok. 1,3 % próbek procesu, z tego ok. 41 % `outside`). PT-490 i PT-491 kończą się bez zmian kodu. Zastrzeżenie (decyzja
+właściciela z PT-486): reproduktor nie jest kryterium odbioru. Odbiór karty rozstrzyga pomiar produkcji
+(`scripts/measure_idle_prod.py`, oba tryby `box.enabled`) po scaleniu i instalacji, względem produkcyjnego „przed”
+62,7 %. Na produkcji `_consent_recheck` był ok. 3× droższy niż w reproduktorze, więc jeśli pomiar produkcji przekroczy
+próg, wstępna ocena próśb outside z pamięcią wyniku negatywnego (zakres #5, kartka `docs/agents/tickets/k-125-flow/pt-490.md`)
+wraca jako **nowa karta**.
+
+### Procedura produkcji po instalacji K-125 (właściciel)
+
+Po `make install` gałęzi karty K-125 (instaluje właściciel, nie agent) pomiar produkcji powtarza się tak jak w kroku
+„Procedura produkcji po instalacji (właściciel)” wyżej: `/usr/bin/python3 scripts/measure_idle_prod.py
+--out ~/pomiar-k125-box-<false|true>.json` **dla obu wartości `box.enabled`** (10 okien CPU po 60 s, ciągły postój
+bez kroków w toku, rozgrzewka, próbnik i seria `Snapshot`). Pomiar ma się odbyć **z wiszącymi 7 prośbami outside we
+wstrzymanych kartach** (jak K-104, K-107, K-44, K-100 w stanie z produkcji), bo to ten stan K-125 zmienia; prośb nie wolno
+odmawiać ani rozstrzygać na potrzeby pomiaru. Wynik ponad progiem (okno ponad 30 % w którymkolwiek ustawieniu,
+`Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s) jest **otwartym blokerem M0**, także gdy reproduktor pokazał
+≤ 30 %. Przy takim wyniku udział `outside` ≥ 10 % próbek ticku jest przesłanką do #5; koszt gdzie indziej
+(`_resume_step`, `realpath` w `store._inside`) wymaga osobnej decyzji z podziałem próbek.
 
 ## Bezczynność
 
@@ -1460,7 +1677,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | --- | --- | --- |
 | `Snapshot()` | `→ s` | JSON całej tablicy (opis niżej); tylko odczyt — przed pierwszym zapisem niczego nie zakłada |
 | `Work()` | `→ s` | lista „Praca” (PT-40, niżej „Lista Praca”): `{exists, items, counts}` — aktywne karty i żywe sesje agentów bez karty, z tego samego przeliczenia co kolumny kart; tylko odczyt |
-| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
+| `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check, startRef}` (`startRef`: pełny ref `refs/heads/…`/`refs/remotes/…`, niżej w polach karty) → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, reviewIndependence, reviewIndependenceClasses, assignmentRules, tests}` (`reviewIndependence`: `free|other-model|other-family`, inna wartość — błąd; opis w sekcji pliku projektu; `tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
@@ -1681,6 +1898,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
 | `max-tickets` | limit ticketów w toku na kartę (PT-375): liczba 1–6; brak klucza — ustawienie przepływu `ticketsPerCard`. Zapis: `UpdateCard {maxTickets}` (pusta wartość usuwa klucz), migawka: `maxTickets`. Zła wartość w pliku — limit domyślny i wpis w `errors` |
 | `priority` | priorytet karty (PT-377): `high`, `normal` albo `low`; brak klucza — `normal`. Ustala kolejność kroków czekających na miejsce u dostawcy (sekcja „Kolejność kroków czekających na miejsce u dostawcy (PT-377)”). Zapis: `UpdateCard {priority}` i `CreateCard {priority}` (tylko te trzy wartości, inna → `{ok: false}` bez zmian; `normal` usuwa klucz z pliku), migawka: `priority`. Zła wartość w pliku — `normal` i wpis w `errors` („niepoprawny priorytet”), bez błędu odczytu karty. Okno: „Priorytet” w ustawieniach pełnej karty (Wysoki / Normalny / Niski) |
+| `startRef` | opcjonalna podpowiedź „start od…” (PT-392), w pliku `start-ref`: pełny `refs/heads/…` albo `refs/remotes/…`, sprawdzany tą samą funkcją składni co baza karty (`FlowGit.ref_syntax_error`: prefiks i `git check-ref-format`; bez zgadywania nazw, skrót, `..`, spacja, `-x` i inne ref-y to błąd `bad-request` bez zapisu pliku karty). Usługa nie sprawdza, czy ref istnieje. `CreateCard`/`UpdateCard` przyjmują `startRef`, pusty napis czyści pole, a migawka karty ma `startRef` (`""` bez pola). Karta bez pola nie zmienia pliku (`start-ref` pojawia się dopiero po pierwszym ustawieniu); po wyczyszczeniu klucz `start-ref:` zostaje w pliku z pustą wartością, jak klucze uruchomienia. To podpowiedź, nie zgoda: nie zastępuje projekcji `base-ref`/`base-commit` z dziennika, nie przypina bazy i nie zmienia `StartCard` ani przypięcia przy wznowieniu; korzystają z niego „Zleć rozwiązanie konfliktów” i UI „Start od…” |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -2781,6 +2999,24 @@ inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (`_pending_main_merge` czyta projekcję `Journal.state`).
 Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
 
+**Pamięć stanu jednostek K-38 i commit planu w spoczynku (K-125 PT-488).** Inwentaryzacja K-38 w obserwacji (bez
+`fresh`) bierze stan jednostki trzymanego procesu (`stepstop.unit_state` — proces `systemctl`, albo `step_state`
+runnera pudełka przez `FlowEngine._unit_state`) z pamięci silnika `unitstate.UnitStates` (`FlowEngine.unit_states`),
+najwyżej `unitstate.TTL` = 30 s od odczytu, według zegara monotonicznego (wstrzykiwanego w testach). Pamiętane są tylko
+zwrócone `active` i `inactive`; `unknown` (błąd `systemctl`/`incus exec`, brak magistrali, timeout) i wyjątek z odczytu
+nigdy nie są pamięcią i usuwają wcześniejszy wpis, więc następny tick czyta ponownie. `fresh=True` (inwentaryzacja
+powtarzana przed zapisem `k38.inventory`/`k38.handoff`, diagnostyka K-38) czyta każdą jednostkę świeżo i odświeża
+pamięć — zapis zawsze wynika ze świeżego odczytu. Reguła `inactive` → `unknown` (brak chronionego dowodu hosta) działa
+bez zmian na stanie surowym. Ochrona zasobów pudełka (`box/lifecycle.active_steps`) i `_poll` pamięci nie używają;
+`public_inventory` stanu jednostek nie czyta. Moduł `unitstate` nie importuje silnika (ADR-6).
+W `_plan_next` Tablica pochodzi z kontekstu odczytu ticku (`_tick_board_read`: tylko na wątku ticku; poza tickiem —
+domknięcie, D-Bus — świeży odczyt jak dotąd). `_planning_branch` zwraca zapisany udany wynik `card-branch` tej gałęzi
+przed `git rev-parse`, a `_plan_commit` kończy się bez wczytania Tablicy (`_plan_on_board`) i bez `_plan_files`, gdy
+dziennik ma udany `plan-commit` dla bieżącego klucza (`seq` planu : `plan_change_seq`) — w obu przypadkach to wynik,
+który `_act` i tak by zwrócił (`_recorded_ok`; przy decyzji o bazie albo wyniku nieudanym droga jest jak dawniej, więc
+nieudany commit jest ponawiany co tick). Start ticketu (limit, wykonawcy, gałąź ticketu, `_launch`) czyta Tablicę
+świeżo, raz na przebieg, jak przed zmianą.
+
 **Pamięć filtra prób uzgadniania sieci (K-113 PT-466).** `boxstep.recover_network` bierze z
 `trialhold.network_state` wynik filtra prób K-38 karty: zdarzenia bez wstrzymanych prób (`trialhold.held`) i bez
 chronionych tożsamości oraz stan z nich złożony (nowy `fold` tylko, gdy coś pominięto). Wynik jest pamiętany w osobnej
@@ -3242,7 +3478,11 @@ poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to p
 automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
 sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
 według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`
-`denied-before` albo `paused`. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
+`denied-before` albo `paused`. Od K-125 PT-487 tick nie ocenia ponownie prośby kroku ticketu ani planowania
+we wstrzymanej karcie: pauza jest sprawdzana na stanie ticku przed oceną, bez odczytu Tablicy i bez zapisu
+(także bez `outside.auto-skipped` z `paused`), a ocena rusza w pierwszym ticku po wznowieniu. `paused` zapisuje
+już tylko wynik kroku, który przychodzi we wstrzymanej karcie, oraz próba testów po scaleniu. Prośba pozostaje
+rozstrzygalna w panelu. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
 kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` z `reason: denied-before`).
 `ResolveCardStep` z `deny` na kroku z automatyczną zgodą przed `outside.started` zapisuje
 `outside.decision-invalidated` (`reason: denied`) i odmowę, a proces nie startuje; po starcie zwraca
@@ -3250,6 +3490,13 @@ kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` 
 zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej odmowie. Kontrola decyzji tuż przed
 startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
 Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
+
+**Obciążenie maszyny w zdarzeniach outside (K-100, PT-423).** `outside.started` i `outside.finished` (prośba
+kroku i próba testów po scaleniu), a od K-109 `command.started` i `command.finished`, mają `loadavg: [l1, l5, l15]` (średnie obciążenie z chwili zapisu, dwa miejsca po
+przecinku) i `cores` — liczbę rdzeni dostępnych usłudze (`sched_getaffinity`, inaczej `cpu_count`). Błąd odczytu
+daje `null` w danym polu; nigdy nie zatrzymuje polecenia ani zapisu zdarzenia. Pola są wyłącznie diagnostyczne
+(miernik porażek pod obciążeniem): nie zmieniają kolejki, zgód, wznowień ani modelu tożsamości procesów (pola
+neutralne w `cardflow/processidentity.py`), a wpisy sprzed zmiany, bez tych pól, czyta się jak dotąd.
 
 **Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń (K-39 #3, PT-373).** Zgoda (ręczna albo
 automatyczna: zapamiętana rodzina projektu, „dla ticketu”, `outsideAuto`) trafia do kolejki według czasu zgody.
@@ -3382,7 +3629,7 @@ z pliku.
 
 Zapis: `command.started` po uzyskaniu uchwytu i `command.finished`, oba z `attempt`, `executor: host-isolated`,
 `isolation: none`, `class` i `consentVersion` (puste do etapu 2), `unit`, `exitFile`, `loadavg`, `cores` (odczyt
-obciążenia z chwili zapisu), `source: step`. Nowa droga nie zapisuje `outside.*`; przebieg rozpoczęty przed
+obciążenia z chwili zapisu w kształcie K-100 PT-423: `[l1, l5, l15]` i rdzenie, `FlowEngine.machine_load`), `source: step`. Nowa droga nie zapisuje `outside.*`; przebieg rozpoczęty przed
 przełączeniem kończy się w swojej rodzinie (`outside.finished`). Odzyskiwanie po restarcie dla `command.started` bez
 wyniku: jednostka żyje → czekanie, zakończona → wynik z `exit-code`, bez ponownego startu.
 
@@ -3975,6 +4222,9 @@ uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły ro
   i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
   z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
   pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
+  Krok `plan-fix` z zapisanym `step.retry` (użytkownika albo opiekuna) nie jest wyzwalaczem, dopóki nie ruszy jego
+  następca (PT-475): ponowienie użytkownika zapisane w ticku po `_advance_card`, a przed `_caretake`, nie uruchamia
+  kroku opiekuna, który po starcie następcy byłby nieaktualny (`stale`, poza limitem działań).
 
 Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3). Opiekun
 nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
@@ -5166,9 +5416,15 @@ Po każdej zmianie aktywności usługa nakłada cały wygląd docelowej aktywno�
 Każda droga przełączenia (skrót, `Meta+Q`, widżet, KDE Connect) kończy się tym sygnałem. `tide_daemon/activity_look_monitor.py` uruchamia wtedy silnik w osobnym procesie: `python3 -s $XDG_DATA_HOME/tide/activity-look/scripts/activity_look.py apply --activity ID --source daemon` (kopia z `make install-activity-look`). Silnik porównuje schemat kolorów, styl Plasmy, tapetę pulpitów tej aktywności, wariant ekranu blokady i układ paneli z opisem `theme/activities/<wygląd>.json` i nakłada tylko różnice, w tej kolejności. Wygląd `stream` dostaje aktywność przypisana w `$XDG_CONFIG_HOME/tide/activities.json`, każda inna — `work`.
 
 - **Kolejka.** Jedno nałożenie naraz. Zdarzenia z okna 400 ms i te, które przyszły w trakcie nałożenia, zlewają się w jedno — wygrywa ostatnia aktywność, bez równoległych nałożeń. Instalatory (`make install-*`) czekają na usługę i odwrotnie (`flock` na `$XDG_STATE_HOME/tide/activity-look.lock`).
-- **Start usługi (logowanie).** `apply` bez aktywności: silnik pyta o bieżącą, porównuje i naprawia różnice. Tym samym dokańcza przełączenie przerwane przed wylogowaniem (dziennik `$XDG_STATE_HOME/tide/activity-look.json` ze stanem `applying`).
-- **Błędy.** Kod 75 — plasmashell albo ActivityManager jeszcze nie odpowiada — to ponowienie po 2 s, potem coraz rzadziej, do 60 s. Inny błąd (np. „wariant niezainstalowany”) trafia do dziennika usługi i czeka na następne zdarzenie. Wyjście silnika jest w `journalctl --user -u tide-daemon` z przedrostkiem „wygląd aktywności:”.
+- **Start usługi (logowanie).** `apply` bez aktywności: silnik pyta o bieżącą, porównuje i naprawia różnice. Tym samym dokańcza przełączenie przerwane przed wylogowaniem (dziennik `$XDG_STATE_HOME/tide/activity-look.json` ze stanem `applying`). **Odczekanie (PT-495):** usługa obserwuje `org.kde.plasmashell` na szynie sesji, a pierwsze nałożenie po rejestracji plasmashell rusza dopiero po `SHELL_SETTLE_MS = 5000` (5 s). Gdy plasmashell nie jest zarejestrowany, nałożenie przy starcie czeka na rejestrację i odczekanie; gdy już jest, rusza po samym odczekaniu od startu usługi. Wyrejestrowanie plasmashell wstrzymuje uruchamianie (trwającego nałożenia nie zabija), a ponowna rejestracja uzbraja odczekanie od nowa, po którym rusza oczekujące żądanie. Wyjątek: przy zapisanym wyłączniku awaryjnym (niżej) start nie nakłada wcale.
+- **Kody wyjścia silnika.** 0 — zgodne albo nałożone; 1 — różnice (`check`) albo błąd; 75 — plasmashell albo ActivityManager jeszcze nie odpowiada (usługi D-Bus nie ma: „does not exist”, „ServiceUnknown”, „Cannot find”, „not activatable”; także każdy nieznany błąd `qdbus6` do ActivityManagera); 76 — plasmashell przerwał wywołanie (NoReply, Disconnected, „Remote peer disconnected”, „Message recipient disconnected” i każdy inny błąd `qdbus6` do `org.kde.plasmashell` poza „usługi nie ma”; PT-494). Utrata plasmashell to osobny wyjątek silnika (`PlasmashellLost`), nigdy nietolerowany: także w wyglądzie pracy przerywa całe nałożenie od razu (kolejne składniki nie są wywoływane), dziennik `activity-look.json` dostaje `state: failed` i błąd „plasmashell przerwał wywołanie …”, a `check` zwraca 76 z pierwszeństwem przed 75 i 1. Usługa czyta kod 76 jako włączenie wyłącznika awaryjnego (punkt „Błędy”).
+- **Błędy.** Kod 75 — usługi D-Bus jeszcze nie ma — to ponowienie po 2 s, potem dwa razy dłużej, do 60 s (`RETRY_MS`), bez limitu prób; nie liczy się do progu porażek i nie zeruje ich licznika (zwykłe logowanie daje kilka kodów 75 w ciągu kilkunastu sekund). Inny błąd (np. „wariant niezainstalowany”) trafia do dziennika usługi i czeka na następne zdarzenie. Wyjście silnika jest w `journalctl --user -u tide-daemon` z przedrostkiem „wygląd aktywności:”.
+  - **Wyłącznik awaryjny (PT-495).** Chroni przed pętlą awarii Plasmy (silnik woła plasmashell, ten pada i restartuje się, a jego start znów budzi usługę). **Włącza się** po kodzie 76 albo po `FAILURE_LIMIT = 3` zakończeniach z kodem innym niż 0 i 75 w oknie `FAILURE_WINDOW = 120 s` (liczone od pierwszej porażki w oknie; kod 0 zeruje licznik). **Włączony:** nie uzbraja ponowienia, czyści oczekujące żądanie i ignoruje nałożenie przy starcie, ponowienia i pojawienie się plasmashell.
+  - **Gdzie go widać.** W dzienniku usługi (`journalctl --user -u tide-daemon`): „wygląd aktywności: wyłącznik awaryjny — <powód>; do następnej zmiany aktywności”; w `$XDG_STATE_HOME/tide/activity-look.json` w kluczu `breaker` (`reason`, `since`, `code`, `failures`; pozostałe klucze silnika zostają, zapis jest atomowy, a monitor pisze tylko wtedy, gdy silnik nie biegnie); w `make activity-look-status` (dziennik ostatniego przełączenia).
+  - **Jak go zdjąć.** Zmiana aktywności (`CurrentActivityChanged`) zeruje licznik, usuwa `breaker` z dziennika i kolejkuje nałożenie nowej aktywności. Albo ręczne pełne `apply` silnika (przepisuje dziennik bez `breaker`). Nowy proces usługi czyta `breaker` z dziennika i przy zapisanym wyłączniku nie nakłada przy starcie — nie zdejmuje go ani restart usługi, ani aktywacja przez D-Bus.
 - **Praca i Stream.** W wyglądzie pracy błąd jednego składnika nie blokuje pozostałych (błędy na końcu, kod 1); Stream jest sprawdzany w całości przed pierwszym zapisem. Spóźnione zdarzenie dla aktywności, która już nie jest bieżąca, zmienia tylko jej pulpity — składniki wspólne zostają przy bieżącej.
+- **Panele i pulpity bez widoku.** Odczyt paneli (`check`, `stream-read.js`, `dump.js`) i tapety pomija panele i pulpity bez widoku: panel ze `screen` spoza `0..screenCount-1` (np. `lastScreen=1` przy wyłączonym DP-2) dostaje w odczycie `orphan: true` bez ustawień widoku, a pulpit bez ekranu `geometry: null`; porównania wyglądu ich nie liczą, a raport pisze „bez widoku”. Dotknięcie właściwości widoku takiego panelu albo geometrii nieistniejącego ekranu kładzie plasmashell. Testy: atrapa plasmashell (`scripts/tests/fake_plasmashell.js`) rzuca wyjątek dla dziewięciu właściwości widoku (`hiding`, `height`, `minimumLength`, `maximumLength`, `alignment`, `lengthMode`, `floating`, `offset`, `opacity`) takiego panelu i dla `screenGeometry` spoza `screenCount`, a `desktop_like_15_11()` daje stan z paneli 103 i 118 ze `screen=1`. `scripts/tests/test_panels_js.py` uruchamia każdy skrypt z `scripts/panels/` (lista z katalogu, bez `common.js`) na tym stanie; test nie ma listy wyjątków — nowy skrypt bez strażnika od razu go oblewa. **Skrypty instalacji** (`sidebar.js`, `install.js`, `dock.js`; `make install-panels`, `install-sidebar`, `install-dock`) mają ten sam strażnik (`tidePanelHasView` z `common.js`): pomijają panel bez widoku, nie czytają ani nie zapisują jego właściwości widoku i podają jego identyfikator na liście `orphans` w wyniku `TIDE_JSON` (lista jest zawsze obecna, także pusta). Pasek boczny albo smukły pasek lewego monitora bez widoku, znaleziony po roli, nie powoduje `new Panel(...)` tej samej roli, a `tideTopReserved` i wybór docka liczą tylko panele z widokiem. Instalatory (`panels.py`, `sidebar.py`, `dock.py`, ścieżka `install`) czytają `orphans` i wypisują notkę, np. „Panele bez widoku pominięte: 103, 118”; wynik starego skryptu bez klucza `orphans` albo z pustą listą nie daje notki i nie jest błędem. **Porządkowanie i odinstalowanie** (`order.js`, `uninstall.js`, `dock-uninstall.js`, `sidebar-uninstall.js`; `make uninstall-panels`, `uninstall-sidebar`, `uninstall-dock`) mają ten sam strażnik: `order.js` pomija panel bez widoku w całości (nie ustawia mu grubości ani kolejności), `uninstall.js` i `dock-uninstall.js` nie przywracają mu właściwości widoku (zrzut `panels-previous.json` z panelem `orphan` bez kluczy widoku jest przyjmowany, a `height`/`floating` z wpisu bez tych kluczy nie są zapisywane). Główny pasek albo dock bez widoku nie jest przywracany w całości: wynik ma `skipped`, a `panels.py`/`dock.py uninstall` zachowują `panels-previous.json` i `*-installed.json`, wypisują „włącz monitor i ponów uninstall” zamiast „przywrócono” (widżety Tide docka znikają od razu, reszta wraca przy ponowieniu), a wszystkie cztery podają go w `orphans` (lista zawsze obecna, także pusta). Usuwanie paneli i widżetów Tide działa dalej także dla paneli bez widoku — pasek boczny bez widoku też znika. Instalatory w ścieżce `uninstall` wypisują tę samą notkę co przy instalacji. **Stream** (`stream.js`, `stream-leave.js`, `stream-console.js`; PT-497) ma ten sam strażnik. Wejście (`stream.js`) nie zwęża ani nie chowa paska bocznego bez widoku i nie zakłada zastępczego docka Stream, gdy jedyny dock Stream jest bez widoku; oba są w `orphans`. Do `stream-panels.json` nie trafia wtedy żadna wartość paska (chowanie, wysokość, długości), a wpis kroku mówi, że nie ma czego zapisać. `stream-console.js` liczy zajęte miejsce u góry i u dołu (`tideReserved`) tylko z paneli z widokiem. Wyjście (`stream-leave.js`) usuwa dock Stream także bez widoku (`remove()` nie dotyka widoku), a pasek boczny bez widoku zostawia i podaje w `orphans`. Gdy w `orphans` jest pasek, którego dotyczy `stream-panels.json`, `leave_stream_panels` (`scripts/activity_look.py`) nie usuwa tego pliku — wartości sprzed Stream wrócą po przywróceniu widoku paska — a wpis kroku dostaje notkę „przywrócenie paska bocznego … czeka na widok paska”. `check` nie traktuje takiego zapisu jako nieaktualnego. Przy pasku z widokiem plik jest usuwany jak dotąd.
+- **Jeden monitor (strażnik układu wyjść, PT-493).** Gdy wyjście z układu Tide — główne `TIDE_MAIN_OUTPUT` (domyślnie DP-2) albo boczne `TIDE_SIDE_OUTPUT` (domyślnie HDMI-A-1) — jest podłączone, ale wyłączone, krok `panels` nie uruchamia żadnego skryptu plasmashell. Wyłączenie czyta `kscreen-doctor -j` (`activity_panels.disabled_outputs`, czysta funkcja z funkcją odczytu w argumencie: w silniku `Reader` z białą listą, w instalatorach `run`), więc odczyt nie woła plasmashella. `check` i `apply` pokazują krok jako „pominięte” z notką „wyłączone wyjście z układu Tide: DP-2 — panele pominięte”, nic nie zapisują i kończą się bez błędu (reszta wyglądu — schemat kolorów, styl, tapeta, ekran blokady — jest nakładana jak zwykle). `make install-panels`, `install-sidebar` i `install-dock` (także `uninstall-*`) wypisują „Panele pominięte: wyłączone wyjście DP-2 (włącz monitor i uruchom ponownie)”, kończą się kodem 0, żeby `make install` szedł dalej, i nie robią zrzutu paneli (`panels-previous.json`) ani zapisu stanu instalacji (`*-installed.json`). Złącze niepodłączone (nowa maszyna z jednym monitorem) panelom nie przeszkadza. **Powrót:** włącz monitor i ponów `make install-panels install-sidebar install-dock` (albo przełącz aktywność — silnik sprawdzi układ od nowa). Błąd `kscreen-doctor` albo zły JSON daje notkę „nie udało się odczytać układu wyjść” i zwykłe działanie — wtedy chronią strażniki w skryptach paneli. Testy: `scripts/tests/test_panel_output_guard.py` (funkcja na trzech układach, instalatory z atrapą `fake_kscreen_doctor.py` w `PATH`), `test_activity_look.py` (krok `panels` bez wywołania plasmashell); każdy test instalatora ma atrapę `kscreen-doctor` w `PATH` (`fake_plasmashell.link_kscreen_doctor`).
 - **Kopia silnika.** Obecność kopii usługa sprawdza przy każdym uruchomieniu (brak — komunikat raz, żądanie przepada do następnego zdarzenia). Instalatory odświeżają nieaktualną kopię same, `make activity-look-check` i `make activity-look-status` ją zgłaszają. Zatrzymanie usługi zabija trwające nałożenie; dokończy je następny start.
 - **Wyłączenie.** `--no-activity-look` albo pusty `$TIDE_ACTIVITY_LOOK_ENGINE` (tak robią testy usługi). Bez zainstalowanego silnika usługa tylko o tym informuje. Bez działającej usługi przełączenie aktywności nie zmienia wyglądu do jej następnego startu.
 
@@ -6411,7 +6667,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_worktree_open.py` — bramka `Open` (katalog z listy, plik tylko dla Ridera, `..`, dowiązania, rodzeństwo o wspólnym prefiksie) i `WorktreeMonitor.open` z atrapą `Popen` (argv `[rider, plik]`, `cwd` = katalog pliku, terminal odmawia),
 - `daemon/tests/test_gitread_diffdata.py` — `Git.Diff` źródła `card` na tymczasowych repozytoriach i dzienniku karty: pliki, hunki i sumy zgodne z `git diff` i `git diff --numstat` od przypiętej bazy, zakres po ruchu gałęzi startowej, `targetRef` (merge-base, ref bez wspólnej historii, ref z `-`), kody `unknown-base`, `unknown-card`, `no-branch`, `bad-request`, gałąź główna `main` i `develop` bez `origin`, karta z grupy kart (repozytorium z `card.started`), brak zapisu do dziennika i refów, pułapka konfiguracji z PT-348 nieuruchomiona; duże diffy (PT-355): limit linii i bajtów z pełną listą plików i `truncated`, plik `large` bez hunków, binarne z `oldSize`/`newSize`, `options.path` (także `large` i przycięty) i `options.context`, walidacja `options`, odczyt strumieniowy `Cancellation.run_capped` (nieskończone wyjście ucięte bez czytania całości, dokładnie limit to nie ucięcie); `GitMonitor` — odpowiedź z puli wątków po pracy w tle, pętla wolna,
 - `daemon/tests/test_gitread_diffsources.py` (K-36, PT-349) — `Git.Diff` źródła `ticket` (merge-base z gałęzią karty, drugi ticket bez plików pierwszego, ticket scalony z usuniętą gałęzią: zakres z pary `intent`/`result` akcji `merge` równy diffowi sprzed usunięcia, `no-ticket-range` bez zapisu, z nieudanym scaleniem, z SHA spoza repozytorium i z wartością zaczynającą się od `-`, nieznany ticket i karta), `commit` (pierwszy rodzic, commit scalający, commit początkowy względem pustego drzewa, worktree z listy, `options.path`) i `range` (merge-base, zmiany na `from` poza wynikiem, pełne refy i SHA, brak wspólnej historii); walidacja `repo`/refów (`validate.py`): repozytorium spoza listy, przez dowiązanie i `..` oraz ref z `-` odrzucone `bad-request` bez wywołania runnera, dowiązanie do znanego repozytorium rozwiązane do ścieżki kanonicznej, brak zapisu do dziennika i zmian refów oraz indeksu; `GitMonitor` przekazuje źródło znanych repozytoriów,
-- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów,
+- `daemon/tests/test_gitread_branchmap.py` (K-99, PT-387) — `Git.BranchMap` jako projekcja dzienników kart (zdarzenia w kształcie zapisów silnika) i Tablicy: lista projektów z repozytorium, węzły i krawędzie kart w toku, domkniętej, scalonej i z odrzuconym ticketem, karta od gałęzi innej karty, korekta bazy (`started.initial`) i korekta nieskuteczna, grupa `unknown-base`, scalony ticket z krawędzią `merge` bez gita, bazy `main`/`develop`/`origin/develop` bez węzła `master`, brak `mainRef`, limit (najnowsze, `total`, `truncated`, domyślnie 200, obcięcie do 500), błędy bez wyjątku i bez treści wyjątku, brak zapisu dziennika i Tablicy; `GitMonitor.branch_map` — odpowiedź z puli po pracy w tle, źródło Tablicy w wątku głównym, atrapa runnera bez wywołań gita,
+- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów; `BranchMap()` (PT-387): lista projektów, mapa karty i ticketu z prawdziwego dziennika, `unknown-project`, `bad-request`, bez nowych zdarzeń i zmian refów,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_homes.py` — kilka katalogów danych Codexa na świecie w katalogu tymczasowym (`~/.codex`, `~/snap/codex/33`, `34`, `current` → `34`; nigdy prawdziwe katalogi — `tests/__init__.py` ustawia też nieistniejący `$CODEX_HOME` dla usług uruchamianych bez `--codex-dir`): domyślna lista i `$CODEX_HOME`, `--codex-dir` powtarzane, rozwiązywanie `current` (także po odświeżeniu snapa), starsza rewizja pomijana, kopia tego samego pliku w dwóch katalogach liczona raz (Agents, KRunner, worktrees, raport, koordynacja), segmenty wątku jako jedna pozycja w Agents i KRunnerze, a osobno w raporcie i worktrees, przepięcie obserwacji na nową rewizję po odświeżeniu snapa, „Wznów” w raporcie dla sesji ze snapa, `is_snap` tylko pod `~/snap/codex`, przypisanie procesu ze ścieżką z numerem rewizji i Meta+A do karty Konsole, nowe pliki w obu katalogach zauważone przez obserwację katalogów (bez przeglądu co 30 s), nazwy wątków i baza stanu ze snapa w KRunnerze, wznowienie Codexem ze snapa albo spoza niego,
 - `daemon/tests/test_codex_desktop.py` — Codex Desktop: odnośnik tylko z UUID, linia `Exec` (kody pól, cudzysłowy, brak programu), szukanie pliku `.desktop` i `$TIDE_CODEX_DESKTOP`, polecenie jako lista argumentów w `systemd-run --scope`, zmienne ekranu z `systemctl --user show-environment`; uruchomienie z atrapą `chatgpt` (`fakebin.py`) — nigdy prawdziwej aplikacji; wątek główny podagenta (kilka poziomów, nieznany rodzic, pętla), zwijanie podagentów i stan najpilniejszy, podagent bez rodzica, `AgentMonitor.activate` i Meta+A (otwarcie wątku głównego, podniesienie okna `ChatGPT`) z atrapą aplikacji,
@@ -6420,8 +6677,10 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_krunner_semantic.py` — wyszukiwanie po znaczeniu (PT-19) z atrapą modelu („pojęcia” zamiast bge-m3): tekst sesji (metadane, tickety, `strip_secrets`, przycięcie), plik indeksu (0600/0700, bez tekstów, zepsuty albo obcy — od nowa), indeksowanie przyrostowe, okno 30 dni i limit pozycji, przebudowa po zmianie modelu i wymiarów, wyłączenie (plik znika od razu, czekająca partia przerwana), błędy jako stan, `queue.IDLE` i cisza po innym modelu przed każdą partią, ranking, zapytanie (bez poleceń, adresów, ścieżek i sekretów, `HIGH`, pamięć, nowsze unieważnia starsze, serwer nie odpowiada, budżet czasu), łączenie w `KRunnerCore` (słowa pierwsze, bez powtórzeń, dopisek) oraz `models.embed` na atrapie serwera HTTP (Ollama, OpenAI, złe odpowiedzi, chmura, rola za `default`); w `test_krunner_dbus.py` — usługa z atrapą Ollamy (`--search-delay 0`): indeks na dysku, wynik znaczeniowy w `Match`, a po wyłączeniu serwera same słowa w mniej niż 3 s.
 - `apps/newtask/tests/` — okno nowego zadania: logika formularza w `qml6`, zrzuty okna z `--data --grab`, zrzuty ekranu (przeciągnięte, ze schowka, atrapa Spectacle, sprzątanie), backend na prywatnej magistrali z prawdziwą usługą, drugie uruchomienie, instalacja z profilem Konsoli; `kwin/tests/test_new_task_shortcut.py` — skrót Meta+Alt+A,
 - `apps/board/tests/test_view.py` (PT-43) — okno uruchomienia z karty z tym, co okno nowego zadania: zrzuty ekranu (przeciąganie, Ctrl+V, „Zrób zrzut” z atrapą Spectacle, usuwanie, sprzątanie po Anuluj, katalog zostaje po starcie) w `images` prośby `Start`, model chmura/lokalny z `/Models` (wyłączony z powodem, linia agenta, gałąź i `tool` za programem agenta lokalnego, blokady), `imagesDir` i stan modeli z prawdziwej usługi,
+- `apps/board/tests/test_merge_window.py` (K-99, PT-390) — okno scalania `apps/common/qml/git/MergeWindow.qml` na atrapie gospodarza (sonda `diffprobe.py`): przycisk scalenia tylko przy `canMerge === true` i tokenie, `mergeRequested` z dokładnie `{targetRef, previewToken}`, zamknięcie/Esc/„Odśwież” bez zgody, odpowiedź ze starym tagiem pomijana, blokada po błędzie scalenia do nowego podglądu, minimalny podgląd (stan zdaniem, konflikty, powody blokad, „Szczegóły”) jako zwykły tekst, przyciski widoczne przy długiej treści; w Tablicy: okno z przycisków panelu i pełnej karty z domyślnym celem, zamknięcie przy zmianie kontekstu karty bez spóźnionego komunikatu, „Zmiany gałęzi” nad oknem i powrót Esc; źródło bez zależności od Tablicy; w oknach (`apps/`) brak drogi scalenia bez tokenu i starych komponentów scalania, z allowlistą zapisów backendu Tablicy (`MergeCard` tak, droga bez tokenu nie; nazwy w teście rozbite na fragmenty, więc wyszukiwanie literalne daje pusty wynik); wybór celu (K-99 #6, `TargetChoiceTest`): domyślny cel dostaje podgląd, skrót i wyszukiwanie wysyłają nowy podgląd i wyłączają „Scal do” do odpowiedzi, baza nieznana daje tylko propozycję, cel niewybieralny pokazuje powód bez podglądu, repozytorium bez `master` i `origin` (główna `main` albo `develop`, bez gałęzi zdalnych), brak `mainRef` bez skrótu i bez zgadywania, spóźniona odpowiedź listy pomijana; w Tablicy `apps/board/tests/test_merge_targets.py`: jedno „Scal…” otwiera okno z podglądem bazy albo z wyborem celu,
 - `apps/board/tests/test_diff_view.py` (K-36, PT-354) — wspólny widok diffa `apps/common/qml/git/DiffView.qml` na atrapie backendu (sonda `diffprobe.py`, offscreen): lista plików z liczbami i sumą, hunki wybranego pliku, `]`/`[`, Alt+↓/↑, `n`/`p`, Esc, `r` i „Odśwież”, „Czytam…”, błąd jednym zdaniem, otwarcie na pliku z parametru, `unknown-base` z wyborem refu i `Git.Diff` z `targetRef`, nazwy z `<b>` i unicode jako zwykły tekst; `startLabel` (`start.js`: baza lokalna, zdalna, nieznana, nazwa z „/” i znakami specjalnymi, brak daty); duże diffy (PT-355): plik `large` zwinięty z „pokaż” i `Git.Diff` z `options.path`, binarny z rozmiarami, pasek przyciętego diffu i samoczynne doczytanie wybranego pliku bez treści, błąd z ponowieniem, spóźniona odpowiedź po odświeżeniu; kolory tylko z palety (`semantic.added`/`removed`), pakiet i slot `gitDiff` backendu Tablicy,
 - `apps/worktrees/tests/` — okno: QML na przykładowych danych (`qml6`, offscreen), launcher z `--data --grab`, backend okna na prywatnej magistrali z prawdziwą usługą (Remove tylko dla zaznaczonych), drugie uruchomienie, instalacja z atrapami `update-desktop-database` i `kbuildsycoca6`,
+- `apps/worktrees/tests/test_merge.py` (K-99, PT-395) — „Scal…” z mapy gałęzi: przycisk tylko przy domkniętej, niescalonej karcie, `PreviewCardMerge` dla domyślnego celu i `MergeCard` wyłącznie po „Scal do <cel>” z tokenem bieżącego podglądu, zamknięcie/Esc/„Odśwież”/odświeżenie mapy/zmiana projektu bez zgody, stary podgląd (inny tag) nie odblokowuje przycisku, odmowa `MergeCard` (`stale-preview`) pokazuje powód i blokuje „Scal do” do nowego podglądu bez drugiego `MergeCard`, po sukcesie (także `already: true`) mapa czyta się od nowa z węzłem „scalona do <cel>”; lista dozwolonych wywołań `/Board` backendu (`BOARD_CALLS`) i odmowa innych nazw bez wywołania usługi; na prywatnej magistrali z atrapą `/Board`, `/Git`, `/Worktrees` — backend w procesie oraz okno offscreen z prawdziwym backendem (sonda `mergeprobe.py`), w tym historia 37 (repozytorium bez `master` i `origin`, główna `main` albo `develop`, baza znana i nieznana); w `daemon/tests/test_cardflow_merge_confirm.py` test dwóch okien tej samej karty (ta sama zgoda — ta sama operacja, podgląd innego celu — `stale-preview`),
 - `daemon/tests/test_idle.py` — bezczynność na atrapie kompozytora Wayland (`fake_wayland.py`: prawdziwe gniazdo i format wiadomości, zamrożony zegar): próg, wejście liczy czas od nowa, wybór protokołu (v2, v1, `org_kde_kwin_idle`), brak protokołu, błąd protokołu, zerwane połączenie i ponowne połączenie; `IdleState` na zamrożonym zegarze; obiekt `/Idle` usługi na prywatnej magistrali (właściwości, `IsIdle`, sygnał `IdleChanged`, próg z palety, brak kompozytora, `--no-idle`). Usługi w testach dostają nieistniejące gniazdo Wayland, więc nigdy nie łączą się z kompozytorem pulpitu,
 - `daemon/tests/test_report_schedule.py` — termin raportu (pierwsze logowanie w dobie, 07:00, praca po północy, zmiana czasu, wyłączenie), okres (pierwszy, od kotwicy poprzedniego — godzina z terminu albo wcześniejszy koniec, wieczorne `Generate()` o 23:54 nie przesuwa następnej doby, weekend, inna godzina `at`, najwyżej 7 dni, ponowne wygenerowanie, naprawa stanu sprzed tej zasady), jedno powiadomienie na dobę, ustawienia z pliku i opcji, stan, retencja 30 dni (tylko katalogi raportów, bez dowiązań),
 - `daemon/tests/test_report_generate.py` — raport z syntetycznego świata (`reportfix.py`: repozytoria z datowanymi commitami, dzienniki Claude Code i Codexa, zaplanowane zadanie, podagent, sesje sprzed okresu) przy zamrożonym zegarze: projekty z ruchem i bez, commity po gałęziach, znacznik agenta, ostatnie wiadomości, przebiegi zadań, worktrees, pliki i uprawnienia, podmiana katalogu, stan prac na dzień (cicha noc z czekającą sesją, niescaloną gałęzią i kartą tablicy w toku — raport niepusty; naprawdę nic — zdanie „nic się nie dzieje”), escapowanie (skrypt w temacie commita, tytule sesji, wiadomości agenta i nazwie pliku), CSP, brak zasobów z sieci; odczyt Limitów AI z atrapy API (token tylko w nagłówku, nigdy w błędzie),
@@ -6456,7 +6715,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_models_monitor.py` — `ModelsMonitor` w pętli Qt z atrapą odczytu: `Refresh()` w trakcie odczytu daje jeden odczyt zaraz po nim, `Changed` tylko przy zmianie, błąd odczytu zostawia ostatni stan, nieczytelne ustawienia przy starcie nie zatrzymują usługi; zapis: odczyt sprzed zapisu nie cofa widoku, odmowa bez `Changed`; pobieranie: `Changed` z postępem najwyżej raz na sekundę, wpis znika po chwili, `stop()` przerywa pobieranie; kolejka: pole `queue` (bezczynne punkty, trwające i czekające z wątków roboczych, bez treści poleceń) i `Changed` z powodu kolejki najwyżej raz na odstęp, odłączenie od kolejki przy `stop()`,
 - `daemon/tests/test_models_queue.py` — kolejka modeli: jedno wywołanie naraz na punkt i dwa punkty równolegle, więcej miejsc na punkt, priorytety i kolejność przyjścia bez przerywania trwającego, grupowanie modeli (i jego limit, i pierwszeństwo priorytetu), koniec okna grupowania między ocenami dwóch czekających (podmieniony zegar — nikt nie śpi przy wolnym miejscu), limit czekania osobno od limitu wywołania z powodem w komunikacie, błąd zwalnia punkt, `Cancel` zdejmuje czekające od razu i przerywa trwające, brak własnych wątków i haków w `Cancel`; `chat()` na atrapie obsługującej jedno zapytanie naraz (`timeout` od startu, `deadline` dla czekania i wywołania razem, `queueS`, dwie nazwy punktu na jednym serwerze dzielą miejsce, cel z `models.json` zmienionego w czasie czekania); raport i opisy kart naraz — karta czeka w kolejce zamiast w serwerze i dostaje opis modelu (bez kolejki ten test kończy się mylącym „nie odpowiedział”), karta przed resztą raportu, budżet raportu z czekaniem, uczciwa informacja na karcie po limicie czekania, `Describer.stop()` zdejmuje czekające,
 - `daemon/tests/test_models_dbus.py` — `/Models` na prywatnej magistrali z atrapą Ollamy i własnym `models.json`: `Status()` (punkt działający z tokenem i niedziałający), `Changed` tylko po zmianie (załadowany model), `Refresh()` po zmianie ustawień bez restartu, token tylko w nagłówku, introspekcja, `--no-models`, `--print-models` (tylko GET, niczego nie zapisuje); zapis z D-Bus we własnym `XDG_CONFIG_HOME` (start niczego nie zapisuje, `SetEndpoint` z tokenem i od razu sprawdzony punkt, `SetRole`, `SetDefault` przenosi role, odmowy `RemoveEndpoint`, `SetReportSummary` działa od razu i zachowuje inne klucze, `--report-summary` zmienia tylko plik), `TestEndpoint` (atrapa, zamknięty port, wolny serwer nie blokuje `Status()`), `PullModel` (postęp w `pulls`, jedno pobieranie na punkt, odmowa dla `openai`). Usługi w testach dostają `models.json` z zamkniętym portem (`privatebus.py`), więc nigdy nie pytają Ollamy z pulpitu,
-- `daemon/tests/test_activity_look.py` — wygląd aktywności (PT-35) z atrapą uruchamiania silnika i zegarami sterowanymi z testu (bez zależności od czasu): kontrola przy starcie bez aktywności, szybkie przełączenia (jedno nałożenie, ostatnia aktywność), przełączenia w trakcie nałożenia (czekają, nic równolegle), ponowienie po kodzie 75 z tą samą aktywnością i rosnącą przerwą, inne błędy czekają na zdarzenie, nowe przełączenie zastępuje ponowienie, obecność silnika przy każdym uruchomieniu, zabicie nałożenia przy zatrzymaniu, brak silnika; prawdziwy `QProcess` z atrapą silnika (kod i wyjście); `CurrentActivityChanged` od atrapy ActivityManagera na prywatnej magistrali. Silnik sam: `scripts/tests/test_activity_look.py`,
+- `daemon/tests/test_activity_look.py` — wygląd aktywności (PT-35) z atrapą uruchamiania silnika i zegarami sterowanymi z testu (bez zależności od czasu): kontrola przy starcie bez aktywności, szybkie przełączenia (jedno nałożenie, ostatnia aktywność), przełączenia w trakcie nałożenia (czekają, nic równolegle), ponowienie po kodzie 75 z tą samą aktywnością i rosnącą przerwą, inne błędy czekają na zdarzenie, nowe przełączenie zastępuje ponowienie, obecność silnika przy każdym uruchomieniu, zabicie nałożenia przy zatrzymaniu, brak silnika; wyłącznik awaryjny (PT-495): kod 76 bez ponowienia, trzy porażki w oknie 120 s (dwie nie, rozciągnięte poza okno nie, sekwencja 1, 75, 1, 1 tak, kod 0 zeruje), brak jakiegokolwiek uruchomienia przy włączonym wyłączniku (start, ponowienie, rejestracja plasmashell) aż do `activity_changed`, linia w wyjściu usługi, klucz `breaker` w dzienniku w katalogu tymczasowym (inne klucze zostają, zdjęcie go usuwa, nowy monitor nie nakłada przy starcie) i funkcja czasu wstrzykiwana zamiast zegara; odczekanie z atrapą obserwatora plasmashell i `FakeTimer` (start bez plasmashell, wyrejestrowanie i ponowna rejestracja, start przy zarejestrowanym); logowanie z kodem 75 pięć razy z przerwami 2, 4, 8, 16 i 32 s (domyślne `RETRY_MS`), bez wyłącznika i z wyzerowanym licznikiem; prawdziwy `QProcess` z atrapą silnika (kod i wyjście); `CurrentActivityChanged` od atrapy ActivityManagera na prywatnej magistrali (obserwator plasmashell to atrapa, dziennik w katalogu tymczasowym). Silnik sam: `scripts/tests/test_activity_look.py`,
 - `daemon/tests/test_install.py`, `daemon/tests/test_krunner_install.py`, `widgets/tests/` — instalacja i odinstalowanie na tymczasowym HOME z atrapami `systemctl`, `kpackagetool6` i `qdbus6`.
 
 Fixtures są pisane ręcznie i naśladują tylko strukturę wpisów — nie zawierają prawdziwych rozmów.
@@ -6491,6 +6750,9 @@ Polecona akcja zależy od werdyktu: brak uwag → „Zatwierdź plan”; blocker
 uwagi do poprawy”; nieznany werdykt → żadna nie jest polecona. Zatwierdzenie mimo uwag działa zawsze, a jego
 skutek jest opisany („Mimo N blokujących uwag … uwagi nie zostaną poprawione”). `EditCardPlan` z `action: return`
 przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do planującego trafia tylko to.
+Po automatycznej poprawce (`REQUEST_CHANGES` i `corrected`) decyzja ma `findingsApplied: true`: uwagi dotyczą
+wersji sprzed poprawki i są już naniesione, więc żadna nie ma `selected`, polecone jest zatwierdzenie, a odesłanie
+nie niesie uwag (K-130). Bez poprawki `findingsApplied` jest `false`.
 
 `EditCardPlan` zapisuje zmiany przydziału i treści kartki jako `plan.ticket-edited`.
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony
@@ -6558,7 +6820,7 @@ a przy samym `test` — `make test` z `fallback: full`). Bez polecenia próba ma
 karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Kontrakt, który po podstawieniu nie jest pojedynczym
 poleceniem (łańcuch, podpowłoka, powłoka, `env`, zmienne jak `PATH=` — kryterium kolejki poza piaskownicą), daje
 taką samą próbę niedostępną z `source: contract, reason: contract-not-single`, bez przejścia na `Makefile`. Do wyniku `0` bieżącej próby
-(`merge.check-finished {ticket, check, exit, log}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
+(`merge.check-finished {ticket, check, exit, log, failedModules?, failedTests?}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
 scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
 `"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.
 Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
@@ -6587,17 +6849,25 @@ bez ponowienia samych padniętych modułów. Od K-109 PT-483 wykonanie to protok
 `command.intent` (`source: merge-check`, rezerwacja miejsca i kolejki ciężkich) → `Runner.run_command` (usługa
 `tide-cmd-<attempt>`, `RuntimeMaxSec`, plik `exit-code`) → `command.started` → `command.finished`. Wstrzymana karta nie
 startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje `command.finished` pseudokroku i
-`merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba, `"zatrzymane"`, `"przekroczony czas"`;
-`log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed startem — unieważnia ją) daje problem karty
-`merge-check-denied` z tym samym wyjściem co porażka (ponowienie); po zapisie zamiaru odmowa jest odrzucana
-(`already-started`). Po restarcie usługi próba nie startuje drugi raz: zamiar bez startu rozstrzyga znacznik próby
-(`O_EXCL`) — polecenie nigdy nie ruszyło (`command.finished` z `reason: not-started`, wynik próby `"zatrzymane"`, czyli
-porażka, nie udana próba) albo ruszyło (odzyskany start, wynik z `exit-code`); start i koniec z dziennika, a wynik
-zapisany między końcem przebiegu a `merge.check-finished` usługa dopisuje raz. Próby uruchomione dawną drogą
-(`outside.started`, jednostka `tide-outside-…` `--scope`, `<krok>/outside/in/exit-code`, rozliczenie zatrzymanej
-jednostki z PT-315) usługa po zmianie tylko odzyskuje i kończy `outside.finished`, bez ponownego uruchomienia.
-Testy: `daemon/tests/test_cardflow_merge_check_command.py` (restart w każdej fazie przez `FlowEngine.tick`),
-`test_cardflow_merge_check_run.py` (historyczna próba w toku).
+`merge.check-finished {ticket, check, exit, log, failedModules, failedTests}` z tym samym `exit` (liczba,
+`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). `failedModules` i `failedTests` (K-100, PT-423) to moduły
+z `returncode` różnym od 0 i nazwy ich testów (`failures`, `errors`, `unexpected_successes`, najwyżej 200)
+z `summary.json` uruchamiacza testów, którego katalog wskazuje pierwszy nagłówek `Moduły: N, JOBS=…, logi: <katalog>`
+w `log`. Brak lub błąd dziennika, nagłówka albo raportu (np. przebieg ucięty, inny program testów) daje puste listy bez
+błędu; pola są diagnostyczne i nie zmieniają bramki, a wyniki sprzed zmiany, bez nich, czyta się jak dotąd.
+`command.started` i `command.finished` (także odzyskane i `not-started`) oraz dawne `outside.finished` niosą
+obciążenie maszyny w chwili zapisu: `loadavg` (1/5/15 min) i `cores` (rdzenie dostępne usłudze), błąd odczytu daje
+`null` w tym polu (K-100, PT-423). Odmowa zgody (także po zgodzie automatycznej, przed startem — unieważnia ją) daje
+problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie); po zapisie zamiaru odmowa jest
+odrzucana (`already-started`). Po restarcie usługi próba nie startuje drugi raz: zamiar bez startu rozstrzyga znacznik
+próby (`O_EXCL`) — polecenie nigdy nie ruszyło (`command.finished` z `reason: not-started`, wynik próby
+`"zatrzymane"`, czyli porażka, nie udana próba) albo ruszyło (odzyskany start, wynik z `exit-code`); start i koniec
+z dziennika, a wynik zapisany między końcem przebiegu a `merge.check-finished` usługa dopisuje raz. Próby uruchomione
+dawną drogą (`outside.started`, jednostka `tide-outside-…` `--scope`, `<krok>/outside/in/exit-code`, rozliczenie
+zatrzymanej jednostki z PT-315) usługa po zmianie tylko odzyskuje i kończy `outside.finished`, bez ponownego
+uruchomienia. Testy: `daemon/tests/test_cardflow_merge_check_command.py` (restart w każdej fazie przez
+`FlowEngine.tick`), `test_cardflow_merge_check_run.py` (historyczna próba w toku), `test_cardflow_event_load.py`
+(pola K-100).
 
 **„Akceptuj mimo porażki” (K-88, PT-320).** Problem karty `merge-check-failed`, `merge-check-denied` albo
 `merge-check-unavailable` ma w panelu karty (Tablica i Sesje) dwa wyjścia: „Ponów próbę” (polecane, PT-318) i

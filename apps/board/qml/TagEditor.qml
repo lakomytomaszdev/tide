@@ -119,22 +119,18 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: 8
         Item { Layout.fillWidth: true }
-        PillButton {
-            implicitHeight: 30
-            pixelSize: 12
-            flat: true
+        Tide.Button {
+            small: true
+            variant: "ghost"
             text: "Anuluj"
             onClicked: editor.cancelRequested()
         }
-        PillButton {
+        Tide.Button {
             objectName: "tagSave"
-            implicitHeight: 30
-            pixelSize: 12
-            strong: true
+            small: true
             enabled: !editor.busy
             text: editor.tag ? "Zapisz tag" : "Dodaj tag"
-            fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            variant: "primary"
             onClicked: editor.save()
         }
     }

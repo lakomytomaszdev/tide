@@ -305,9 +305,11 @@ def evaluation_text(evaluation):
 def run_idle_measurement(pid, service, *, warmup_s, windows=WINDOWS, window_s=WINDOW_S, proc_root="/proc",
                          clock=time.monotonic, sleep=time.sleep, pid_source=None, on_window=None, deadline=None,
                          memory_current=None, cgroup_root="/sys/fs/cgroup", cpu_count=None, hz=None,
-                         diagnostics_s=None, load=None):
+                         diagnostics_s=None, load=None, window_marks=None):
     """Przebieg pomiaru na czystym postoju. `service.diagnostics(seconds)` to jedyne wywołanie usługi i następuje
     dopiero po oknach CPU; w rozgrzewce i w oknach CPU narzędzie niczego do usługi nie wysyła.
+    `window_marks` (K-125 PT-486): odczyt licznika (np. wywołań atrapy `systemctl`) tuż przed pierwszym i tuż po
+    ostatnim oknie CPU; wynik w `windowMarks`. Nie zmienia pomiaru CPU.
 
     Zwraca wynik z kluczami `cpuWindows`, `cpuWindow` (agregat), `memory` (przed/po), `loadavg*`, `flowThread`,
     `tick`, `snapshot` i `diagnosticsSkipped` (limit czasu przed oknem diagnostyki — okna CPU zostają ważne)."""
@@ -323,8 +325,11 @@ def run_idle_measurement(pid, service, *, warmup_s, windows=WINDOWS, window_s=WI
         return result
     result["loadavgWindowStart"] = load()
     before = memory_snapshot(pid, proc_root, memory_current, cgroup_root)
+    marks_start = window_marks() if window_marks is not None else None       # K-125: licznik na granicach okien CPU
     block = run_windows(pid, windows=windows, window_s=window_s, proc_root=proc_root, clock=clock, sleep=sleep,
                         pid_source=pid_source, on_window=on_window, deadline=deadline, hz=hz)
+    if window_marks is not None:
+        result["windowMarks"] = {"start": marks_start, "end": window_marks()}
     after = memory_snapshot(pid, proc_root, memory_current, cgroup_root)
     result["loadavgAfter"] = load()
     result["cpuWindows"] = block

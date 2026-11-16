@@ -89,7 +89,7 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
   - **Worktrees:** „● 2 w pracy · ● 0 do sprzątnięcia (16 GB)” — tym samym językiem co dock, ale zawsze z obiema liczbami (zero wyciszone), link „Otwórz okno” w nagłówku.
   - **Tablica:** nagłówek „Tablica · 11 kart” z linkiem „Otwórz w Tide”, pod nim części jak w docku („● 2 w toku · ● 1 czeka · ● 1 do sprawdzenia”, bez pracy agentów „○ 3 do zrobienia · ○ 12 w backlogu”, bez kart „brak kart”) i do trzech wierszy 26 px: kropka stanu, ID w sky (Geist Mono), opis, postęp albo słowo stanu; czekający wiersz na tle brzoskwini ~0,10. Kliknięcie otwiera okno Tide na karcie.
   - **Limity AI:** dwa wiersze-mierniki (GPT, Claude) z niższym z pozostałych limitów w kolorze poziomu i wyciszonym „tydzień · reset poniedziałek 20:00” pod paskiem; problem z usługą to jedna wyciszona linia.
-  - **Przyciski** to `TextButton` (Qt Quick Templates `AbstractButton`: rola Button, Tab, spacja i Enter): link w kolorze akcentu albo pełny w pastelu stanu („Przejdź”). Mock: artboard „Sidebar” na kanwie.
+  - **Przyciski** to `TextButton` (Qt Quick Templates `AbstractButton`: rola Button, Tab, spacja i Enter): link w kolorze akcentu albo pełny w pastelu stanu („Przejdź”). Mock: artboard „Sidebar” na kanwie. W oknie Tide przyciski to `Tide.Button` (sekcja „Standard interfejsu okna Tide”).
 - **Dock:** pełna szerokość głównego monitora, 64 px. Aplikacje pośrodku; z lewej kafelki systemowe: System i zaraz za nim Docker, z prawej sprawy AI: tablica, agenci, worktrees, Limity AI, modele lokalne.
 - **Kafelek widżetu:** osobna karta 48 px wysokości (dock 64 px) z promieniem `tile` (12 px), tło w pastelu widżetu o kryciu ~0,11 (po najechaniu ~0,2) z ramką w tym pastelu (~0,24), 12 px odstępu między kafelkami. Zawsze dwie linie: etykieta w `text.secondary` (8 pt: „Agenci”, „Worktrees · 5 w pracy”, „System”, „Limity AI”) i wartość słowami (10 pt), liczby w Geist Mono. Kolor mówi o stanie. Wspólne komponenty `DockTile` i `TileMeter`, teksty i liczba mnoga w `Texts`, podgląd: `make preview-widgets`.
   - **Agenci** (teal, brzoskwinia gdy ktoś naprawdę czeka): „● 2 pracują · ● 1 czeka · ○ 2 gotowe”, tylko niezerowe części; skończone sesje mają puste błękitne kółko (`semantic.done`) i nie zmieniają koloru kafelka; bez sesji wyciszone „brak sesji”.
@@ -102,8 +102,8 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
   - **Modele** (neutralny `text.secondary` jak Docker, kolor tylko w kropce stanu domyślnego serwera): „Modele” (z nazwą punktu, gdy domyślny nie jest tym komputerem: „Modele · mac”) i „● qwen3:8b · na karcie 100%” (mięta; masło, gdy część modelu jest na procesorze), „● gotowe”, „● pracuje: opis kart · 2 w kolejce” i „● pobieram qwen3:14b 41%” (teal, pulsuje), „● brak modelu qwen3:14b” (masło), „● serwer nie odpowiada” (róż); bez usługi wyciszone „usługa nie działa” (w popupie polecenie `systemctl --user start tide-daemon` w osobnej linii w Geist Mono), przed pierwszym odczytem „łączę się…”. Masło za brak modelu tylko dla ról pracy w tle (raport, opisy kart); opcjonalne role (agent, wyszukiwanie) widać tylko w popupie. Wartość do 210 px, długie nazwy modeli skracane w środku. Popup 400 px: nagłówek ze znakiem układu w lawendzie, „Odśwież” w `text.secondary` i „Otwórz w Tide ↗”; tryb raportu na lawendzie ~0,09 („Raport: lokalnie”); karta na serwer na `background.window` (promień `tile`, ramka `opacity.border`): kropka, nazwa 600 („Ten komputer” dla adresu lokalnego), „domyślny”, stan po prawej (mięta/róż), adres i wersja w Geist Mono `text.muted`, powód niedostępności w różu, kolejka w tealu („Pracuje: opis kart (qwen3:8b) od 2 min · 2 w kolejce: raport” — oczekujące tą samą formą co na kafelku), pobieranie z paskiem w akcencie („Pobieram qwen3:14b · 42%”, potem przez 15 s „Pobrano” w mięcie albo przez 60 s błąd w różu), model w pamięci (nazwa w Geist Mono, „na karcie 100%” z paskiem 4 px w mięcie albo maśle, rozmiar, kontekst i „zwolni pamięć za 4 min”), „Pobrane: 5 modeli”; role (kropka, nazwa, model w Geist Mono, powód w różu); ostrzeżenia ustawień w maśle.
   - Każdy kafelek ma podpowiedź z jednym zdaniem wyjaśnienia, np. „Sesje agentów AI: 2 pracują, 1 czeka na ciebie”. Cztery kafelki z odstępami mają do ~850 px (agenci z trzema częściami do 240 px). Po prawej stronie docka jest pięć kafelków (Tablica, Agenci, Worktrees, Limity AI, Modele) — razem z odstępami do ~1220 px: Tablica do ~280, Agenci do ~270, Worktrees do ~225, Limity AI ~155, Modele do ~245 px (pomiar z `make preview-widgets`).
 - **Okno „Nowe zadanie”** (mock #22, `apps/newtask`): tło `background.window`, nagłówek „Co ma zrobić agent?” (21 px, 600) z plakietką skrótu w Geist Mono, pola na `background.view` z ramką 1 px tekstu o kryciu ~0,09 (fokus: teal ~0,75), promień `frame` + 2. Repozytorium jako lista rozwijana (romb w tealu, nazwa, „zmiany 12 min temu”), obok przełącznik „Claude Code / Codex” (wybrany: teal ~0,16 z obwódką). Pod zadaniem wyciszona podpowiedź klawiszy i licznik znaków. Zrzuty jako miniatury 150×92 z nazwą pliku w Geist Mono i ×, „Zrób zrzut” w przerywanej ramce. Karta „Nowy worktree” na `background.card` z przełącznikiem w tealu i gałęzią w lawendowym znaczniku (jak gałęzie w Worktrees) z „✎ zmień”; ostrzeżenia (zmiany na master) w maśle, błędy w różu w ramce. Stopka: co się stanie, „Anuluj” z obwódką i pełny teal „Uruchom agenta Ctrl+↵”. Znacznik „nowe” przy świeżej sesji: teal ~0,16, tekst w tealu, 8 pt.
-- **Okno „Tide”** (mock zatwierdzony 27.10.2026, `apps/tide`): jedno okno z paskiem widoków po lewej i widokiem na wierzchu; tytuł „Tide”, tło `background.window`. Pasek 200 px na `background.view` z ramką 1 px po prawej (tekst ~0,06), wnętrze 18/12 px, 4 px między pozycjami. U góry logo „trzy fale” bez kafelka (26 px, kreska 2,4 px: teal, lawenda, brzoskwinia) i „Tide” 17 px/600, 16 px odstępu. Pozycje (Tablica, Sesje, Worktrees, Docker, Raporty, Modele — kolejność z `views.json`): 38 px, promień `frame`, 10 px wcięcia, znak 18 px kreską 2 px w siatce 24×24 (`RailIcon`), nazwa 14 px; wybrana — tło teal ~0,10, nazwa `text.primary` 600, znak w tealu; pozostałe — `text.secondary` 500, znak `text.muted`; najechanie — tekst ~0,04; fokus klawiatury — obwódka teal ~0,6. Plakietka 11 px po prawej: liczba w Geist Mono `text.muted` (Worktrees — ile w pracy, Docker — ile działa), „● N” w brzoskwini (Sesje — ilu agentów czeka) albo w różu (Docker — ile kontenerów padło, ton `negative`), słowo w brzoskwini („nowy” w Raportach), „● N” w brzoskwini w Modelach (ile rzeczy, których Tide używa, nie działa); bez danych albo przy zerze ukryta. Na dole paska opcjonalna ramka widoku (`RailInfo`: tło `background.window`, ramka ~0,06, promień `tile`, podpis 11 px `text.muted`, wartość Geist Mono 12 px `text.secondary`, dopisek 11 px — np. „Dane tablicy”). Widok, którego jeszcze nie ma, pokazuje nagłówek jak inne widoki (21 px/600, „W przygotowaniu”) i pośrodku pusty stan: karta 460 px na `background.view` z promieniem `card`, znak widoku 26 px w tealu na kwadracie teal ~0,10, zdanie 15 px/600 i opis 13 px `text.muted`. Klawisze: Ctrl+1…6 widoki, Ctrl+PgUp/PgDown poprzedni i następny, strzałki w pasku, Ctrl+W zamyka. Na dole paska widok może podać link (mock: „Projekty i tagi”, 13 px w akcencie) i ramkę (`railInfo`). Widoki Sesje i Worktrees to dawne okna bez zmian w treści. W menu są trzy wejścia — „Tide” (z akcjami widoków) oraz „Tide Sesje” i „Tide Worktrees” otwierające okno od razu na widoku; wszystkie mają `StartupWMClass=tide`, więc przypięte w docku dawne skróty grupują się pod `tide.desktop` i pokazują to samo, jedno okno.
-- **Widok „Tablica”** (mock zatwierdzony 27.10.2026, `apps/board`, domyślny widok okna Tide): wnętrze 20/24 px, 14 px między wierszami. Nagłówek „Tablica” 21 px/600 z podsumowaniem 13 px `text.muted` („11 kart · 2 w toku · 1 czeka na ciebie · 1 do sprawdzenia”, przy filtrze „· filtr”), szukanie 220×36 px na `background.view` (ramka tekstu ~0,08, promień `frame`) i „＋ Karta” (akcent, tekst `background.desktop`, 13 px/600). Wiersz filtrów: pastylki tagów 28 px (Wszystkie + tagi z kropką 7 px; wybrana — akcent, tekst i kropka `background.desktop`; pozostałe `card`), przerywane „＋ Tag” (popup z nazwą, kolorem z palety i opisem), po prawej „Projekt: wszystkie ▾” (lista z liczbą kart) i przełącznik „Razem | Wiersz na projekt” (wybrany: teal ~0,16, tekst w akcencie). Kolumny: sześć równych (Gotowe też — przy wąskiej 150 px tytuły łamały się po jednym słowie; najmniej 150 px na kolumnę, więc przy najmniejszym oknie 1380 px wychodzi ok. 180 px), 10 px odstępu; kolumna — tło `panel` ~0,55 (Gotowe ~0,35), promień 16, wnętrze 10 px, nagłówek z kropką 9 px (Backlog puste `text.muted`, Do zrobienia `text.secondary`, W toku teal, Czeka na mnie brzoskwinia, Do sprawdzenia lawenda, Gotowe puste sky), nazwą 13 px/600 i liczbą w Geist Mono. Karta: tło `card`, ramka tekstu ~0,06, promień `tile`, 10/11 px wnętrza, 7 px między liniami — ID 11 px/600 w sky (Geist Mono), projekt 11 px `text.muted`, znacznik „YT LOG-131” (Geist Mono 10 px na tekście ~0,06), tytuł 13 px/600 (do 4 linii), tagi 11 px na tekście ~0,05 z kropką 6 px w kolorze tagu, notatka 12 px („✓ …” w mięcie, czekająca w brzoskwini, w kolejce wyciszona). Stan z koordynatora (PT-5): pasek 4 px (teal, przy czekającej brzoskwinia), „● Claude · koordynator · 3 z 10”, akcje kolumny („Otwórz w Sesjach →”, „Przejdź do agenta” w brzoskwini, w Do sprawdzenia gałąź w lawendzie i „Gotowe” w mięcie ~0,16). Czekająca karta — tło brzoskwini ~0,08 i ramka ~0,32; zaznaczona — obwódka teal ~0,6 z poświatą. Gotowe — zwarte karty („K-10 · projekt”, tytuł 12 px `text.secondary`), sześć ostatnich i „+ N starszych”. Do zrobienia kończy przerywana podpowiedź teal ~0,45 „Upuść kartę z Backlogu” / „zapytam, czy uruchomić agenta”, a karta w Do zrobienia ma „Uruchom agenta…” (akcent, po uruchomieniu obrysowane „Uruchom ponownie…”), a kolumny ręczne „＋ Dodaj kartę” 12 px `text.muted`. Kartę z „Do sprawdzenia” (i z Gotowych wyliczonych z koordynatora) da się przeciągnąć tylko do Gotowych — potwierdzenie sprawdzenia albo scalenia — albo z powrotem do Do zrobienia („do poprawy”), także Ctrl+→/←; inne kolumny odmawiają komunikatem. „Otwórz w Sesjach →” i „Przejdź do agenta” prowadzą do koordynatora karty (okno Tide na Sesjach, `/Coordination ShowWindow`), a bez koordynatora — do okna sesji (`/Agents ActivateSession`). Przeciąganie: duch karty pod kursorem (skala 1,02, obwódka teal), źródło przygaszone do 0,35, linia teal 2 px w miejscu upuszczenia, kolumna docelowa z obwódką teal ~0,45, kolumny wyliczane przygaszone. Panel karty (nowa i edycja): 420 px po prawej, tło `panel`, ramka ~0,09, promień 16, pola jak w oknie Nowe zadanie (tytuł, projekt z listą projektów i repozytoriów, tagi jako przełączniki — tagi projektu stałe z dopiskiem „z projektu”, opis, notatka), przy edycji kolumna (Backlog / Do zrobienia / Gotowe) i „Archiwizuj” w różu, błąd usługi w ramce różu ~0,45, commit, który czeka, w maśle. Plan i specyfikacja karty (PT-5): pod nagłówkiem panelu przełącznik „Opis | Plan · 2/6 | Specyfikacja” (jak „Razem | Wiersz na projekt”, 28 px; zakładki dokumentów tylko wtedy, gdy są; wybrana zakładka zostaje dla kolejnych kart, póki działa okno, a karta bez takiego dokumentu pokazuje „Opis”), przy dokumencie panel ma 860 px, a „Rozwiń” (płaski przycisk obok ✕) — szerokość okna bez marginesów. Dokument: tytuł 17 px/600, pastylka statusu 22 px na kolorze ~0,16 (plan: aktywny teal, wstrzymany masło, zakończony mięta; specyfikacja: gotowa mięta, szkic masło), „zmieniony 11:48 · plan karty · w repozytorium” 12 px `text.muted`, ścieżka Geist Mono 11 px z „Otwórz plik” (obrysowany) i „Pokaż w katalogu” (płaski); tabela ticketów na `background.view` z ramką ~0,07 i promieniem `tile` — ID w sky (Geist Mono 12 px/600), tytuł 13 px z uwagami 11 px `text.muted` pod spodem, stan słowem w kolorze stanu jak w Sesjach (w toku teal, czeka brzoskwinia, review lawenda, gotowe mięta, odrzucone róż, do zrobienia `text.muted`), gałąź Geist Mono 11 px; ticket spoza karty przygaszony do 0,5. „Co przetestować ręcznie” — ramka masła ~0,38 na maśle ~0,08 z nagłówkiem w maśle; reszta dokumentu jako Markdown 13 px `text.secondary` (nagłówki z odstępem nad nimi, linki w sky podkreślone, obrazy kursywą jako „(obraz: opis)”, HTML ze źródła jako zwykły tekst), na dole „Inne dokumenty karty” z „Otwórz” w akcencie. „Projekty i tagi” (link na dole paska): lista projektów z tagami, ścieżką repozytorium (Geist Mono), miejscem dokumentów AI, narzędziem i trybem — formularz pod wierszem; repozytoria bez projektu z „＋ Dodaj jako projekt”; tagi z kolorem, opisem i liczbą kart, formularz z kolorami palety. YouTrack (PT-7): znacznik „YT LOG-131” na karcie ma po kluczu znaczek synchronizacji 10 px/600 — „✓” w mięcie (zgodne), „⟳” w sky (czeka na zapis) albo `text.muted` (YouTrack niedostępny), „⚠” w maśle (YouTrack odmówił stanu) albo w różu (konflikt — wtedy też tło znacznika róż ~0,14); podpowiedź mówi stan słowami. Przy nagłówku tablicy, przed szukaniem, dyskretne pastylki 26 px bez tła, z ramką ~0,4 i tekstem 11 px: „1 konflikt z YouTrackiem” (róż), „YouTrack niedostępny · 2 czeka” (`text.muted`, nieklikalna), „5 nowych zgłoszeń w YouTracku” (brzoskwinia, otwiera import). Panel karty ma pole „Zgłoszenie w YouTracku” (klucz albo adres), a pod nim ramkę stanu na tekście ~0,04 (przy konflikcie róż ~0,10 z ramką ~0,45): znaczek, „LOG-142 · In Progress” w Geist Mono 12 px, płaskie „Otwórz w YouTracku ↗”, zdanie 11 px i przy konflikcie dwa obrysowane przyciski „Weź z YouTracka” / „Nadpisz z Tide”. „Projekty i tagi” zaczyna sekcja „YOUTRACK”: linia stanu z mapą kolumn na stany 12 px `text.muted` (niedostępny — masło), obrysowane „Importuj z YouTracka · 2 nowe”, konflikty (także ticketów bez karty) w ramkach różu z tymi samymi dwoma przyciskami i panel importu (filtr, wiersze 12 px: pole wyboru 16 px w akcencie, klucz w sky Geist Mono, tytuł, „nowe” w brzoskwini, „→ projekt” albo „już jest: K-13” wyciszone i bez pola wyboru, stan; na dole „Zaznacz wszystkie” i „Importuj zaznaczone (N)” w akcencie, wynik w mięcie). Formularz projektu ma wiersz „YouTrack”: pole klucza 110 px w Geist Mono, przełącznik synchronizacji (nieaktywny bez klucza) i zdanie, co to znaczy; wiersz projektu pokazuje „YouTrack LOG ⟲” w sky (bez synchronizacji — wyciszone). Pusty stan (bez repozytorium tablicy): karta 480 px na `background.view` ze znakiem tablicy, „Tu będzie twój backlog” i „＋ Pierwsza karta”. Złe pliki i trwający revert — pasek w maśle ~0,06 nad kolumnami (jak ostrzeżenia o numerach w Sesjach). Klawisze: Ctrl+N nowa karta, Ctrl+F szukaj, strzałki po kartach, Enter otwiera, Ctrl+←/→ przenosi do sąsiedniej kolumny ręcznej, Ctrl+↑/↓ w kolumnie, Esc zamyka panel albo stronę. W menu są trzy wejścia — „Tide” (z akcjami widoków) oraz „Tide Sesje” i „Tide Worktrees” otwierające okno od razu na widoku; wszystkie mają `StartupWMClass=tide`, więc przypięte w docku dawne skróty grupują się pod `tide.desktop` i pokazują to samo, jedno okno.
+- **Okno „Tide”** (mock zatwierdzony 27.10.2026, `apps/tide`): jedno okno z paskiem widoków po lewej i widokiem na wierzchu; tytuł „Tide”, tło `background.window`. Pasek 200 px na `background.view` z ramką 1 px po prawej (tekst ~0,06), wnętrze 18/12 px, 4 px między pozycjami. U góry logo „trzy fale” bez kafelka (26 px, kreska 2,4 px: teal, lawenda, brzoskwinia) i „Tide” 17 px/600, 16 px odstępu. Pozycje (Tablica, Sesje, Worktrees, Docker, Raporty, Modele — kolejność z `views.json`): 38 px, promień `frame`, 10 px wcięcia, znak 18 px kreską 2 px w siatce 24×24 (`RailIcon`), nazwa 14 px; wybrana — tło teal ~0,10, nazwa `text.primary` 600, znak w tealu; pozostałe — `text.secondary` 500, znak `text.muted`; najechanie — tekst ~0,04; fokus klawiatury — obwódka teal ~0,6. Plakietka 11 px po prawej: liczba w Geist Mono `text.muted` (Worktrees — ile w pracy, Docker — ile działa), „● N” w brzoskwini (Sesje — ilu agentów czeka) albo w różu (Docker — ile kontenerów padło, ton `negative`), słowo w brzoskwini („nowy” w Raportach), „● N” w brzoskwini w Modelach (ile rzeczy, których Tide używa, nie działa); bez danych albo przy zerze ukryta. Na dole paska opcjonalna ramka widoku (`RailInfo`: tło `background.window`, ramka ~0,06, promień `tile`, podpis 11 px `text.muted`, wartość Geist Mono 12 px `text.secondary`, dopisek 11 px — np. „Dane tablicy”). Widok, którego jeszcze nie ma, pokazuje nagłówek jak inne widoki (21 px/600, „W przygotowaniu”) i pośrodku pusty stan: karta 460 px na `background.view` z promieniem `card`, znak widoku 26 px w tealu na kwadracie teal ~0,10, zdanie 15 px/600 i opis 13 px `text.muted`. Klawisze: Ctrl+1…6 widoki, Ctrl+PgUp/PgDown poprzedni i następny, strzałki w pasku, Ctrl+W zamyka. Nad ramką `RailInfo` stoi pozycja „Projekty i tagi” (K-128, PT-507): zwykły `RailItem` (38 px, ikona folderu `projects`, ten sam styl i fokus co pozostałe), wybierana jak one — tło teal ~0,10, gdy w widoku Tablica otwarta jest strona Projekty i tagi (wtedy „Tablica” nie jest wybrana, a jej klik wraca na tablicę). Klik otwiera tę stronę (`showItem("projekty")`). Zielonego linku Tablica już nie podaje (`RailInfo` nadal pokaże `link`, gdy jakiś widok go poda); ramkę „Dane tablicy” (`railInfo`) zostawia. **Projekty i tagi** (`ManagePage.qml`) mają `Tide.TopBar`: „← Tablica” pierwszy od lewej (objectName `manageBack`), potem tytuł; klik i Esc wracają na tablicę. Widoki Sesje i Worktrees to dawne okna bez zmian w treści. W menu są trzy wejścia — „Tide” (z akcjami widoków) oraz „Tide Sesje” i „Tide Worktrees” otwierające okno od razu na widoku; wszystkie mają `StartupWMClass=tide`, więc przypięte w docku dawne skróty grupują się pod `tide.desktop` i pokazują to samo, jedno okno.
+- **Widok „Tablica”** (mock zatwierdzony 27.10.2026, `apps/board`, domyślny widok okna Tide): wnętrze 20/24 px, 14 px między wierszami. Nagłówek „Tablica” 21 px/600 z podsumowaniem 13 px `text.muted` („11 kart · 2 w toku · 1 czeka na ciebie · 1 do sprawdzenia”, przy filtrze „· filtr”), szukanie 220×36 px na `background.view` (ramka tekstu ~0,08, promień `frame`) i „＋ Karta” (akcent, tekst `background.desktop`, 13 px/600). Wiersz filtrów: pastylki tagów 28 px (Wszystkie + tagi z kropką 7 px; wybrana — akcent, tekst i kropka `background.desktop`; pozostałe `card`), przerywane „＋ Tag” (popup z nazwą, kolorem z palety i opisem), po prawej „Projekt: wszystkie ▾” (lista z liczbą kart) i przełącznik „Razem | Wiersz na projekt” (wybrany: teal ~0,16, tekst w akcencie). Kolumny: sześć równych (Gotowe też — przy wąskiej 150 px tytuły łamały się po jednym słowie; najmniej 150 px na kolumnę, więc przy najmniejszym oknie 1380 px wychodzi ok. 180 px), 10 px odstępu; kolumna — tło `panel` ~0,55 (Gotowe ~0,35), promień 16, wnętrze 10 px, nagłówek z kropką 9 px (Backlog puste `text.muted`, Do zrobienia `text.secondary`, W toku teal, Czeka na mnie brzoskwinia, Do sprawdzenia lawenda, Gotowe puste sky), nazwą 13 px/600 i liczbą w Geist Mono. Karta (szczegóły i stany: sekcja „Karta na Tablicy”): tło `card`, ramka tekstu ~0,07, promień `tile`, 10/11 px wnętrza, 6 px między liniami — ID 11 px/600 w sky (Geist Mono), projekt 11 px `text.muted`, znacznik „YT LOG-131” (Geist Mono 10 px na tekście ~0,06), tytuł 13 px/600 (do 4 linii), tagi 11 px na tekście ~0,05 z kropką 6 px w kolorze tagu, notatka 12 px („✓ …” w mięcie, czekająca w brzoskwini, w kolejce wyciszona). Stan z koordynatora (PT-5): pasek 4 px (teal, przy czekającej brzoskwinia), „● Claude · koordynator · 3 z 10”, akcje kolumny („Otwórz w Sesjach →”, „Przejdź do agenta” w brzoskwini, w Do sprawdzenia gałąź w lawendzie i „Gotowe” tonowane miętą). Czekająca karta — tło brzoskwini ~0,08 i ramka ~0,32; zaznaczona — obwódka teal ~0,6 z poświatą. Gotowe — zwarte karty („K-10 · projekt”, tytuł 12 px `text.secondary`), sześć ostatnich i „+ N starszych”. Do zrobienia kończy przerywana podpowiedź teal ~0,45 „Upuść kartę z Backlogu” / „zapytam, czy uruchomić agenta”, a karta w Do zrobienia ma „Uruchom agenta…” (akcent, po uruchomieniu tonowane „Uruchom ponownie…”; przyciski kafelka to `Tide.Button`, opis w „Karta na Tablicy” niżej), a kolumny ręczne „＋ Dodaj kartę” 12 px `text.muted`. Kartę z „Do sprawdzenia” (i z Gotowych wyliczonych z koordynatora) da się przeciągnąć tylko do Gotowych — potwierdzenie sprawdzenia albo scalenia — albo z powrotem do Do zrobienia („do poprawy”), także Ctrl+→/←; inne kolumny odmawiają komunikatem. „Otwórz w Sesjach →” i „Przejdź do agenta” prowadzą do koordynatora karty (okno Tide na Sesjach, `/Coordination ShowWindow`), a bez koordynatora — do okna sesji (`/Agents ActivateSession`). Przeciąganie: duch karty pod kursorem (skala 1,02, obwódka teal), źródło przygaszone do 0,35, linia teal 2 px w miejscu upuszczenia, kolumna docelowa z obwódką teal ~0,45, kolumny wyliczane przygaszone. Panel karty (K-128, PT-504; opis w sekcji „Szuflada i panel karty”): duża szuflada `Tide.Sheet` po prawej (ok. 64 % okna, najmniej 640 px) z trybami Czytaj i Edytuj; formularz (Edytuj, domyślny dla nowej karty) ma pola jak w oknie Nowe zadanie (tytuł, projekt z listą projektów i repozytoriów, tagi jako przełączniki — tagi projektu stałe z dopiskiem „z projektu”, opis, notatka), przy edycji kolumna (Backlog / Do zrobienia / Gotowe) i „Archiwizuj” w różu, błąd usługi w ramce różu ~0,45, commit, który czeka, w maśle. Plan i specyfikacja karty (PT-5): pod nagłówkiem panelu przełącznik „Opis | Plan · 2/6 | Specyfikacja” (jak „Razem | Wiersz na projekt”, 28 px; zakładki dokumentów tylko wtedy, gdy są; wybrana zakładka zostaje dla kolejnych kart, póki działa okno, a karta bez takiego dokumentu pokazuje „Opis”), szuflada ma tę samą szerokość z dokumentem i bez, a „Rozwiń” (menu ⋯) daje prawie całe okno. Dokument: tytuł 17 px/600, pastylka statusu 22 px na kolorze ~0,16 (plan: aktywny teal, wstrzymany masło, zakończony mięta; specyfikacja: gotowa mięta, szkic masło), „zmieniony 11:48 · plan karty · w repozytorium” 12 px `text.muted`, ścieżka Geist Mono 11 px z „Otwórz plik” (obrysowany) i „Pokaż w katalogu” (płaski); tabela ticketów na `background.view` z ramką ~0,07 i promieniem `tile` — ID w sky (Geist Mono 12 px/600), tytuł 13 px z uwagami 11 px `text.muted` pod spodem, stan słowem w kolorze stanu jak w Sesjach (w toku teal, czeka brzoskwinia, review lawenda, gotowe mięta, odrzucone róż, do zrobienia `text.muted`), gałąź Geist Mono 11 px; ticket spoza karty przygaszony do 0,5. „Co przetestować ręcznie” — ramka masła ~0,38 na maśle ~0,08 z nagłówkiem w maśle; reszta dokumentu jako Markdown 13 px `text.secondary` (nagłówki z odstępem nad nimi, linki w sky podkreślone, obrazy kursywą jako „(obraz: opis)”, HTML ze źródła jako zwykły tekst), na dole „Inne dokumenty karty” z „Otwórz” w akcencie. „Projekty i tagi” (link na dole paska): lista projektów z tagami, ścieżką repozytorium (Geist Mono), miejscem dokumentów AI, narzędziem i trybem — formularz pod wierszem; repozytoria bez projektu z „＋ Dodaj jako projekt”; tagi z kolorem, opisem i liczbą kart, formularz z kolorami palety. YouTrack (PT-7): znacznik „YT LOG-131” na karcie ma po kluczu znaczek synchronizacji 10 px/600 — „✓” w mięcie (zgodne), „⟳” w sky (czeka na zapis) albo `text.muted` (YouTrack niedostępny), „⚠” w maśle (YouTrack odmówił stanu) albo w różu (konflikt — wtedy też tło znacznika róż ~0,14); podpowiedź mówi stan słowami. Przy nagłówku tablicy, przed szukaniem, dyskretne pastylki 26 px bez tła, z ramką ~0,4 i tekstem 11 px: „1 konflikt z YouTrackiem” (róż), „YouTrack niedostępny · 2 czeka” (`text.muted`, nieklikalna), „5 nowych zgłoszeń w YouTracku” (brzoskwinia, otwiera import). Panel karty nie ma pola „Zgłoszenie w YouTracku” (zniknęło z formularza w PT-504); w trybie Czytaj pokazuje ramkę stanu na tekście ~0,04 (przy konflikcie róż ~0,10 z ramką ~0,45): znaczek, „LOG-142 · In Progress” w Geist Mono 12 px, płaskie „Otwórz w YouTracku ↗”, zdanie 11 px i przy konflikcie dwa obrysowane przyciski „Weź z YouTracka” / „Nadpisz z Tide”. „Projekty i tagi” zaczyna sekcja „YOUTRACK”: linia stanu z mapą kolumn na stany 12 px `text.muted` (niedostępny — masło), obrysowane „Importuj z YouTracka · 2 nowe”, konflikty (także ticketów bez karty) w ramkach różu z tymi samymi dwoma przyciskami i panel importu (filtr, wiersze 12 px: pole wyboru 16 px w akcencie, klucz w sky Geist Mono, tytuł, „nowe” w brzoskwini, „→ projekt” albo „już jest: K-13” wyciszone i bez pola wyboru, stan; na dole „Zaznacz wszystkie” i „Importuj zaznaczone (N)” w akcencie, wynik w mięcie). Formularz projektu ma wiersz „YouTrack”: pole klucza 110 px w Geist Mono, przełącznik synchronizacji (nieaktywny bez klucza) i zdanie, co to znaczy; wiersz projektu pokazuje „YouTrack LOG ⟲” w sky (bez synchronizacji — wyciszone). Pusty stan (bez repozytorium tablicy): karta 480 px na `background.view` ze znakiem tablicy, „Tu będzie twój backlog” i „＋ Pierwsza karta”. Złe pliki i trwający revert — pasek w maśle ~0,06 nad kolumnami (jak ostrzeżenia o numerach w Sesjach). Klawisze: Ctrl+N nowa karta, Ctrl+F szukaj, strzałki po kartach, Enter otwiera, Ctrl+←/→ przenosi do sąsiedniej kolumny ręcznej, Ctrl+↑/↓ w kolumnie, Esc zamyka panel albo stronę. W menu są trzy wejścia — „Tide” (z akcjami widoków) oraz „Tide Sesje” i „Tide Worktrees” otwierające okno od razu na widoku; wszystkie mają `StartupWMClass=tide`, więc przypięte w docku dawne skróty grupują się pod `tide.desktop` i pokazują to samo, jedno okno.
   - **„Co ma zrobić agent?”** (mock „Uruchomienie karty” zatwierdzony 27.10.2026, `LaunchDialog.qml`): modalnie nad tablicą przyciemnioną `background.desktop` ~0,62; okno do 900 px na `background.window`, ramka tekstu ~0,08, promień `card`, wnętrze 20/28 px, 16 px między sekcjami; treść przewija się, gdy okno jest niskie (najmniejsze 620 px), stopka zostaje. Nagłówek „Co ma zrobić agent?” 21 px/600, po prawej „Backlog → Do zrobienia” (po przeniesieniu) albo „Do zrobienia” 12 px `text.muted`. Karta na `background.view` (promień `tile`, ramka ~0,08): ID w sky Geist Mono 12 px/600, „◆” w akcencie i projekt 14 px/600, tagi, po prawej „tytuł z karty: …”; „Zadanie” — pole 96 px jak opis w panelu karty, pod nim „Opis z karty. Zmiany tutaj zapiszą się też w karcie.” 11 px. Wiersz: „Narzędzie” z przełącznikiem „Claude Code | Codex” (30 px, 13 px) i po prawej „Dokumenty AI” z pastylką Geist Mono („w repozytorium · docs/agents/” albo „w Tide · tide-board/docs/<projekt>/”, `card`, promień 7) i linkiem „zmień w projekcie” w akcencie (strona Projekty i tagi; po powrocie okno wraca). „Tryb pracy” — trzy równe karty (`card`, promień `tile`; wybrana teal ~0,09 z obwódką ~0,6) z kółkiem 14 px (wybrane: obwódka 4 px w akcencie), tytułem 15 px/600, opisem 13 px `text.secondary` i dopiskiem 11 px; pod nimi pasek kroków — pastylki `card` z numerem w akcencie Geist Mono i „→”. Na dole dwie karty `card`: „Nowy worktree” (przełącznik 34×20 px, `Toggle.qml`; gałąź w lawendzie ~0,10 Geist Mono 12 px, skracana w środku, „✎ zmień” w akcencie otwiera pole; w trybie spec przygaszona do 0,5 i „bez gałęzi”) i „Test ręczny po zakończeniu” (280 px, domyślnie wyłączony, zdanie o liście „Co przetestować ręcznie i jak” albo o review AI). Stopka na `background.view` z linią ~0,06: zdanie „co się stanie” 12 px `text.muted` (zmienia się z narzędziem, trybem, worktree i testem; w trakcie startu — który krok trwa), błąd w różu nad nim, przyciski „Anuluj” i „Tylko przenieś” (obrys, tylko po przeniesieniu) oraz „Uruchom agenta  Ctrl+↵” w akcencie. Karta bez projektu z repozytorium: ramka masła ~0,07 z wyjaśnieniem i wyborem projektu, przycisk startu wyłączony. Klawisze: Ctrl+Enter uruchamia, Esc — Anuluj (najpierw zamyka edycję gałęzi), ←/→ na kartach trybów.
 - **Widok „Sesje”** okna Tide (dawne okno „Tide Sesje”, mock zatwierdzony 26.10.2026, `apps/sessions`): tło `background.window`, trzy kolumny — koordynatorzy (290 px: nagłówek „KOORDYNATORZY” 11,5 px wersalikami w `text.muted`, pozycja z kropką stanu, projektem 14 px/600, etykietą ticketu w sky Geist Mono i licznikami ● w toku teal, ● czeka brzoskwinia, ○ gotowe; zaznaczona — teal ~0,08 z obwódką ~0,30; zakończone przygaszone; pod spodem „POJEDYNCZE SESJE”), tablica (tytuł 21 px/600, gałąź w lawendowym znaczniku Geist Mono, „koordynator · Claude Opus”, pasek postępu 6 px złożony z mięty, lawendy, tealu i brzoskwini; pięć kolumn na `background.panel` ~0,55 z promieniem 16 px: Do zrobienia, W toku teal, Czeka brzoskwinia, Review lawenda, Gotowe puste błękitne kółko; karty `background.card`, promień 12 px, ID ticketu w sky Geist Mono (tylko prawdziwe), tytuł po ludzku do trzech linii, jedna–dwie linie „co zrobiono”/„co teraz” w `text.secondary`, działający podagenci z kropką, rolą po polsku i czasem, stan słowami na dole — „✓ review OK” w mięcie, „gotowe, czeka na review” w lawendzie, „po review — do poprawy” w brzoskwini, przerwane w różu, „w trakcie” w `text.muted`; czekająca w brzoskwini z pytaniem, gotowe przygaszone, zaznaczona — tealowa obwódka) i szczegóły (380 px: ID, znaczniki gałęzi i stanu, sekcje z nagłówkami 11 px wersalikami w `text.muted` — „Co to jest” z tytułem 17 px/600 i drobnym dopiskiem źródła, „Co zrobiono”, „Teraz / review” 13 px — potem „Przebieg”: oś czasu z kropkami na szynie, angielski opis zlecenia jako dopisek 11 px, cytat MAJOR na brzoskwiniowym tle z paskiem, przyciski-pigułki na dole). Główna akcja „Przejdź do koordynatora” w pełnym tealu. „Pokaż wynik” zastępuje tablicę raportem podagenta (Markdown) i ostatnimi krokami jego pracy.
 - **Widok „Raporty”** okna Tide (mock zatwierdzony 27.10.2026, `apps/reports`): tło `background.window`, wnętrze 20/24 px, trzy kolumny. Doby (186 px): „RAPORTY” 11 px wersalikami w `text.muted`, pozycja z etykietą 13 px/600 („Dziś · wt 27.10”, inne „pon 26.10”) i brzoskwiniową kropką 7 px przy najnowszym nieotwartym raporcie, pod nią 11 px `text.muted` „07:00 · 5 projektów”; wybrana — tło teal ~0,10, promień `frame`; pod listą „Trzymamy 30 dni”. Środek: tytuł doby 21 px/600 bez roku bieżącego, linia 13 px `text.muted` „Od poniedziałku 07:00 · 5 projektów w raporcie · ” i to, co czeka, w brzoskwini („2 rzeczy czekają na ciebie”); przyciski „Wygeneruj teraz” (w trakcie „Składam raport…” i pasek 3 px bez końca w tealu z opisem) i „Otwórz w przeglądarce ↗” na `background.card`. Karty projektów na `background.view` z ramką tekstu ~0,06, promień `bar` (14 px), 10 px odstępu: nazwa 15 px/600, tagi tablicy jako pigułki (tekst ~0,05, kropka 6 px w pastelu tagu), liczniki 12 px — „N zrobione” mięta, „N w toku” teal, „N czeka” brzoskwinia (zero wyciszone), „· N uwaga” w `butter` (tylko przy niezerowym), headline 13 px `text.secondary`, „Czeka na ciebie: …” 12 px w brzoskwini na brzoskwini ~0,08; wybrana karta — teal ~0,07 z obwódką teal ~0,45. Na górze środkowej kolumny „Dziś w skrócie” (PT-24) na `background.card` z ramką ~0,06, promień `bar`: „DZIŚ W SKRÓCIE” 11 px wersalikami w `text.muted`, 3–5 zdań 14 px `text.primary` (interlinia 1,3), pod nimi — na żywo, jak widżet agentów — „Czeka teraz · N” 12 px/600 w brzoskwini z pulsującą kropką 8 px i wiersze „projekt — pyta: „…”” / „— czeka na zgodę (…)” 13 px `text.secondary` z wcięciem 15 px (starsze doby bez tej części). Na karcie projektu „Skończone dziś: <zdanie notki>” 12 px w mięcie (z „· i N więcej”), nad „Czeka na ciebie”; „Czeka na ciebie” pomija pozycje, na które agent już nie czeka. Pod kartami projekty z samymi porządkami w jednej linii 12 px `text.muted` „▸ Porządki: QuotaApp, BO…” (po kliknięciu „▾” i lista „projekt: pozycje” z wcięciem 15 px). Na końcu „Poza projektami” w ramce tekstu ~0,14 (promień `tile`), zwinięte do jednego wiersza z „Rozwiń” w akcencie. Panel „Na daily” (360 px) na `background.card`, promień `card`: „NA DAILY” 11 px, nazwa projektu 17 px/600, „Na czym polega”, sekcje z kropką 8 px (Skończone dziś mięta — tylko gdy są notki po tickecie, z dopiskiem 12 px w brzoskwini „Sprawdź ręcznie: …” albo „Wymaga sprawdzenia ręcznego”; Zrobione mięta, W toku teal, Czeka na mnie brzoskwinia, Uwaga `butter` — testy, które nie przechodzą, i konflikty numerów, tylko gdy są, Dalej pusty krążek `text.muted`), pozycje 13 px `text.primary` z wcięciem 15 px, „dalej: …” w tealu, puste — „nic”; pozycja „Czeka na mnie”, na którą agent już nie czeka, przekreślona w `text.muted` z dopiskiem 11 px „już nieaktualne — agent na to nie czeka”; zwinięte „Porządki”; na dole pełny teal „Kopiuj jako tekst” (po kliknięciu „Skopiowano ✓”) i link „Pełna strona ↗” w akcencie. Raport sprzed `report.json`: karty bez liczników z wyciszonym zdaniem, panel bez sekcji i bez „Kopiuj”. Pusty stan: „Nie ma jeszcze raportów” 19 px/600 z opisem i „Wygeneruj teraz”. Wszystkie teksty raportu jako zwykły tekst; podgląd: `make preview-reports-view`.
@@ -120,6 +120,321 @@ Przy zmaksymalizowanym oknie Plasma przykleja pływające panele do krawędzi i 
 - **Ekran logowania (SDDM):** zegar i data u góry pośrodku, awatar w kole, imię, pole hasła z tealowym przyciskiem, „Zmień użytkownika”; wybór konta jako karty (awatar, imię, nazwa konta, zaznaczenie tealową obwódką) i karta „Inny użytkownik”. Tło przyciemnione raz (`opacity.loginDim` 0,12) i nieruchome przy zmianie widoku.
 - **Terminal (Konsola, #26):** karty jak pigułki kafelków (Geist, tło `card`, promień `tile`, ramka w kolorze tekstu o kryciu `opacity.outline`, aktywna z obwódką teal na tle teal ~0,11); karta agenta „● projekt · gałąź” z paskiem stanu pod tytułem (teal pracuje, brzoskwinia „czeka”, „○” skończył bez koloru). Pole terminala z kryciem `opacity.panel` i rozmyciem, Geist Mono `terminal.fontPt`, margines `terminal.marginPx`, bez paska przewijania i menu, w prawym dolnym rogu trzy fale z kryciem `terminal.watermark.opacity`. Prompt: chipy z tłem pastelu przesuniętym o 84% w stronę tła okna i tekstem w pastelu (projekt na `card`, gałąź lawenda, worktree sky, zmiany masło, agent w kolorze stanu), godzina po prawej, „›” teal (róż po błędzie). Pasek statusu Claude Code tym samym językiem, limity w kolorach poziomu jak w widżecie Limity AI.
 - **Logo „trzy fale”:** fale teal, lawenda, brzoskwinia. Wersja pełna na kafelku `card` (promień 20/64), wersja bez kafelka z grubszymi falami od 18 px, wersja symboliczna jednokolorowa.
+
+## Standard interfejsu okna Tide (K-128)
+
+Wspólny zestaw komponentów okna Tide (`widgets/lib`, importowany w widokach jako `Tide`). Wzorzec wyglądu to makieta
+S-9 w `docs/agents/k-128/makieta/index.html` (opis i sposób otwarcia: `docs/agents/k-128/makieta/README.md`);
+kolory, promienie i czcionki pochodzą z palety. Kolejne tickety karty K-128 dopisują tu swoje komponenty.
+
+### Tekst
+
+Każdy dłuższy tekst (opis karty, „Uwaga” i „Powód kroku” w decyzji, komentarze agenta i usługi) pokazuje
+**`Tide.Prose`**: `TextEdit` tylko do odczytu z RichText, z zaznaczaniem myszą. Kopiowanie (Ctrl+C) daje czysty tekst
+bez znaczników. Akapit ma najwyżej ok. 80 znaków szerokości (`measure`), interlinię 1,6 i 8 px odstępu pod spodem.
+`collapsedLines` zwija dłuższy tekst do podanej liczby linii z „więcej”/„mniej”. HTML liczy się tylko przy zmianie
+tekstu, trybu, renderera albo tła (`renders`), więc długie listy nie renderują go przy każdym przebudowaniu.
+
+HTML robi **`prose.js`** (`render(text, {markdown, colors})`, kolory z `colors(Tokens, tło)`):
+
+- **Bloki:** akapity (pusta linia rozdziela, pojedynczy koniec linii zostaje złamaniem), listy `-`/`*`/`1.`, cytaty `>`
+  (lawenda ~0,06 z wcięciem), kod w trzech backtickach (tekst ~0,04, Geist Mono). Zdanie, które po dwukropku ma
+  co najmniej trzy człony rozdzielone `; `, staje się listą; dwa człony zostają akapitem.
+- **Wyróżnienia w linii:** `` `polecenie` `` — masło na maśle ~0,09 (`code.cmd`); ścieżka w backtickach albo bez nich
+  (`apps/board/qml/CardPanel.qml`, `~/.docker/config.json`, `docs/x/`, `plik.qml`) — sky na sky ~0,10 (`code.p`);
+  adres i domena (`https://…`, `cdn.jsdelivr.net`) — lawenda (`code.url`); klawisze (`Ctrl+Enter`, `Esc`, `F5`) —
+  `kbd` na tekście ~0,07, każdy klawisz osobno; numer karty `K-128` — sky, Geist Mono, 600 (`.cref`); numer ticketu
+  `PT-501`, `RECI-38` — sky, Geist Mono (`.tref`). Tła wyróżnień są mieszane z tłem tekstu; każda para ma kontrast
+  co najmniej 4,5:1 na tłach `view`, `window`, `card`, `titlebar` i `panel` (test `widgets/tests/test_prose.py`).
+- **Tryb Markdown** (`markdown: true`): dodatkowo nagłówki `#`–`######` (bez dosłownych krzyżyków), **pogrubienie**,
+  *kursywa*, linia `---` i linki `[tekst](https://…)` jako tekst z adresem w lawendzie obok. Gdy gospodarz ma własny
+  renderer Markdown (`renderer`, np. `backend.renderMarkdown` na Tablicy), `Tide.Prose` używa jego; bez niego
+  (Sesje) — `prose.js` w trybie Markdown.
+
+**Tekst agenta nigdy nie wstrzykuje HTML ani linków.** `prose.js` najpierw escapuje cały tekst (`&`, `<`, `>`, `"`, `'`),
+a dopiero potem dokłada znaczniki ze stałymi atrybutami (`class`, `style` z palety); dopasowany tekst nigdy nie
+trafia do atrybutu. Wynik nie ma `href` ani `<img>` — także link Markdown (`[x](javascript:…)` zostaje samym tekstem,
+`[x](http://…)` — tekstem z adresem), więc nic nie jest klikalne i widok nie robi żądań sieciowych. Schemat
+`tide-card:` jest zarezerwowany dla podglądu karty po numerze (`Tide.CardRef`, etap A2) i dziś nie powstaje.
+RichText występuje tylko w `Tide.Prose`, w `Tide.CodeBlock` (linie skryptu z `shell.js`, każdy kawałek escapowany —
+niżej) i w `MarkdownBlock.qml` Tablicy (HTML z `backend.renderMarkdown`); jedyny
+wyjątek sprzed standardu — raport w oknie Sprawy (`IssuesView.qml`, `backend.renderReport` z obrazami sprawy) —
+przechodzi na `Tide.Prose` w przeglądzie pozostałych tekstów (etap A2). Pilnuje tego test statyczny.
+
+Pierwszy odbiorca: pole „dlaczego” decyzji karty (`DecisionForm.qml`, linie „Uwaga:” i „Powód kroku:”) w oknie
+decyzji i w „Twój ruch” pełnej karty.
+
+### Prośba o zgodę i decyzje (K-128, PT-506)
+
+Treść decyzji (`apps/common/qml/card/DecisionForm.qml`, wspólna dla okna decyzji i „Twój ruch” pełnej karty) według
+makiety S-9, obszar „Prośba o zgodę”, wariant A. Zmiana dotyczy **tylko formatowania i układu** (granica K-109): te
+same metody, parametry, grupy zgód i odpowiedzi; okno niczego nie wybiera z góry (D10).
+
+- **Tytuł jako pytanie.** Prośba o zgodę ma w tytule pytanie złożone z istniejących pól (`decision.js`,
+  `questionTitle`): „Uruchomić `<polecenie>` poza piaskownicą?”, „Zezwolić na `<polecenie>`?”, „Zezwolić na polecenia
+  z łańcucha?” (długie polecenie — „…polecenie…”). Zdanie usługi (`happened`) stoi pod nim tekstem `text.secondary`.
+  Pozostałe decyzje, grupa zgód i odmowa domeny mają dzisiejszy tytuł (`happened`).
+- **Jedno zalecenie.** Duży blok „Opiekun poleca” znika. Czysta funkcja `advice(decision)` w `decision.js` czyta tylko
+  `options[].recommended` i `caretaker{optionId, recommendation, summary, failed, tried}` i daje tryb:
+  - plakietka **„polecane”** (teal na tealu ~0,10, obrys ~0,35, makieta `.chip.teal`) wyłącznie przy opcji
+    z `recommended: true`; opcja polecana ma obrys tealu ~0,35;
+  - `caretaker.optionId` = opcja polecana (`agree`) — pod jej opisem „✓ Polecane — opiekun karty też to poleca”
+    (teal) i przycisk „uzasadnienie opiekuna”, który rozwija komentarz (rekomendacja i streszczenie opiekuna);
+  - `caretaker.optionId` = inna opcja (`differ`) — przy tamtej opcji plakietka **„opiekun”** (lawenda, `.chip.lav`)
+    i „◆ Opiekun poleca tę opcję” (masło) z „dlaczego?”. **Gałąź tymczasowa** (`TODO(K-128 etap B)` w kodzie,
+    niżej „Co wymaga etapu B”);
+  - pusty albo nieznany `caretaker.optionId`, a jest `recommendation`, `summary` albo `failed` (`note`) — jedno zdanie
+    pod możliwościami („Opiekun poleca: …” w tealu albo „Opiekun nie poradził sobie z problemem i oddaje decyzję
+    Tobie.” w brzoskwini) i „Szczegóły opiekuna” rozwijające streszczenie i listę prób `tried` („Co próbowano”).
+
+  Komentarz (`CaretakerDetail.qml`, makieta `.comment`) ma tło `background.view` i obrys `opacity.border`; streszczenie
+  opiekuna pokazuje `Tide.Prose`. Rozwinięcie niczego nie wybiera.
+- **Polecenie** z `technical.command` stoi w jednowierszowym `Tide.CodeBlock` z „Kopiuj” (jak dawne pole), tak samo
+  polecenia do skopiowania z treści pytania (`copyCommands`).
+- **Podgląd skryptu:** gdy decyzja ma pole `decision.script = {path, language, text, lineCount, truncated}`, pod
+  poleceniem stoi zwinięty `Tide.CodeBlock` z treścią; bez pola — brak bloku.
+- **Przyciski** to `Tide.Button`: w oknie decyzji „Otwórz całą kartę” (`ghost`), „Później” (`ghost`, `Esc`)
+  i jedyny główny **„Wybierz ↵”** (`primary`; w „Twój ruch” — ten sam jedyny główny w widoku karty); przełączniki
+  („Szczegóły techniczne”, „Tickety i kroki”, „Co próbowano”) — `ghost` `small`; poprzednia/następna i ✕ — ikony
+  `ghost`. Obok „Wybierz” podpowiedź klawiszy „↑↓ wybór · Enter zatwierdza · Esc później” (`text.muted`); ↑↓ wybierają
+  sąsiednią możliwość (`DecisionForm.moveChoice`) — bez strzałki ani kliknięcia nic nie jest wybrane.
+- Kontrast nowych kolorów (plakietki „polecane” i „opiekun”, dopiski, przycisk tonowany, zdanie opiekuna) na ich tłach
+  nałożonych na `background.window` i `background.card` jest co najmniej 4,5:1 (test
+  `apps/board/tests/test_decision_advice.py`).
+
+#### Co wymaga etapu B
+
+Dwie części widoku są gotowe, ale **w produkcji po etapie A się nie pojawią** — działają wyłącznie na danych testowych,
+bo usługa nie daje dziś potrzebnych danych ([szkic etapu B](agents/plans/followups/etap-b-silnik.md)):
+
+- **Podgląd treści skryptu** — usługa nie podaje pola `decision.script`, więc bloku skryptu w prośbie o zgodę nie ma.
+- **Znacznik rozbieżności „opiekun”** — `caretaker.annotate_escalation` (`daemon/tide_daemon/cardflow/caretaker.py`)
+  nadpisuje `recommended` wyborem opiekuna, więc dziś `caretaker.optionId` zawsze wskazuje opcję polecaną (tryb
+  `agree`) i rozbieżności nie da się wiarygodnie wykryć. Gałąź `differ` ma w kodzie `TODO(K-128 etap B)`, a jej testy
+  są oznaczone jako kontrakt tymczasowy; etap B może zmienić znaczenie „polecane” i tę gałąź albo usunąć.
+
+Pastylki ryzyka z makiety (`decision.risks`) powstaną razem z danymi w etapie B (albo A2).
+
+### Blok kodu (`Tide.CodeBlock`)
+
+`widgets/lib/CodeBlock.qml` (makieta S-9 `.code`) — blok kodu okna Tide w dwóch wariantach:
+
+- **Zwijany** (domyślny): nagłówek na tle tekstu ~0,04 nad `background.view` — ścieżka (`path`, sky, Geist Mono,
+  skracana w środku), „· 34 linie · bash” (`text.muted`; liczba z `lineCount` albo z tekstu), „pokaż treść skryptu” /
+  „zwiń” i „Kopiuj” (`Tide.Button` `ghost` `small`). **Domyślnie zwinięty** (`expanded: false`); klik w nagłówek, Spacja
+  albo Enter rozwija. Po rozwinięciu linie z numerami (`text.muted`, wyrównane do prawej) i kolorowaniem powłoki w ramce
+  najwyżej `maxBodyHeight` (420 px) z własnym przewijaniem (`Tide.ScrollBar`); `truncated` dopisuje „Treść skrócona —
+  pokazano początek pliku.” Linie liczą się dopiero po rozwinięciu.
+- **Jednowierszowy** (`oneLine: true`): polecenie zwykłym tekstem (Geist Mono, zaznaczalne) w polu `background.view`
+  z „Kopiuj” — pole polecenia decyzji.
+
+Kolorowanie robi `widgets/lib/shell.js` — prosty tokenizer linii (`tokens(line)` → `{kind, text}`): komentarz
+(`#` na początku słowa — `text.muted`, kursywa), słowo kluczowe w miejscu polecenia (`if`, `then`, `for`, `export`,
+`echo`, `set`… — lawenda), napis `'…'` i `"…"` (masło; zmienne w `"…"` osobno), zmienna `$X`, `${X}`, `$1`, `$@` (sky),
+polecenie — pierwsze słowo na początku linii i po `;`, `|`, `&`, `(`, `$(` (teal); reszta `text.primary`. Kolory
+z `shell.colors(Tokens)`; każda para ma kontrast co najmniej 4,5:1 na tle bloku (test `widgets/tests/test_codeblock.py`).
+
+**Treść to niezaufany tekst.** `shell.html(line, colors)` escapuje każdy kawałek (`&`, `<`, `>`, `"`, `'`) i dopiero
+potem owija go w `<span>` ze stałym stylem z palety — tekst nigdy nie trafia do atrybutu, bez linków i obrazów. „Kopiuj”
+kopiuje surowy tekst. Test sprawdza, że `<` i `&` ze skryptu są widoczne jako tekst.
+
+### Paski przewijania
+
+`Tide.ScrollBar` (`widgets/lib/ScrollBar.qml`) to jedyny pasek przewijania w oknie Tide (makieta S-9, wariant A).
+
+- **Wygląd:** tor w kolorze tekstu o kryciu `scrollbar.track` (0,04), uchwyt w kolorze tekstu o kryciu `scrollbar.thumb`
+  (0,30), szerokość `scrollbar.width` (10 px), zaokrąglenie do połowy szerokości. Po najechaniu i przy przeciąganiu
+  uchwyt przyjmuje akcent o kryciu `scrollbar.thumbActive` (0,75). Wartości są w `theme/palette/mist.json`, a generator
+  `widgets/stage.py` udostępnia je jako `Tokens.scrollbarTrack`, `scrollbarThumb`, `scrollbarThumbActive` i
+  `scrollbarWidth` (osobny blok na końcu `Tokens.qml`).
+- **Widoczność:** pasek jest widoczny od razu, gdy jest co przewijać (`size < 1`), bez wcześniejszego przewijania i
+  najechania, a ukryty, gdy treść mieści się w widoku. Nie używamy polityk `AsNeeded` ani `AlwaysOff`: o widoczności
+  decyduje sam komponent, więc polityka nie zależy od wysokości treści (brak pętli powiązań).
+- **Użycie:** pionowy i poziomy jak wbudowany pasek, na `Flickable`, `ListView`, `GridView` i `ScrollView`:
+
+  ```qml
+  Flickable {
+      QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+      QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
+  }
+  ```
+
+  Gołego `QQC2.ScrollBar {}`, `ScrollIndicator {}` ani `ScrollView` bez `Tide.ScrollBar` w `apps/` nie dodajemy; pilnuje
+  tego test `apps/tide/tests/test_scrollbar_static.py`.
+- **Miejsce:** pasek leży na krawędzi przewijanego widoku i nakłada się na treść. Gdy ma jej nie zasłaniać, zmniejsz
+  szerokość treści o `Tide.Tokens.scrollbarWidth`.
+- **Wyjątek (K-104):** widok zmian (`apps/common/qml/git/DiffView.qml`, `SyntaxText.qml`, `ModuleHighlighter.qml`)
+  zostaje bez zmian; zgranie jego paska z `Tide.ScrollBar` należy do etapu A2 karty K-128.
+
+### Przyciski
+
+`Tide.Button` (`widgets/lib/Button.qml`, makieta S-9 `.btn`) to przycisk okna Tide: Qt Quick Templates `AbstractButton`
+z rolą Button, fokusem z klawiatury (obwódka 2 px w tealu poza obrysem), spacją, Enterem i Returnem; wyłączony ma
+krycie 0,45 i nie reaguje na mysz, klawiaturę ani akcję czytnika ekranu. Promień `radius.small`, wysokość 32 px,
+`small` — 26 px, tekst 13 px/500 (mały 12 px).
+
+| Wariant (`variant`) | Tło | Tekst | Obrys | Użycie |
+| --- | --- | --- | --- | --- |
+| `primary` | akcent (po najechaniu jaśniejszy o 7 %) | `background.window`, 600 | brak | główna akcja widoku — **najwyżej jeden** w widoku |
+| `normal` (domyślny) | tekst ~0,06 (po najechaniu ~0,11) | `text.primary` | tekst o kryciu `opacity.outline` | zwykłe akcje |
+| `ghost` | brak (po najechaniu tekst ~0,06) | `text.secondary` (po najechaniu `text.primary`) | brak | akcje pomocnicze, pozycje menu |
+| `danger` | róża ~0,14 | róża | róża ~0,35 | akcje niszczące (archiwizacja, usunięcie) |
+
+- `iconOnly` — przycisk-ikona (sam znak, np. „⋯”, węższe marginesy), `kbd` — skrót obok tekstu („Wybierz ↵”,
+  „Nie zmieniaj Esc”, Geist Mono, krycie 0,7), `toolTip` — podpowiedź (`PlainToolTip`) i opis dla czytnika ekranu,
+  `tone` — przycisk tonowany kolorem palety (tło ~0,12, obrys ~0,45, tekst w tym kolorze; powrót w pasku górnym).
+- Tekst każdego wariantu ma kontrast co najmniej 4,5:1 względem swojego tła nałożonego na `background.window`
+  i `background.card` (test `widgets/tests/test_button.py`).
+- `TextButton` i `IconButton` zostają dla widżetów Plasmy.
+- **Jeden zestaw przycisków (K-128, PT-507).** Każdy przycisk okna Tide i okna „Nowe zadanie” to `Tide.Button`; lokalnych
+  kopii (`PillButton.qml` w `apps/board`, `docker`, `models`, `sessions`, `reports`, `worktrees`, `newtask` i
+  `apps/issues/qml/Action.qml`) nie ma. Wyjątek: `PillAction` w `apps/common/qml/git/DiffView.qml` (widok zmian, K-104).
+  Wariant wynika z roli: **najwyżej jeden `primary` w widoku albo dialogu** (akcja, którą użytkownik prawie na pewno
+  wybierze: „Zleć…”, „Zapisz projekt”, „Uruchom agenta”), `danger` dla akcji niszczących (usunięcie kontenera, serwera,
+  worktrees, odrzucenie sprawy, odłączenie dowodu, wyczyszczenie Dockera — z dzisiejszym potwierdzeniem), `ghost` dla
+  pomocniczych („Anuluj” w wąskich formularzach, „Zamknij”, „Odśwież”), `normal` dla reszty; przycisk bez wariantu
+  to `normal`. Wybrany stan (filtr, klasa wykonawcy, tryb widoku) to `tone` w akcencie, nie `primary`. Rozmiar: `small`
+  (26 px) tam, gdzie dawny przycisk miał ≤ 30 px; znak w kwadracie (`RD`, `›_`, ✕) to `iconOnly`. Nazwa obiektu, tekst,
+  podpowiedź, `enabled` i wywołanie zostają jak były. Test statyczny: `apps/tide/tests/test_buttons_static.py`.
+
+### Szuflada i panel karty
+
+`Tide.Sheet` (`widgets/lib/Sheet.qml`, makieta S-9 „Karta z Tablicy”, wariant A) to rama szuflady z prawej. Gospodarz
+rozciąga ją na widok (`anchors.fill: parent`). Rama rysuje, od spodu: przyciemnienie (`background.desktop` ~0,55; klik
+poza szufladą zamyka), szufladę na `background.panel` z linią `opacity.outline` po lewej, w niej nagłówek z ✕
+(`Tide.Button` `ghost`, 56 px), opcjonalny pasek kroków (`steps`, `currentStep`), przewijaną treść z `Tide.ScrollBar`
+i stałą stopkę. Szerokość to `widthFraction` (domyślnie 0,64) **szerokości okna Tide**, nie widoku (okno 1380 px
+z paskiem bocznym daje widokowi 1180 px, a szuflada ma 883 px), nie mniej niż `minSheetWidth` (640 px) i nie więcej niż
+widok.
+
+- Dzieci Sheeta trafiają do przewijanej kolumny (`scrolls: false` daje jej całą wysokość — dla treści z własnym
+  przewijaniem, np. dokumentu), `header` i `footer` przyjmują elementy nagłówka i stopki (`showFooter` ukrywa stopkę).
+- Esc zamyka szufladę (`closeRequested()`), chyba że treść go przejmie: `contentTakesEscape: true` — Sheet nie zamyka
+  i nie przyjmuje zdarzenia, więc dostaje je gospodarz.
+- W etapie A jedynym odbiorcą jest panel karty; scalanie i pozostałe dialogi przechodzą na tę ramę w etapie A2.
+  Test: `widgets/tests/test_sheet.py`.
+
+**Panel karty na Tablicy** (`apps/board/qml/CardPanel.qml`, test `apps/board/tests/test_card_panel.py`) stoi w tej
+ramie i ma dwa tryby (`mode`), przełączane `Segmented` „Czytaj | Edytuj” w nagłówku. Nagłówek: numer (sky, Geist Mono),
+kolumna, projekt z kropką, przełącznik, „Zleć agentowi…” (`Tide.Button`), ⋯ („Rozwiń”, „Archiwizuj” w różu) i ✕.
+
+- **Czytaj** (domyślny po kliknięciu karty): tytuł 21 px, tagi, data utworzenia i link do sprawy, ramka stanu YouTracka,
+  zakładki Opis | Plan | Specyfikacja (jak dotąd; wybrana zostaje dla kolejnych kart), opis przez `Tide.Prose`
+  z rendererem Tablicy (`renderMarkdown`), przebieg karty w `HistoryBlock` (stała ramka 340 px — panel nie rośnie
+  z liczbą zdarzeń), a dla karty z koordynatorem także kroki, decyzje review, pauza i propozycja planu.
+- **Edytuj** (domyślny dla „＋ Karta”): tytuł, projekt, tagi, opis, notatka, kolumna i „Archiwizuj”. Stopka:
+  „Ctrl+Enter zapisuje · Esc wraca do czytania bez zapisu”, „Anuluj” (cichy) i „Zapisz” (główny). Zapis istniejącej
+  karty wraca do czytania, a nowa karta zamyka panel. Wejście w edycję wypełnia formularz bieżącą kartą; Esc, „Anuluj”
+  i powrót do Czytaj odrzucają zmiany bez pytania.
+- **Esc:** w edycji istniejącej karty wraca do czytania (bez wywołania usługi), w czytaniu zamyka panel; szuflada
+  opisu z pełnej karty (`descriptionOnly`) i nowa karta zamykają panel.
+- **YouTrack:** **pola „Zgłoszenie w YouTracku” nie ma już w formularzu**, a formularz nie wysyła klucza `youtrack`
+  (puste `youtrack` kasuje klucz w usłudze). Ramka stanu (`cardYouTrackState`, `cardYouTrackText`, „Otwórz w YouTracku ↗”
+  `cardYouTrackOpen`) i przy konflikcie „Weź z YouTracka” (`cardYouTrackTake`) oraz „Nadpisz z Tide”
+  (`cardYouTrackOverwrite`) są **w trybie Czytaj** — to dziś jedyne miejsce rozstrzygania konfliktu synchronizacji
+  (`youtrackResolveRequested(cardId, "youtrack" | "tide")`). Klucz ustawia widok karty; znacznik na kafelku, sekcja
+  YOUTRACK w Projektach i tagach oraz import zostają.
+- Klik w przyciemnienie zamyka panel (nie otwiera karty pod spodem).
+
+### Pasek górny
+
+`Tide.TopBar` (`widgets/lib/TopBar.qml`, makieta S-9 „Rama i pasek”, wariant B) to stały pasek widoku. Stoi **poza**
+przewijaną treścią: gospodarz kotwiczy `Flickable` pod nim, więc przewijanie go nie przesuwa. Tło `background.window`,
+pod spodem linia tekstu o kryciu `opacity.border`. Wysokość 52 px, z zakładkami 52 + 38 px.
+
+- **Od lewej:** powrót (`backText` — nazwa celu, np. „Tablica”; pusty = bez powrotu) zawsze pierwszy: `Tide.Button`
+  tonowany akcentem, 36 px, tekst „← Tablica”, podpowiedź „Wróć (Esc)”, sygnał `back()`; okruszki (`crumbs`, `text.muted`,
+  „›” o kryciu 0,6); numer (`number`, sky, Geist Mono, 600 — nigdy nie skracany) i tytuł (`title`, `text.primary`, 600,
+  skracany wielokropkiem).
+- **Po prawej:** najwyżej jedna akcja główna (`actionText`, `actionVariant` — domyślnie `normal`, sygnał
+  `actionTriggered()`) i menu ⋯ (`menuItems: [{id, label, danger, enabled, hint, name}]`, sygnał `menuTriggered(id)`,
+  `menuOpen`). Lista menu 300 px na `background.panel`, promień `card`, obrys `opacity.outline`; pozycje to
+  `Tide.Button` `ghost` (niszczące — `danger`), wyrównane do lewej; wyłączona pozycja pokazuje `hint`. Menu zamyka klik
+  pozycji, klik obok i Esc.
+- **Zakładki** (`tabs: [{id, label, enabled, hint}]`, `currentTab`, sygnał `tabTriggered(id)`): tekst `text.muted`,
+  bieżąca `text.primary`/600 z kreską 2 px w akcencie; wyłączona — krycie 0,45 i podpowiedź. Pasek tylko zgłasza
+  wybór: bieżącą zakładkę ustawia gospodarz, a zakładka może otworzyć inny widok zamiast treści.
+- **Klawisze:** Esc przy otwartym menu zamyka menu; inaczej przechodzi do gospodarza, który wraca, gdy nie ma
+  otwartego dialogu.
+
+### Widok karty
+
+Pełna karta (`apps/common/qml/card/CardFullView.qml`, wspólna dla Tablicy i Sesji) ma `Tide.TopBar` z powrotem do
+gospodarza („← Tablica” z Tablicy, „← Sesje” z Sesji — `backText` ustawiają `BoardPage` i `SessionsPage`), projektem
+w okruszkach, numerem i tytułem karty. Akcja główna paska to „Porozmawiaj z opiekunem”, gdy opiekun ma problem karty.
+Menu ⋯: „Zmiany gałęzi” (gdy karta ma gałąź), „Edytuj opis”, „Raport i dowody” (karta ze sprawy) i wszystkie
+ustawienia karty z tej samej listy co sekcja „Ustawienia karty” — z tymi samymi potwierdzeniami (zakończenie,
+archiwizacja, zmiana gałęzi) i z polem, które dostaje fokus. Esc zamyka po kolei: potwierdzenie, menu, kartę.
+
+Zakładki: **Przegląd** (cała strona karty: tytuł, gałąź, fazy, start, „Twój ruch”, plan z „Teraz w tle”, uwagi,
+historia, ustawienia), **Plan** (sama tabela planu na całą wysokość widoku) i **Historia** (sam blok historii na całą
+wysokość), **Opis** (opis karty w `Tide.Prose` z `markdown: true`; Tablica przekazuje
+`markdownRenderer` = `backend.renderMarkdown`, Sesje nie mają renderera, więc działa tryb Markdown `prose.js`) i
+**Zmiany** (otwiera ten sam widok zmian gałęzi co „Zmiany gałęzi”, `DiffView`; bez gałęzi karty wyłączona
+z podpowiedzią). W widoku jest najwyżej jeden `primary`: „Wybierz ↵” w „Twój ruch”, a przy otwartym pytaniu
+o potwierdzenie — przycisk pytania (archiwizacja jest `danger`).
+
+#### Plan jako tabela (`PlanTable.qml`)
+
+Makieta S-9 „Plan karty”, wariant C. Jeden ticket w wierszu; kolumny: **Fala**, **Ticket** (sky, mono, stała kolumna ze
+skracaniem — numer nie nachodzi na sąsiednie elementy), **Tytuł** (pełny, zawijany; pod nim uwagi z wiersza planu
+`flow.plan.rows[].note` i pytanie ticketu czekającego z `flow.decisions[]` w `text.muted`), **Stan** (plakietka w kolorze
+stanu, etykieta z usługi), **Wykonawca → recenzent** i **⋯** (`Tide.Button` ikona z ustawieniami ticketu, tylko gdy
+`ticketSettingsEnabled`, czyli na Tablicy; otwiera `TicketSettingsDialog`). Ticket spoza karty jest przygaszony.
+Dane są z tych samych pól co dawne kafelki fal (`derived.tickets[]`, `flow.plan.waves`).
+
+- **Bieżąca fala przypięta.** Czysta funkcja `currentWave` (`ticket.js`) wybiera najniższą falę z ticketem w stanie
+  innym niż gotowe/odrzucone. Jej wiersze leżą w bloku pod nagłówkiem tabeli, z plakietką „teraz” i tłem brzoskwini ~0,07,
+  nie powtarzają się niżej, a blok ma najwyżej 40% wysokości tabeli (dłuższy przewija się sam; gdy reszta tabeli i tak
+  nie wypełniłaby miejsca, dostaje je całe). Gdy wszystkie fale są zakończone, nic nie jest przypięte, a tabela zaczyna
+  od pierwszej fali.
+- **Rozmiar.** Minimalna szerokość 720 px; węższy widok przewija tabelę w poziomie (`Tide.ScrollBar`). W Przeglądzie
+  tabela ma najwyżej 420 px i własne przewijanie pionowe, w zakładce Plan zajmuje całą wysokość.
+- Kafelki fal znikły z planu; `TicketTile` zostaje przy karcie „Od razu” (jeden ticket bez fal).
+
+#### Historia w stałym bloku (`HistoryBlock.qml`)
+
+Makieta S-9 „Historia karty”, wariant A. `ListView` w ramce o stałej wysokości 340 px (w zakładce Historia — cała
+wysokość) z `Tide.ScrollBar`: strona karty nie rośnie z liczbą zdarzeń. Najnowsze są u góry, licznik zdarzeń stoi
+w nagłówku sekcji, a „Pokaż starsze” rozwija wcześniejsze zlecenia wewnątrz bloku (przygaszone, bez „Wznów rozmowę”).
+Wiersz: czas (`history.js`), rodzaj, zdanie w `Tide.Prose`, znacznik „Ty” albo „Opiekun” i — tylko tam, gdzie usługa
+daje `canResume` — „Wznów rozmowę”. Ten sam komponent pokaże historię w panelu karty na Tablicy.
+
+### Karta na Tablicy
+
+Kafelek karty (`apps/board/qml/BoardCard.qml`, makieta S-9 `.bcard`, obszar „Karta z Tablicy”). Tło `background.card`,
+promień `radius.tile`, wnętrze 10/11 px, ramka tekstu o kryciu `opacity.border` (po najechaniu `opacity.outline` i tło
+o 6 % jaśniejsze), 6 px między liniami. Od góry:
+
+1. **Wiersz meta:** numer w Geist Mono 11 px/600 w sky, projekt 11 px `text.muted` (skracany wielokropkiem), pastylki
+   dodatkowych projektów („+ mobileapp”, tekst ~0,06) i znacznik YouTracka „YT LOG-131” z znaczkiem synchronizacji:
+   „✓” mięta, „⟳” sky (w toku) albo `text.muted` (YouTrack niedostępny), „⚠” masło (odmowa) albo róża (konflikt,
+   wtedy tło znacznika róża ~0,14); podpowiedź mówi stan słowami. Wiersz zawija się do drugiej linii w wąskiej kolumnie
+   zamiast ściskać projekt.
+2. **Tytuł** 13 px/600, do 4 linii. **Tagi** jako pastylki 11 px z kropką 6 px w kolorze tagu.
+3. **Znacznik fali** (`flow.waveLabel`, 11 px) i **pasek ticketów**: odcinek na ticket wg `ticketPhase` — gotowe mięta,
+   review lawenda, pracuje sky (pulsuje ze wspólnej fazy strony, bez timera na kafelek), kolejka sky ~0,18 z obrysem,
+   ty (czeka na Ciebie) brzoskwinia, todo i odrzucone `text.muted` ~0,3; przerwa między falami; podpowiedź
+   „ID · faza: dlaczego”.
+4. **Postęp koordynatora:** pasek 4 px (teal, przy czekającej brzoskwinia) i „● Claude · koordynator · 3 z 10”.
+5. **Notatka** 12 px w kolorze `noteTint`: „✓ …” (w tym „✓ specyfikacja gotowa”) mięta, czekająca brzoskwinia,
+   w kolejce wyciszona, reszta `text.secondary`; **gałąź** w Do sprawdzenia w lawendzie (Geist Mono 11 px, tło
+   lawendy ~0,10).
+6. **Akcje** w `Tide.Button` 26 px (`small`), nazwy dla czytnika ekranu bez zmian: „Uruchom agenta…” i „Uruchom
+   ponownie…” (oba tonowane akcentem, nigdy `primary` — akcja stoi na wielu kafelkach naraz), „Przejdź do agenta” (tonowany brzoskwinią, w Czeka na mnie),
+   „Zmiany gałęzi” (`normal`) i „Gotowe” (tonowany miętą, podpowiedź i nazwa „Przenieś kartę do Gotowych”) w Do
+   sprawdzenia — obok siebie, a gdy brakuje miejsca jeden pod drugim. Linki „Przejdź do agenta” i „Otwórz w Sesjach →”
+   12 px w akcencie zawijają się tak samo.
+
+Stany: **czekająca** — tło brzoskwini ~0,08 i ramka ~0,32; **zaznaczona** i z fokusem — obwódka akcentu ~0,6
+z poświatą 3 px; **najechana** — jak wyżej; **przeciągana** — krycie 0,35; **duch** przeciągania nie ma przycisków
+i linków. **Gotowe** — wariant zwarty: „K-10 · projekt” i tytuł 12 px `text.secondary` do 3 linii, bez ramki.
+
+Nic z tego, co kafelek pokazywał, nie znika przy zmianie wyglądu: test inwentarza
+(`apps/board/tests/test_card_inventory.py`, wzorzec `tests/data/card_inventory.json`) zapisuje dla każdej karty
+z danych `boardfix` rozszerzonych o karty z całej listy (nazwa obiektu, tekst, kolor znaczenia, podpowiedź,
+`Accessible.name`, `Accessible.description` i rola — także puste) i porównuje z wzorcem sprzed odświeżenia. Ten sam test
+sprawdza kontrast tekstu na kafelku (co najmniej 4,5:1, także na przyciskach tonowanych i tle czekającej karty).
 
 ## Ikony
 

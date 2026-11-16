@@ -27,8 +27,8 @@ QQC2.Popup {
         Label { Layout.fillWidth: true; text: popup.message }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-            Action { text: "Anuluj"; onClicked: popup.close() }
-            Action { text: "Potwierdź"; primary: true; onClicked: { popup.close(); popup.accepted() } }
+            Tide.Button { text: "Anuluj"; onClicked: popup.close() }
+            Tide.Button { text: "Potwierdź"; variant: "primary"; onClicked: { popup.close(); popup.accepted() } }
         }
     }
 }

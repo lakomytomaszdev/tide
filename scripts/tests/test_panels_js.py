@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from scripts import panels
+from scripts import activity_panels, panels
 from scripts.tests import fake_plasmashell as fake
 
 PALETTE = json.loads((Path(__file__).resolve().parents[2] / "theme/palette/mist.json").read_text())
@@ -405,3 +405,459 @@ class SidebarScriptTest(unittest.TestCase):
         out, state = fake.run(state, panels.script("uninstall", params))
         self.assertEqual(result(out)["removed"], [top["side"]])
         self.assertEqual(len(self.sidebars(state)), 1)
+
+
+ORPHANS = (103, 118)
+PANELS_DIR = Path(__file__).resolve().parents[1] / "panels"
+# Skrypty instalacji, porządkowania i odinstalowania zwracają listę `orphans`: panele bez widoku, które
+# napotkały (PT-496, PT-498).
+INSTALL_SCRIPTS = ("sidebar.js", "install.js", "dock.js")
+ORDER_UNINSTALL_SCRIPTS = ("order.js", "uninstall.js", "dock-uninstall.js", "sidebar-uninstall.js")
+# Skrypty Stream zwracające `orphans` (PT-497); stream-console.js tylko liczy miejsce paneli z widokiem.
+STREAM_SCRIPTS = ("stream.js", "stream-leave.js")
+
+
+def directory_scripts(directory=PANELS_DIR):
+    """Skrypty paneli z katalogu (bez common.js): lista nie jest zapisana w kodzie testu i nie ma wyjątków —
+    każdy skrypt, także nowy, przechodzi test zbiorczy."""
+    return sorted(p.name for p in directory.glob("*.js") if p.name != "common.js")
+
+
+def script_params(name):
+    """Parametry skryptu tak, jak składa je kod instalatora (reszta skryptów czyta tylko ekrany)."""
+    if name == "install.js":
+        return panels.install_params(PALETTE, {})
+    if name == "sidebar.js":
+        return {**panels.screens(), "sidebarPanel": None, "width": PALETTE["size"]["sidebar"],
+                "widgets": SidebarScriptTest.WIDGETS, "header": SidebarScriptTest.HEADER, "shortcut": "Meta+S",
+                "floatingGap": 8, "spacer": SidebarScriptTest.SPACER}
+    if name == "dock.js":
+        from scripts import dock
+        return {**panels.screens(), "left": DockScriptTest.LEFT, "widgets": DockScriptTest.WIDGETS,
+                "retired": dock.REMOVABLE, "dockHeight": PALETTE["size"]["dock"]}
+    if name == "order.js":
+        return {**panels.screens(), "panels": [{"id": pid, "order": [1], "height": 36} for pid in (73, 103, 118)]}
+    if name == "uninstall.js":
+        # Główny pasek bez widoku (103) z zrzutem, który ma go jako `orphan` bez kluczy widoku.
+        previous = {"panels": [{"id": 103, "screen": 1, "location": "top", "orphan": True, "sideBar": True,
+                                "config": {}, "widgets": []}]}
+        return {**panels.screens(), "previous": previous, "mainPanel": 103, "mainCreated": False,
+                "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+    if name == "dock-uninstall.js":
+        return {**panels.screens(), "dock": 103, "created": False, "previous": {
+            "lengthMode": "fill", "alignment": "center", "height": 64, "floating": True}, "widgets": ["org.tide.work"]}
+    if name == "sidebar-uninstall.js":
+        return {**panels.screens(), "header": SidebarScriptTest.HEADER}
+    if name == "stream.js":
+        return activity_panels.stream_params({"left": ["org.tide.stream"], "right": ["org.tide.stream.help"],
+                                              "console": [], "retired": []}, 64, console=False)
+    if name == "stream-leave.js":
+        return activity_panels.leave_params({"hiding": "dodgewindows", "height": 420, "minimumLength": 1042,
+                                             "maximumLength": 1042})
+    if name == "stream-console.js":
+        return activity_panels.stream_params({"left": [], "right": [], "console": [activity_panels.CONSOLE["desk"]],
+                                              "retired": []}, 64, console=True)
+    return panels.screens()
+
+
+def run_read(name, state):
+    """Skrypt na atrapie tak, jak go woła kod: stream-read.js bez common.js (jak w silniku), reszta z common.js."""
+    from scripts import activity_panels
+    if name == "stream-read.js":
+        js = activity_panels.read_script(True)
+    else:
+        js = panels.script(name.removesuffix(".js"), script_params(name))
+    return fake.run(state, js)
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class FakePlasmashellTest(unittest.TestCase):
+    """Atrapa musi naprawdę rzucać wyjątek dla panelu bez widoku, a nie tylko go logować."""
+
+    PROBE = """
+        var tideProbe = {};
+        var tidePanel = panelById(103);
+        ["hiding", "height", "minimumLength", "maximumLength", "alignment", "lengthMode", "floating", "offset",
+         "opacity"].forEach(function (name) {
+            try { tidePanel[name]; tideProbe["get " + name] = "ok"; } catch (e) { tideProbe["get " + name] = "throws"; }
+            try { tidePanel[name] = 1; tideProbe["set " + name] = "ok"; } catch (e) { tideProbe["set " + name] = "throws"; }
+        });
+        try { screenGeometry(1); tideProbe.geometry = "ok"; } catch (e) { tideProbe.geometry = "throws"; }
+        tideProbe.screenCount = screenCount;
+        tideProbe.location = tidePanel.location;
+        print("TIDE_JSON:" + JSON.stringify(tideProbe));
+    """
+
+    def test_reading_hiding_of_a_panel_without_view_throws(self):
+        with self.assertRaisesRegex(RuntimeError, r"panel bez widoku:\s*hiding panelu 103"):
+            fake.run(fake.desktop_like_15_11(), "var x = panelById(103).hiding;")
+
+    def test_screen_geometry_of_a_missing_screen_throws(self):
+        with self.assertRaisesRegex(RuntimeError, "screenGeometry"):
+            fake.run(fake.desktop_like_15_11(), "screenGeometry(1);")
+
+    def test_all_nine_view_properties_throw_for_getter_and_setter(self):
+        out, state = fake.run(fake.desktop_like_15_11(), self.PROBE)
+        probe = result(out)
+        self.assertEqual(probe.pop("screenCount"), 1)
+        self.assertEqual(probe.pop("location"), "top", "położenie jest kontenera, nie widoku")
+        self.assertEqual(probe.pop("geometry"), "throws")
+        self.assertEqual(len(probe), 18)
+        self.assertEqual(set(probe.values()), {"throws"})
+        self.assertEqual(len(find(state, 103)["log"]), 18, "każda próba zostawia ślad, a nic się nie zapisało")
+
+    def test_panels_with_a_view_still_work_and_the_state_helper_matches_15_11(self):
+        state = fake.desktop_like_15_11()
+        self.assertEqual(state["screens"], ["HDMI-A-1"])
+        self.assertEqual({p["id"]: p["screen"] for p in state["panels"]}, {73: 0, 90: 0, 103: 1, 118: 1})
+        out, _ = fake.run(state, 'print("TIDE_JSON:" + JSON.stringify([panelById(73).hiding, screenGeometry(0).width]));')
+        self.assertEqual(result(out), ["none", 1920])
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class PanelsWithoutViewSweepTest(unittest.TestCase):
+    """Test zbiorczy: każdy skrypt paneli z katalogu (bez wyjątków) na stanie „jak 15.11”."""
+
+    def test_scripts_come_from_the_directory_and_include_the_read_scripts(self):
+        self.assertTrue({"stream-read.js", "dump.js", *INSTALL_SCRIPTS, *ORDER_UNINSTALL_SCRIPTS}
+                        <= set(directory_scripts()))
+
+    def test_every_install_script_reports_the_orphans_it_met(self):
+        for name in INSTALL_SCRIPTS:
+            with self.subTest(script=name):
+                out, _ = run_read(name, fake.desktop_like_15_11())
+                self.assertEqual(result(out)["orphans"], list(ORPHANS))
+
+    def test_order_and_uninstall_scripts_report_the_orphans_they_met(self):
+        for name in ORDER_UNINSTALL_SCRIPTS:
+            with self.subTest(script=name):
+                out, _ = run_read(name, fake.desktop_like_15_11())
+                self.assertEqual(result(out)["orphans"], list(ORPHANS))
+
+    def test_order_and_uninstall_scripts_report_an_empty_orphans_list_when_every_panel_has_a_view(self):
+        for name in ORDER_UNINSTALL_SCRIPTS:
+            with self.subTest(script=name):
+                out, _ = run_read(name, fake.desktop_with_tide_panels())
+                self.assertEqual(result(out)["orphans"], [])
+
+    def test_install_scripts_report_an_empty_orphans_list_when_every_panel_has_a_view(self):
+        for name in INSTALL_SCRIPTS:
+            with self.subTest(script=name):
+                out, _ = run_read(name, fake.desktop_with_tide_panels())
+                self.assertEqual(result(out)["orphans"], [])
+
+    def test_every_script_finishes_without_touching_view_properties_of_orphans(self):
+        for name in directory_scripts():
+            with self.subTest(script=name):
+                out, state = run_read(name, fake.desktop_like_15_11())
+                self.assertIn(MARKER, out)
+                for pid in ORPHANS:
+                    self.assertEqual(find(state, pid)["log"], [], f"{name}: panel {pid}")
+
+    def test_the_sweep_has_no_exception_list_and_covers_the_stream_scripts(self):
+        self.assertTrue({"stream.js", "stream-leave.js", "stream-console.js"} <= set(directory_scripts()))
+        self.assertNotIn("UNGUARDED", globals())
+
+    def test_a_new_script_enters_the_sweep(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            for name in directory_scripts() + ["nowy.js"]:
+                (directory / name).write_text("")
+            self.assertEqual(directory_scripts(directory), sorted(directory_scripts() + ["nowy.js"]))
+
+    def test_stream_scripts_report_the_orphans_they_met(self):
+        for name in STREAM_SCRIPTS:
+            with self.subTest(script=name):
+                out, _ = run_read(name, fake.desktop_like_15_11())
+                self.assertEqual(result(out)["orphans"], list(ORPHANS))
+
+    def test_stream_read_marks_orphans_and_keeps_view_keys_of_the_rest(self):
+        out, _ = run_read("stream-read.js", fake.desktop_like_15_11())
+        by_id = {p["id"]: p for p in result(out)["panels"]}
+        for pid in ORPHANS:
+            self.assertEqual(set(by_id[pid]), {"id", "screen", "location", "role", "widgets", "orphan"})
+            self.assertTrue(by_id[pid]["orphan"])
+        self.assertEqual(set(by_id[73]), {"id", "screen", "location", "role", "widgets", "hiding", "height",
+                                          "minimumLength", "maximumLength"})
+
+    def test_dump_marks_orphans_and_keeps_view_keys_of_the_rest(self):
+        out, _ = run_read("dump.js", fake.desktop_like_15_11())
+        by_id = {p["id"]: p for p in result(out)["panels"]}
+        for pid in ORPHANS:
+            self.assertEqual(set(by_id[pid]), {"id", "screen", "location", "orphan", "sideBar", "config", "widgets"})
+            self.assertTrue(by_id[pid]["orphan"])
+            self.assertTrue(by_id[pid]["widgets"])
+        self.assertEqual(set(by_id[73]), {"id", "screen", "location", "height", "floating", "alignment", "lengthMode",
+                                          "hiding", "opacity", "offset", "minimumLength", "maximumLength",
+                                          "sideBar", "config", "widgets"})
+
+    def test_panels_with_a_view_read_the_same_on_two_screens_as_before(self):
+        for name in ("stream-read.js", "dump.js"):
+            out, _ = run_read(name, fake.desktop_with_tide_panels())
+            by_id = {p["id"]: p for p in result(out)["panels"]}
+            self.assertEqual(by_id[118]["hiding"], "dodgewindows")
+            self.assertEqual(by_id[118]["maximumLength"], 1042)
+            self.assertTrue(all("orphan" not in p for p in by_id.values()))
+
+
+def two_screens_with_orphan(panel_id):
+    """Dwa ekrany jak zawsze, ale panel `panel_id` pamięta ekran 2 (>= screenCount), czyli nie ma widoku."""
+    state = fake.desktop_with_tide_panels()
+    find(state, panel_id)["screen"] = 2
+    return state
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class InstallScriptsOrphanTest(unittest.TestCase):
+    """PT-496: skrypty instalacji nie zakładają duplikatu panelu bez widoku i nie liczą go do miejsca."""
+
+    def run_script(self, name, state):
+        out, state = fake.run(state, panels.script(name.removesuffix(".js"), script_params(name)))
+        return result(out), state
+
+    def roles(self, state, role):
+        return [p for p in live(state) if p["config"].get("/Tide", {}).get("role") == role]
+
+    def test_sidebar_without_view_is_reported_and_no_new_sidebar_is_created(self):
+        state = two_screens_with_orphan(118)
+        before = len(live(state))
+        res, state = self.run_script("sidebar.js", state)
+        self.assertEqual(res["orphans"], [118])
+        self.assertIsNone(res["sidebar"])
+        self.assertFalse(res["created"])
+        self.assertEqual(len(self.roles(state, "sidebar")), 1)
+        self.assertEqual(len(live(state)), before)
+        self.assertEqual(find(state, 118)["log"], [])
+
+    def test_sidebar_without_view_does_not_hide_a_sidebar_with_view(self):
+        state = two_screens_with_orphan(118)
+        live_sidebar = fake.panel(130, 1, "left", 420, [])
+        live_sidebar["config"]["/Tide"] = {"role": "sidebar"}
+        state["panels"].append(live_sidebar)
+        res, state = self.run_script("sidebar.js", state)
+        self.assertEqual((res["sidebar"], res["created"], res["orphans"]), (130, False, [118]))
+        self.assertEqual(find(state, 118)["log"], [])
+
+    def test_slim_bar_without_view_is_reported_and_no_second_slim_bar_is_created(self):
+        state = two_screens_with_orphan(103)
+        before = len(live(state))
+        res, state = self.run_script("install.js", state)
+        self.assertEqual(res["orphans"], [103])
+        self.assertIsNone(res["side"])
+        self.assertFalse(res["sideCreated"])
+        self.assertEqual(len(self.roles(state, "side-bar")), 1)
+        self.assertEqual(len(live(state)), before)
+        self.assertEqual(find(state, 103)["log"], [])
+        self.assertEqual(res["main"], 73)  # główny pasek dalej się instaluje
+
+    def test_sidebar_geometry_ignores_an_unrelated_panel_without_view_at_the_same_location(self):
+        _, plain = self.run_script("sidebar.js", fake.desktop_with_tide_panels())
+        state = fake.desktop_with_tide_panels()
+        state["panels"].append(fake.panel(140, 2, "top", 90, []))
+        res, state = self.run_script("sidebar.js", state)
+        self.assertEqual(res["orphans"], [140])
+        keys = ("screen", "location", "offset", "height", "minimumLength", "maximumLength")
+        self.assertEqual({k: find(state, 118)[k] for k in keys}, {k: find(plain, 118)[k] for k in keys})
+        self.assertEqual(find(state, 140)["log"], [])
+
+    def test_dock_ignores_a_bottom_panel_without_view(self):
+        _, plain = self.run_script("dock.js", fake.desktop_with_tide_panels())
+        state = fake.desktop_with_tide_panels()
+        state["panels"].append(fake.panel(141, 2, "bottom", 90, []))
+        res, state = self.run_script("dock.js", state)
+        self.assertEqual((res["dock"], res["created"], res["orphans"]), (90, False, [141]))
+        keys = ("screen", "location", "height", "lengthMode", "floating")
+        self.assertEqual({k: find(state, 90)[k] for k in keys}, {k: find(plain, 90)[k] for k in keys})
+        self.assertEqual(find(state, 141)["log"], [])
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class OrderAndUninstallOrphanTest(unittest.TestCase):
+    """PT-498: porządkowanie i odinstalowanie pomijają panele bez widoku, a usuwanie paneli Tide działa dalej."""
+
+    def run_script(self, name, state, params):
+        out, state = fake.run(state, panels.script(name, params))
+        return result(out), state
+
+    def test_order_skips_the_height_of_a_panel_without_view_and_still_orders_the_rest(self):
+        res, state = self.run_script("order", fake.desktop_like_15_11(), {**panels.screens(), "panels": [
+            {"id": 103, "order": [104, 106], "height": 30}, {"id": 73, "order": [79, 74], "height": 40}]})
+        self.assertEqual([p["id"] for p in res["panels"]], [73])
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertEqual(find(state, 103)["log"], [])
+        self.assertEqual(find(state, 73)["height"], 40)
+        self.assertEqual(types(find(state, 73))[:2], ["systemtray", "kickoff"])
+
+    def test_uninstall_removes_tide_panels_without_view_and_restores_the_main_bar_with_view(self):
+        out, state = fake.run(fake.desktop_like_15_11(), panels.script("dump", panels.screens()))
+        previous = result(out)
+        find(state, 73)["height"] = 50
+        params = {**panels.screens(), "previous": previous, "mainPanel": 73, "mainCreated": False,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        res, state = self.run_script("uninstall", state, params)
+        self.assertEqual(res["removed"], [103])
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertTrue(find(state, 103)["removed"])
+        self.assertEqual(find(state, 103)["log"], [])
+        self.assertEqual(find(state, 118)["log"], [])
+        self.assertEqual(find(state, 73)["height"], 34, "panel z widokiem wraca do zrzutu")
+        self.assertEqual(res["main"], 73)
+
+    def test_uninstall_accepts_a_snapshot_with_an_orphan_without_view_keys(self):
+        out, state = fake.run(fake.desktop_like_15_11(), panels.script("dump", panels.screens()))
+        previous = result(out)
+        orphan = next(p for p in previous["panels"] if p["id"] == 118)
+        self.assertTrue(orphan["orphan"])
+        for key in ("height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
+                    "minimumLength", "maximumLength"):
+            self.assertNotIn(key, orphan)
+        params = {**panels.screens(), "previous": previous, "mainPanel": 118, "mainCreated": False,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        res, state = self.run_script("uninstall", state, params)
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertIsNone(res["main"])
+        self.assertEqual(res["skipped"], 118, "pasek bez widoku nie jest przywracany — instalator zachowa zrzut")
+        self.assertEqual(find(state, 103)["log"], [])
+
+    def test_uninstall_does_not_write_undefined_view_keys_from_an_orphan_snapshot_entry(self):
+        """PT-498 (review M2): zrzut zrobiony bez widoku, odinstalowanie z widokiem paska 73."""
+        out, state = fake.run(fake.desktop_like_15_11(), panels.script("dump", panels.screens()))
+        previous = result(out)
+        entry = next(p for p in previous["panels"] if p["id"] == 73)
+        for key in ("height", "floating", "alignment", "lengthMode", "hiding", "opacity", "offset",
+                    "minimumLength", "maximumLength"):
+            entry.pop(key, None)
+        entry["orphan"] = True
+        find(state, 73)["height"] = 50
+        before = find(state, 73).get("floating")
+        params = {**panels.screens(), "previous": previous, "mainPanel": 73, "mainCreated": False,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        res, state = self.run_script("uninstall", state, params)
+        self.assertEqual(res["main"], 73)
+        self.assertEqual(find(state, 73)["height"], 50, "height nie jest nadpisane wartością undefined")
+        self.assertEqual(find(state, 73).get("floating"), before)
+        self.assertNotIn("height", [entry[0] if isinstance(entry, list) else entry
+                                    for entry in find(state, 73)["log"]])
+
+    def test_dock_uninstall_reports_skipped_for_a_dock_without_view(self):
+        state = fake.desktop_like_15_11()
+        params = {**panels.screens(), "dock": 103, "created": False, "previous": {
+            "lengthMode": 1, "alignment": 1, "height": 40, "floating": 0}, "widgets": []}
+        res, state = self.run_script("dock-uninstall", state, params)
+        self.assertTrue(res["skipped"])
+        self.assertEqual(find(state, 103)["log"], [])
+
+    def test_uninstall_removes_a_created_main_panel_even_without_view(self):
+        params = {**panels.screens(), "previous": None, "mainPanel": 118, "mainCreated": True,
+                  "changedKeys": panels.CHANGED_KEYS, "defaults": panels.DEFAULTS}
+        res, state = self.run_script("uninstall", fake.desktop_like_15_11(), params)
+        self.assertEqual(res["removed"], [103, 118])  # pasek lewego monitora i utworzony „główny” bez widoku
+        self.assertTrue(find(state, 118)["removed"])
+        self.assertEqual(find(state, 118)["log"], [])
+
+    def test_dock_uninstall_removes_the_created_dock_without_view(self):
+        res, state = self.run_script("dock-uninstall", fake.desktop_like_15_11(), {
+            **panels.screens(), "dock": 103, "created": True, "previous": None, "widgets": []})
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertTrue(find(state, 103)["removed"])
+        self.assertEqual(find(state, 103)["log"], [])
+
+    def test_dock_uninstall_does_not_restore_view_properties_of_a_dock_without_view(self):
+        res, state = self.run_script("dock-uninstall", fake.desktop_like_15_11(), {
+            **panels.screens(), "dock": 103, "created": False, "widgets": ["org.kde.plasma.appmenu"],
+            "previous": {"lengthMode": "fill", "alignment": "center", "height": 64, "floating": True}})
+        self.assertEqual(res["removed"], ["org.kde.plasma.appmenu"], "widżety Tide znikają dalej")
+        self.assertEqual(find(state, 103)["log"], [])
+
+    def test_dock_uninstall_restores_a_dock_with_view_as_before(self):
+        res, state = self.run_script("dock-uninstall", fake.desktop_like_15_11(), {
+            **panels.screens(), "dock": 90, "created": False, "widgets": ["org.tide.system"],
+            "previous": {"lengthMode": "fit", "alignment": "left", "height": 48, "floating": False}})
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertEqual({k: find(state, 90)[k] for k in ("lengthMode", "alignment", "height", "floating")},
+                         {"lengthMode": "fit", "alignment": "left", "height": 48, "floating": False})
+
+    def test_sidebar_uninstall_removes_a_sidebar_without_view_and_reports_it(self):
+        res, state = self.run_script("sidebar-uninstall", fake.desktop_like_15_11(),
+                                     {**panels.screens(), "header": SidebarScriptTest.HEADER})
+        self.assertEqual(res["removed"], [118])
+        self.assertEqual(res["orphans"], [103, 118])
+        self.assertTrue(find(state, 118)["removed"])
+        self.assertFalse(find(state, 103)["removed"], "pasek smukły to nie pasek boczny")
+        self.assertEqual(find(state, 118)["log"], [])
+
+
+@unittest.skipUnless(fake.available(), "Brak qml6 do uruchomienia skryptów")
+class StreamScriptsOrphanTest(unittest.TestCase):
+    """PT-497: skrypty Stream nie czytają ani nie zapisują widoku paska bocznego i docka bez widoku."""
+
+    def run_script(self, name, state):
+        out, state = fake.run(state, panels.script(name.removesuffix(".js"), script_params(name)))
+        return result(out), state
+
+    def test_stream_leaves_a_sidebar_without_view_alone_and_reports_it(self):
+        state = two_screens_with_orphan(118)
+        res, state = self.run_script("stream.js", state)
+        self.assertEqual(res["orphans"], [118])
+        self.assertIsNone(res["sidebar"])
+        self.assertEqual(find(state, 118)["log"], [])
+        self.assertIsNotNone(res["dock"], "dock Stream powstaje jak dotąd")
+        self.assertEqual(find(state, 73)["log"], [])
+        self.assertEqual(find(state, 90)["log"], [])
+
+    def test_stream_still_narrows_a_sidebar_with_view(self):
+        res, state = self.run_script("stream.js", fake.desktop_with_tide_panels())
+        self.assertEqual(res["orphans"], [])
+        self.assertEqual(res["sidebar"], {"id": 118, "previous": "dodgewindows"})
+        self.assertEqual((find(state, 118)["hiding"], find(state, 118)["maximumLength"]), ("autohide", 1))
+
+    def test_stream_does_not_create_a_second_dock_when_the_stream_dock_has_no_view(self):
+        _, state = self.run_script("stream.js", fake.desktop_with_tide_panels())
+        dock = next(p for p in live(state) if p["config"].get("/Tide", {}).get("role") == "stream-dock")
+        dock["screen"] = 2
+        dock["log"] = []
+        before = len(live(state))
+        res, state = self.run_script("stream.js", state)
+        self.assertEqual(len(live(state)), before)
+        self.assertIsNone(res["dock"])
+        self.assertIn(dock["id"], res["orphans"])
+        self.assertEqual(find(state, dock["id"])["log"], [])
+
+    def test_leave_removes_the_stream_dock_without_view_and_does_not_restore_the_sidebar_without_view(self):
+        _, state = self.run_script("stream.js", fake.desktop_with_tide_panels())
+        dock = next(p for p in live(state) if p["config"].get("/Tide", {}).get("role") == "stream-dock")
+        find(state, 118)["screen"] = 2
+        find(state, 118)["log"] = []
+        dock["screen"] = 2
+        res, state = self.run_script("stream-leave.js", state)
+        self.assertEqual(res["removed"], [dock["id"]])
+        self.assertNotIn(dock["id"], [p["id"] for p in live(state)])
+        self.assertIsNone(res["sidebar"])
+        self.assertEqual(res["orphans"], [118])
+        self.assertEqual(find(state, 118)["log"], [])
+
+    def test_leave_still_restores_a_sidebar_with_view_and_reports_no_orphans(self):
+        res, state = self.run_script("stream-leave.js", fake.desktop_with_tide_panels())
+        self.assertEqual(res["orphans"], [])
+        self.assertEqual(res["sidebar"]["id"], 118)
+        self.assertEqual((find(state, 118)["hiding"], find(state, 118)["maximumLength"]), ("dodgewindows", 1042))
+
+    def console(self, extra):
+        state = fake.desktop_with_tide_panels()
+        state["panels"].extend(extra)
+        res, state = self.run_script("stream-console.js", state)
+        return res["console"], state
+
+    def test_console_ignores_a_top_panel_without_view_when_counting_reserved_space(self):
+        plain, _ = self.console([])
+        with_orphan, state = self.console([fake.panel(140, 2, "top", 200, [])])
+        self.assertTrue(plain)
+        self.assertEqual(with_orphan, plain)
+        self.assertEqual(find(state, 140)["log"], [])
+
+    def test_console_still_counts_a_top_panel_with_view(self):
+        plain, _ = self.console([])
+        with_top, _ = self.console([fake.panel(141, 1, "top", 100, [])])
+        self.assertEqual(with_top[0]["geometry"][3], plain[0]["geometry"][3] - (100 + 8 - 30 - 8),
+                         "wyższy panel górny z widokiem zastępuje smukły pasek 30 + 8")

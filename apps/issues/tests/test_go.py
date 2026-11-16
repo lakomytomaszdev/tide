@@ -29,7 +29,15 @@ def transport(method, args, callback, *unused):
     elif method in ('AcceptIssue', 'RetryIssueStart'): result = decision_reply
     elif method == 'Show': result = dict(ok=True, issue=accepted_issue, start=current_start)
     else: result = dict(ok=True)
-    QTimer.singleShot(1, lambda: callback(result, b''))
+    # Odpowiedź rejestrowana jak w live_script: settle() czeka na nią zamiast stałej pauzy.
+    token = object()
+    pending_callbacks.add(token)
+    def done():
+        try:
+            callback(result, b'')
+        finally:
+            pending_callbacks.discard(token)
+    QTimer.singleShot(1, done)
 backend._call = transport
 '''
 
@@ -43,7 +51,7 @@ class GoViewTest(unittest.TestCase):
         out = self.run_scenario(SCENARIO + '''
 from PyQt6.QtCore import Qt
 obj('issueGo').clicked.emit()
-wait(80)
+settle()
 out['opened'] = obj('issueLaunchDialog').property('visible')
 out['mode'] = obj('issueLaunchDialog').property('mode')
 out['readOnly'] = obj('launchTask').property('readOnly')
@@ -52,17 +60,17 @@ wait()
 out['cancelled'] = not obj('issueLaunchDialog').property('visible')
 out['noAcceptance'] = not any(c[0] == 'AcceptIssue' for c in calls)
 obj('issueGo').clicked.emit()
-wait(80)
+settle()
 obj('issueLaunchDialog').forceActiveFocus()
 QTest.keyClick(window, Qt.Key.Key_Escape)
 wait()
 out['escaped'] = not obj('issueLaunchDialog').property('visible')
 out['stillNoAcceptance'] = not any(c[0] == 'AcceptIssue' for c in calls)
 obj('issueGo').clicked.emit()
-wait(80)
+settle()
 out['canStart'] = obj('launchStart').property('enabled')
 obj('launchStart').clicked.emit()
-wait(80)
+settle()
 out['accept'] = next(c for c in calls if c[0] == 'AcceptIssue')
 out['current'] = state()['start']
 out['retryVisible'] = obj('issueRetryStart').property('visible')
@@ -94,7 +102,7 @@ wait()
 # Odpowiedź wcześniejszej operacji nadal zawiera błąd, lecz aktualny Show już sukces.
 current_start = dict(current_start, state='started', retryable=False, startVersion=5)
 obj('issueRetryDialog').accepted.emit()
-wait(80)
+settle()
 out['calls'] = calls
 out['operation'] = obj('issueOperationResult').property('text')
 out['current'] = obj('issueCurrentStart').property('text')
@@ -114,13 +122,13 @@ out['retryHidden'] = not obj('issueRetryStart').property('visible')
     def test_report_change_during_dialog_cannot_accept_new_version(self):
         out = self.run_scenario(SCENARIO + '''
 obj('issueGo').clicked.emit()
-wait(80)
+settle()
 new = dict(issue, state='draft', version=2, report='Nowszy raport')
 backend._shown('S-2', dict(ok=True, issue=new))
 out['keptVersion'] = state()['issue']['version']
 decision_reply = dict(ok=False, error='version-conflict', currentVersion=2, message='Konflikt wersji')
 obj('launchStart').clicked.emit()
-wait(80)
+settle()
 out['accept'] = next(c for c in calls if c[0] == 'AcceptIssue')
 out['conflict'] = state()['conflict']
 out['report'] = state()['issue']['report']

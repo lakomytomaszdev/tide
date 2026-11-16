@@ -158,8 +158,9 @@ class MergeCheckTest(unittest.TestCase):
         commands.merge_check_finish(p, "K-1", {"ticket": "PT-1"}, {"check": "PT-1:1"}, 0, "/log")
         self.assertEqual(journal.appended, [], "inna (starsza) próba nie zapisuje wyniku")
         commands.merge_check_finish(p, "K-1", {"ticket": "PT-1"}, {"check": "PT-1:2"}, 1, "/log")
+        # `failedModules`/`failedTests` (K-100 PT-423): bez raportu uruchamiacza pod `/log` — puste listy.
         self.assertEqual(journal.appended, [{"type": "merge.check-finished", "ticket": "PT-1", "check": "PT-1:2",
-                                             "exit": 1, "log": "/log"}])
+                                             "exit": 1, "log": "/log", "failedModules": [], "failedTests": []}])
 
     def test_still_allowed_drops_a_refused_check_from_the_given_queue(self):
         st = types.SimpleNamespace(merge_checks={"PT-1": {"requested": {"check": "PT-1:1"}, "finished": None}},
