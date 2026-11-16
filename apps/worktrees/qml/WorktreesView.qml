@@ -113,15 +113,12 @@ Item {
 
             Repeater {
                 model: [{ id: "dirs", label: "Katalogi" }, { id: "branches", label: "Gałęzie" }]
-                PillButton {
+                Tide.Button {
                     required property var modelData
                     readonly property bool current: view.mode === modelData.id
                     objectName: "mode_" + modelData.id
                     text: modelData.label
-                    implicitHeight: 30
-                    fill: current ? Tide.Tokens.accent : Tide.Tokens.backgroundCard
-                    textColor: current ? Tide.Tokens.backgroundDesktop : Tide.Tokens.textSecondary
-                    strong: current
+                    tone: current ? Tide.Tokens.accent : "transparent"
                     Accessible.role: Accessible.RadioButton
                     Accessible.checked: current
                     onClicked: view.setMode(modelData.id)

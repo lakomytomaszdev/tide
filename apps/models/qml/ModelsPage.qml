@@ -231,7 +231,7 @@ Rectangle {
                     elide: Text.ElideRight
                 }
             }
-            PillButton {
+            Tide.Button {
                 objectName: "refreshButton"
                 visible: root.ready
                 text: "Sprawdź serwery teraz"

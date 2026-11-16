@@ -222,6 +222,63 @@ Item {
         self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
 
 
+    def test_rail_has_manage_item_above_the_info_box(self):
+        """K-128, PT-507: „Projekty i tagi” to zwykła pozycja paska (ikona, ten sam styl, wybór jak inne) nad ramką
+        railInfo; klik otwiera Projekty i tagi w widoku Tablica; zielonego linku nie ma."""
+        tmp = tempfile.mkdtemp(prefix="tide-win-rail-manage-")
+        self.addCleanup(shutil.rmtree, tmp)
+        pkg = stage(os.path.join(tmp, "pkg"))
+        path = os.path.join(pkg, "qml", "RailManageSmoke.qml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("""import QtQuick
+Item {
+    width: 200; height: 700
+    QtObject { id: shell; function backend(id) { return null } }
+    property var requests: []
+    Rail {
+        id: rail
+        anchors.fill: parent
+        views: [{id: "board", title: "Tablica", icon: "board"}, {id: "sessions", title: "Sesje", icon: "sessions"}]
+        current: "board"
+        shell: shell
+        info: ({label: "Dane tablicy", value: "~/DevWorkspace/tide-board", note: "lokalne repo"})
+        onViewRequested: (id, item) => requests.push(id + ":" + item)
+    }
+    function find(it, test) {
+        if (test(it)) return it
+        for (const c of it.children) { const f = find(c, test); if (f) return f }
+        return null
+    }
+    function offsetIn(it) { return Math.round(it.mapToItem(rail, 0, 0).y) }
+    Component.onCompleted: {
+        const manage = find(rail, it => it.objectName === "railManage")
+        const board = find(rail, it => it.title === "Tablica" && it.current !== undefined)
+        const sessions = find(rail, it => it.title === "Sesje" && it.current !== undefined)
+        const first = [manage.visible, manage.title, manage.icon, manage.current, board.current, rail.footer.link === null,
+                       manage.height === sessions.height, offsetIn(manage) > offsetIn(sessions), offsetIn(manage) < offsetIn(rail.footer)].join("|")
+        manage.clicked()
+        rail.manageCurrent = true
+        const second = [manage.current, board.current, sessions.current].join("|")
+        board.clicked()
+        rail.manageCurrent = false
+        rail.views = [{id: "sessions", title: "Sesje", icon: "sessions"}]
+        console.warn("MANAGE " + [first, requests.join(","), second, manage.visible].join("#"))
+        Qt.quit()
+    }
+}
+""")
+        try:
+            log = subprocess.run(["qml6", path], env=offscreen_env(), capture_output=True, text=True, timeout=60).stderr
+        except subprocess.TimeoutExpired as error:
+            self.fail("qml6 nie zakończył się: " + (error.stderr or b"").decode("utf-8", "replace")[-3000:])
+        match = re.search(r"MANAGE (.*)$", log, re.M)
+        self.assertIsNotNone(match, log[-3000:])
+        self.assertEqual(match.group(1).strip(),
+                         "true|Projekty i tagi|projects|false|true|true|true|true|true#board:projekty,board:tablica"
+                         "#true|false|false#false")
+        self.assertIsNone(re.search(QML_PROBLEMS, log), log[-3000:])
+
+
 class BackendsTest(unittest.TestCase):
     """make_backends w trybie podglądu: każdy widok ma backend, plakietki z danych z pliku."""
 
@@ -562,6 +619,14 @@ class GrabTest(unittest.TestCase):
         self.assertGreater(sizes["worktrees"], 60_000, "widok Worktrees z listą z pliku")
         for view in ("board", "docker", "reports", "models"):
             self.assertGreater(sizes[view], 15_000, view)
+
+    def test_select_projects_opens_manage_page_in_board(self):
+        """--select projekty (tak samo klik pozycji „Projekty i tagi” w pasku) otwiera stronę Projekty i tagi."""
+        data = ["--data", "sessions=" + self.sessions]
+        board = self.grab("board-plain", "--view", "board", *data)
+        manage = self.grab("board-manage", "--view", "board", "--select", "projekty", *data)
+        with open(board, "rb") as a, open(manage, "rb") as b:
+            self.assertNotEqual(a.read(), b.read(), "Projekty i tagi to inna strona niż tablica")
 
     def test_data_for_shown_view_and_select(self):
         first = self.grab("first", "--view", "sessions", "--data", self.sessions)

@@ -230,13 +230,10 @@ ColumnLayout {
                 onAccepted: section.pullModel()
                 onEdited: section.page.setNote(section.tag, null)
             }
-            PillButton {
+            Tide.Button {
                 objectName: "pullButton"
                 text: section.page && section.page.busy[section.tag] ? "Zaczynam…" : "Pobierz"
                 enabled: !(section.page && section.page.busy[section.tag])
-                strong: true
-                fill: Tide.Theme.alpha(Tide.Tokens.accent, 0.16)
-                textColor: Tide.Tokens.accent
                 onClicked: section.pullModel()
             }
             Item { Layout.fillWidth: true }

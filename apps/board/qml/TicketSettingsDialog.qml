@@ -493,13 +493,11 @@ Rectangle {
                                 font.pointSize: Tide.Tokens.fontSizePt * 0.9
                                 wrapMode: Text.Wrap
                             }
-                            PillButton {
+                            Tide.Button {
                                 objectName: "ticketSettingsFieldSave"
                                 property string fieldKey: field.key
                                 Layout.alignment: Qt.AlignRight
                                 text: field.info.busy ? "Zapisuję…" : field.modelData.save
-                                fill: Tide.Tokens.accent
-                                textColor: Tide.Tokens.backgroundDesktop
                                 enabled: dialog.canReassign(field.key)
                                 onClicked: dialog.reassign(field.key)
                             }
@@ -535,18 +533,16 @@ Rectangle {
                 Layout.fillWidth: true
                 spacing: 8
                 Item { Layout.fillWidth: true }
-                PillButton {
+                Tide.Button {
                     objectName: "ticketSettingsCancel"
                     text: dialog.editable ? "Anuluj" : "Zamknij"
-                    outline: true
                     onClicked: dialog.close()
                 }
-                PillButton {
+                Tide.Button {
                     objectName: "ticketSettingsSave"
                     visible: dialog.editable
                     text: dialog.busy ? "Zapisuję…" : "Zapisz"
-                    fill: Tide.Tokens.accent
-                    textColor: Tide.Tokens.backgroundDesktop
+                    variant: "primary"
                     enabled: dialog.canSave
                     onClicked: dialog.save()
                 }

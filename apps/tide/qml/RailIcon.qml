@@ -23,6 +23,7 @@ Item {
         "docker": "M3 8l9 -5 9 5v8l-9 5 -9 -5z M3 8l9 5 9 -5 M12 13v8",
         "reports": "M7 3h7l4 4v14H7z M14 3v4h4 M10 12h5 M10 16h5",
         "issues": "M5 3h10l4 4v14H5z M15 3v4h4 M8 11h8 M8 15h5 M8 18h3",
+        "projects": "M3 7a2 2 0 0 1 2 -2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2z",
         "models": "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2z M10 2v4 M14 2v4"
                   + " M10 18v4 M14 18v4 M2 10h4 M2 14h4 M18 10h4 M18 14h4 M10 10h4v4h-4z"
     })

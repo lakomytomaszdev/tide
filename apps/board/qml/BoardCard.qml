@@ -404,7 +404,7 @@ Rectangle {
             }
         }
 
-        // Akcje kolumny (Tide.Button; nazwa i opis dla czytnika ekranu bez zmian względem dawnych PillButton).
+        // Akcje kolumny (Tide.Button; nazwa i opis dla czytnika ekranu bez zmian względem dawnych lokalnych przycisków).
         Tide.Button {
             Layout.fillWidth: true
             visible: root.column === "todo" && root.canLaunch && !root.ghost
@@ -488,7 +488,7 @@ Rectangle {
                 text: "Gotowe"
                 tone: Tide.Tokens.mint
                 toolTip: "Przenieś kartę do Gotowych"
-                Accessible.name: "Przenieś kartę do Gotowych"   // jak dawny PillButton: podpowiedź zamiast napisu
+                Accessible.name: "Przenieś kartę do Gotowych"   // jak dawny lokalny przycisk: podpowiedź zamiast napisu
                 Accessible.description: ""
                 onClicked: root.moveRequested("done")
             }

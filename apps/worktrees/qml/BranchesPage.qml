@@ -460,19 +460,19 @@ Rectangle {
                 font.pixelSize: 13
                 elide: Text.ElideRight
             }
-            PillButton {
+            Tide.Button {
                 objectName: "branchOpenCard"
                 text: "Otwórz kartę"
                 enabled: page.selectedCard !== ""
                 onClicked: page.openCard()
             }
-            PillButton {
+            Tide.Button {
                 objectName: "branchChanges"
                 text: "Zmiany gałęzi"
                 enabled: page.selectedCard !== ""
                 onClicked: page.showChanges()
             }
-            PillButton {
+            Tide.Button {
                 objectName: "branchMerge"
                 visible: page.mergeAvailable
                 text: "Scal…"

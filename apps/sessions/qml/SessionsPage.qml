@@ -460,21 +460,19 @@ Rectangle {
                                 }
                             }
                         }
-                        PillButton {
+                        Tide.Button {
                             Layout.alignment: Qt.AlignTop
                             text: page.youtrack ? "Plan z YouTracka ↻" : "Odśwież ↻"
                             toolTip: page.youtrack
                                      ? (page.board.tracker.error ? "YouTrack: " + page.board.tracker.error : "Odśwież tablicę i dane z YouTracka")
                                      : "Odśwież tablicę"
-                            textColor: page.youtrack && page.board.tracker.error ? Tide.Tokens.peach : Tide.Tokens.textSecondary
+                            tone: page.youtrack && page.board.tracker.error ? Tide.Tokens.peach : "transparent"
                             onClicked: page.refreshRequested(true)
                         }
-                        PillButton {
+                        Tide.Button {
                             Layout.alignment: Qt.AlignTop
                             text: "Przejdź do koordynatora"
-                            fill: Tide.Tokens.accent
-                            textColor: Tide.Tokens.backgroundDesktop
-                            strong: true
+                            variant: "primary"
                             toolTip: page.board && page.board.live ? "Okno sesji koordynatora" : "Wznów sesję w Konsoli"
                             onClicked: page.activateRequested(page.selectedId)
                         }

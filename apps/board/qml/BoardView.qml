@@ -7,7 +7,7 @@
 // karcie (K-12: zaznaczona i przewinięta; przed pierwszą migawką czeka na nią; launch:K-12 — do tego
 // okno „Co ma zrobić agent?”, przycisk „Uruchom” w popupie kafelka), takeFocus(), tab=plan|spec
 // i expand=1 — zakładka dokumentu w otwartym panelu karty (z card=K-12),
-// railInfo — ramka „Dane tablicy” i link „Projekty i tagi” na dole paska; import=1 — strona „Projekty i tagi”
+// railInfo — ramka „Dane tablicy” na dole paska („Projekty i tagi” to pozycja paska okna: showItem("projekty"), wybrana, gdy `managing`; showItem("tablica") wraca z niej); import=1 — strona „Projekty i tagi”
 // z otwartym importem z YouTracka (PT-7); decide=K-8 — okno decyzji karty (PT-132); full=K-8[,end] — pełna karta
 // (z `end` przewinięta do końca treści, zrzuty PT-502). Okno uruchomienia (PT-43): launch=K-9[,light|spec][,codex][,local][,move][,manual],
 // shots=/a.png,/b.png — miniatury zrzutów w oknie (tylko podgląd).
@@ -35,11 +35,11 @@ Item {
                                                         && Window.window.visibility !== Window.Hidden : true
     readonly property var snapshot: backend ? Logic.parse(backend.snapshotJson, null) : null
     readonly property bool available: backend ? backend.available : false
+    readonly property bool managing: page.managing   // strona Projekty i tagi (pozycja panelu okna Tide jest wybrana)
     readonly property var railInfo: ({
         label: "Dane tablicy",
         value: snapshot && snapshot.boardDir ? Logic.shortPath(snapshot.boardDir, backend ? backend.homeDir : "") : "",
-        note: Logic.railNote(snapshot, nowTs),
-        link: { text: "Projekty i tagi", activate: function () { view.openManage() } }
+        note: Logic.railNote(snapshot, nowTs)
     })
 
     function openManage() {
@@ -51,6 +51,10 @@ Item {
     // Karta przychodzi zwykle przed migawką — wtedy czeka na pierwszą niepustą.
     function showItem(item) {
         if (!item) return
+        if (item === "tablica") {
+            page.managing = false
+            return
+        }
         if (item === "projekty" || item === "manage") {
             openManage()
             return

@@ -1277,14 +1277,11 @@ Rectangle {
                     }
                 }
             }
-            PillButton {
+            Tide.Button {
                 objectName: "newCardButton"
                 visible: page.available
                 text: "＋ Karta"
-                strong: true
-                horizontalPadding: 16
-                fill: Tide.Tokens.accent
-                textColor: Tide.Tokens.backgroundDesktop
+                variant: "primary"
                 toolTip: "Nowa karta w Backlogu (Ctrl+N)"
                 onClicked: page.newCard("backlog")
             }
@@ -1404,17 +1401,14 @@ Rectangle {
             }
 
             // Filtr projektu.
-            PillButton {
+            Tide.Button {
                 id: projectButton
                 objectName: "projectFilter"
-                implicitHeight: 28
-                pillRadius: 14
-                pixelSize: 12
-                horizontalPadding: 12
+                small: true
                 text: "Projekt: " + (page.projectFilter === "" ? "wszystkie"
                                      : page.projectFilter === Logic.NO_PROJECT ? "bez projektu"
                                      : Logic.projectName(page.snapshot, page.projectFilter)) + " ▾"
-                textColor: page.projectFilter ? Tide.Tokens.accent : Tide.Tokens.textSecondary
+                tone: page.projectFilter ? Tide.Tokens.accent : "transparent"
                 onClicked: projectMenu.opened ? projectMenu.close() : projectMenu.open()
 
                 QQC2.Popup {
@@ -1498,15 +1492,11 @@ Rectangle {
             }
 
             // Menu „Widok” (PT-133): ustawienie otwierania karty z „Czeka na mnie” — to samo pole jest w stopce okna decyzji.
-            PillButton {
+            Tide.Button {
                 id: viewButton
                 objectName: "viewMenuButton"
-                implicitHeight: 28
-                pillRadius: 14
-                pixelSize: 12
-                horizontalPadding: 12
+                small: true
                 text: "Widok ▾"
-                textColor: Tide.Tokens.textSecondary
                 Accessible.name: "Widok"
                 onClicked: viewMenu.opened ? viewMenu.close() : viewMenu.open()
 
@@ -1601,13 +1591,13 @@ Rectangle {
                     font.pixelSize: 12
                     wrapMode: Text.Wrap
                 }
-                PillButton {
-                    implicitWidth: 26
-                    implicitHeight: 26
-                    flat: true
+                Tide.Button {
+                    iconOnly: true
+                    small: true
+                    variant: "ghost"
                     text: "✕"
-                    pixelSize: 11
                     toolTip: "Zamknij"
+                    Accessible.name: "Zamknij"
                     onClicked: page.toast = ""
                 }
             }
@@ -1860,15 +1850,12 @@ Rectangle {
                         lineHeight: 1.15
                         wrapMode: Text.Wrap
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "firstCardButton"
                         Layout.alignment: Qt.AlignHCenter
                         Layout.topMargin: 6
                         visible: page.available
                         text: "＋ Pierwsza karta"
-                        strong: true
-                        fill: Tide.Tokens.accent
-                        textColor: Tide.Tokens.backgroundDesktop
                         onClicked: page.newCard("backlog")
                     }
                 }

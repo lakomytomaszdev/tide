@@ -1,7 +1,7 @@
-// „Projekty i tagi” (link na dole paska okna): projekty z tagami, miejscem dokumentów AI, domyślnym
+// „Projekty i tagi” (pozycja panelu bocznego okna Tide nad ramką „Dane tablicy”): projekty z tagami, miejscem dokumentów AI, domyślnym
 // narzędziem i trybem; repozytoria z katalogu projektów, które można dodać jako projekt; tagi z kolorami
 // z palety. Każdy zapis to jeden UpsertProject albo UpsertTag w usłudze (commit w repozytorium
-// tablicy); błąd pokazuje się przy formularzu, który go wywołał. Esc albo „← Tablica” wraca.
+// tablicy); błąd pokazuje się przy formularzu, który go wywołał. Pasek górny (Tide.TopBar) ma „← Tablica” pierwszy od lewej; Esc wraca tak samo.
 // YouTrack (PT-7): sekcja nad projektami — stan synchronizacji, mapa stanów, konflikty ze zmianą ręczną
 // („Weź z YouTracka” / „Nadpisz z Tide”, także dla ticketów planów bez karty) i „Importuj z YouTracka”
 // (ImportPanel). W formularzu projektu: klucz projektu YouTracka i przełącznik synchronizacji stanu.
@@ -241,46 +241,40 @@ Rectangle {
         Accessible.role: Accessible.Heading
     }
 
+    // Stały pasek górny (K-128, PT-507): powrót „← Tablica” pierwszy od lewej (objectName `manageBack`), potem tytuł.
+    // Esc wraca tak samo (BoardPage).
+    Tide.TopBar {
+        id: topBar
+        name: "manage"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        z: 3
+        backText: "Tablica"
+        title: "Projekty i tagi"
+        onBack: page.backRequested()
+    }
+
     ColumnLayout {
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: topBar.bottom
+        anchors.bottom: parent.bottom
         anchors.leftMargin: 24
         anchors.rightMargin: 24
-        anchors.topMargin: 20
+        anchors.topMargin: 16
         anchors.bottomMargin: 20
         spacing: 16
 
-        RowLayout {
+        Text {
             Layout.fillWidth: true
-            spacing: 14
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                Text {
-                    text: "Projekty i tagi"
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textPrimary
-                    font.family: Tide.Theme.uiFamily
-                    font.pixelSize: 21
-                    font.weight: Font.DemiBold
-                    Accessible.role: Accessible.Heading
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.projects.length + " " + Logic.plural(page.projects.length, "projekt", "projekty", "projektów")
-                          + " · " + page.tags.length + " " + Logic.plural(page.tags.length, "tag", "tagi", "tagów")
-                          + " · tagi projektu dziedziczy każda jego karta"
-                    textFormat: Text.PlainText
-                    color: Tide.Tokens.textMuted
-                    font.family: Tide.Theme.uiFamily
-                    font.pixelSize: 13
-                }
-            }
-            PillButton {
-                objectName: "manageBack"
-                text: "← Tablica"
-                toolTip: "Wróć do tablicy (Esc)"
-                onClicked: page.backRequested()
-            }
+            text: page.projects.length + " " + Logic.plural(page.projects.length, "projekt", "projekty", "projektów")
+                  + " · " + page.tags.length + " " + Logic.plural(page.tags.length, "tag", "tagi", "tagów")
+                  + " · tagi projektu dziedziczy każda jego karta"
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 13
         }
 
         RowLayout {
@@ -351,7 +345,7 @@ Rectangle {
                             }
                             Accessible.name: "Wykonawca docelowy przy limicie"
                         }
-                        PillButton {
+                        Tide.Button {
                             objectName: "limitTransferSave"
                             text: "Zapisz"
                             enabled: page.flowSettingsDirty && !page.flowSettingsBusy &&
@@ -437,7 +431,7 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         Item { Layout.fillWidth: true }
-                        PillButton {
+                        Tide.Button {
                             objectName: "concurrencySave"
                             text: "Zapisz"
                             enabled: page.concurrencyDirty && !page.concurrencyBusy
@@ -558,7 +552,7 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         Item { Layout.fillWidth: true }
-                        PillButton {
+                        Tide.Button {
                             objectName: "caretakerSave"
                             text: "Zapisz"
                             enabled: page.caretakerDirty && !page.caretakerBusy
@@ -599,7 +593,7 @@ Rectangle {
                         color: Tide.Tokens.rose
                         wrapMode: Text.Wrap
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "globalAssignmentRulesSave"
                         text: "Zapisz wspólne zasady"
                         enabled: page.busyTag === ""
@@ -610,11 +604,9 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: page.youtrack !== null
                         SectionTitle { Layout.fillWidth: true; text: "YOUTRACK" }
-                        PillButton {
+                        Tide.Button {
                             objectName: "importOpen"
-                            implicitHeight: 28
-                            pixelSize: 12
-                            outline: true
+                            small: true
                             text: "Importuj z YouTracka" + (page.youtrack && page.youtrack.newIssues > 0
                                                             ? " · " + page.youtrack.newIssues + " "
                                                               + Logic.plural(page.youtrack.newIssues, "nowe", "nowe", "nowych") : "")
@@ -677,17 +669,13 @@ Rectangle {
                                     font.pixelSize: 12
                                     wrapMode: Text.Wrap
                                 }
-                                PillButton {
-                                    implicitHeight: 26
-                                    pixelSize: 11
-                                    outline: true
+                                Tide.Button {
+                                    small: true
                                     text: "Weź z YouTracka"
                                     onClicked: page.resolveRequested(page.nextTag("yt-resolve"), conflictRow.modelData.issue, "youtrack")
                                 }
-                                PillButton {
-                                    implicitHeight: 26
-                                    pixelSize: 11
-                                    outline: true
+                                Tide.Button {
+                                    small: true
                                     text: "Nadpisz z Tide"
                                     onClicked: page.resolveRequested(page.nextTag("yt-resolve"), conflictRow.modelData.issue, "tide")
                                 }
@@ -763,10 +751,8 @@ Rectangle {
                                     font.pixelSize: 11
                                     elide: Text.ElideMiddle
                                 }
-                                PillButton {
-                                    implicitHeight: 28
-                                    pixelSize: 12
-                                    outline: true
+                                Tide.Button {
+                                    small: true
                                     text: "＋ Dodaj jako projekt"
                                     enabled: page.busyTag === ""
                                     onClicked: page.send("repo", repoRow.modelData.path, { repo: repoRow.modelData.path })
@@ -787,7 +773,7 @@ Rectangle {
                             maximumLength: 80
                             onAccepted: addProject.clicked()
                         }
-                        PillButton {
+                        Tide.Button {
                             id: addProject
                             text: "Dodaj projekt"
                             enabled: page.busyTag === ""
@@ -842,11 +828,9 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         SectionTitle { Layout.fillWidth: true; text: "TAGI" }
-                        PillButton {
+                        Tide.Button {
                             objectName: "newTagButton"
-                            implicitHeight: 28
-                            pixelSize: 12
-                            outline: true
+                            small: true
                             text: "＋ Nowy tag"
                             onClicked: {
                                 page.tagError = ""
@@ -1528,11 +1512,9 @@ Rectangle {
                             font.pixelSize: 11
                             wrapMode: Text.Wrap
                         }
-                        PillButton {
+                        Tide.Button {
                             objectName: "projectTestsUseSuggestion"
-                            implicitHeight: 30
-                            pixelSize: 12
-                            outline: true
+                            small: true
                             enabled: row.hasSuggestion && (row.testsChanged !== (row.suggestion.changed || "")
                                                            || row.testsFull !== (row.suggestion.full || ""))
                             text: "Użyj podpowiedzi"
@@ -1576,10 +1558,9 @@ Rectangle {
                             font.pixelSize: 12
                             wrapMode: Text.Wrap
                         }
-                        PillButton {
+                        Tide.Button {
                             objectName: "projectTestsApprove"
-                            implicitHeight: 30
-                            pixelSize: 12
+                            small: true
                             enabled: page.busyTag === ""
                             text: "Zatwierdź kontrakt"
                             onClicked: row.approveTests()
@@ -1611,22 +1592,18 @@ Rectangle {
                         font.pixelSize: 12
                         wrapMode: Text.Wrap
                     }
-                    PillButton {
-                        implicitHeight: 30
-                        pixelSize: 12
-                        flat: true
+                    Tide.Button {
+                        small: true
+                        variant: "ghost"
                         text: "Anuluj"
                         onClicked: { page.testsError = ""; page.openProject = "" }
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "projectSave"
-                        implicitHeight: 30
-                        pixelSize: 12
-                        strong: true
+                        small: true
                         enabled: page.busyTag === ""
                         text: "Zapisz projekt"
-                        fill: Tide.Tokens.accent
-                        textColor: Tide.Tokens.backgroundDesktop
+                        variant: page.importOpen ? "normal" : "primary"
                         onClicked: row.save()
                     }
                 }

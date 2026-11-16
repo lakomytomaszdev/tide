@@ -162,16 +162,14 @@ Rectangle {
             }
         }
 
-        PillButton {
+        Tide.Button {
             objectName: "cleanButton"
             Layout.fillWidth: true
             visible: card.categories.length > 0
             enabled: card.pickedCount > 0 && !card.pruning && card.enabledActions
             text: card.pruning ? "Porządkuję…"
                 : card.pickedCount > 0 ? "Wyczyść zaznaczone · " + Logic.bytes(card.pickedBytes) : "Zaznacz, co wyczyścić"
-            fill: Tide.Tokens.negative
-            textColor: Tide.Tokens.backgroundDesktop
-            strong: true
+            variant: "danger"
             onClicked: card.cleanRequested()
         }
 

@@ -54,7 +54,7 @@ Rectangle {
                     elide: Text.ElideRight
                 }
             }
-            PillButton {
+            Tide.Button {
                 text: "Zamknij"
                 toolTip: "Wróć do tablicy (Esc)"
                 onClicked: panel.closeRequested()

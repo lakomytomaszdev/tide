@@ -843,62 +843,20 @@ Rectangle {
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
-            PillButton {
+            Tide.Button {
                 text: "Anuluj"
-                implicitHeight: 40
-                horizontalPadding: 20
-                pixelSize: 14
-                fill: "transparent"
-                textColor: Tide.Tokens.textPrimary
-                border.width: 1
-                border.color: activeFocus ? Tide.Tokens.accent : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.16)
                 enabled: !page.busy
                 onClicked: page.cancelRequested()
             }
-            Rectangle {
+            Tide.Button {
                 id: startButton
                 objectName: "startButton"
-                implicitHeight: 40
-                implicitWidth: startRow.implicitWidth + 40
-                radius: Tide.Tokens.radiusFrame
-                color: !page.canStart ? Tide.Theme.alpha(Tide.Tokens.accent, 0.35)
-                     : startArea.pressed ? Qt.darker(Tide.Tokens.accent, 1.08)
-                     : startArea.containsMouse || activeFocus ? Qt.lighter(Tide.Tokens.accent, 1.06) : Tide.Tokens.accent
-                border.width: activeFocus ? 2 : 0
-                border.color: Tide.Tokens.textPrimary
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
+                variant: "primary"
+                text: page.busy ? "Uruchamiam…" : "Uruchom agenta"
+                kbd: "Ctrl+↵"
+                enabled: page.canStart
                 Accessible.name: "Uruchom agenta"
-                Keys.onReturnPressed: page.start()
-                Keys.onSpacePressed: page.start()
-                Row {
-                    id: startRow
-                    anchors.centerIn: parent
-                    spacing: 10
-                    Text {
-                        id: startLabel
-                        text: page.busy ? "Uruchamiam…" : "Uruchom agenta"
-                        color: Tide.Tokens.backgroundDesktop
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 14
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        anchors.baseline: startLabel.baseline
-                        text: "Ctrl+↵"
-                        color: Tide.Theme.alpha(Tide.Tokens.backgroundDesktop, 0.7)
-                        font.family: Tide.Theme.monoFamily
-                        font.pixelSize: 11
-                    }
-                }
-                MouseArea {
-                    id: startArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    enabled: page.canStart
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: page.start()
-                }
+                onClicked: page.start()
             }
         }
     }

@@ -62,7 +62,7 @@ class PackageTest(unittest.TestCase):
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])
 
     def test_no_hardcoded_colors_and_plain_texts(self):
-        for name in os.listdir(os.path.join(APP_DIR, "qml")):
+        for name in (n for n in os.listdir(os.path.join(APP_DIR, "qml")) if n.endswith((".qml", ".js"))):
             with open(os.path.join(APP_DIR, "qml", name), encoding="utf-8") as fh:
                 source = fh.read()
             self.assertEqual(re.findall(r'"#[0-9a-fA-F]{3,8}"', source), [], name)
@@ -1042,8 +1042,8 @@ out["panel"] = js("page.panelOpen && page.cardPanel.column")
 bar = obj("boardErrors")
 out["visible"] = bar.property("visible")
 out["lines"] = js("page.errorLines")
-out["rail"] = js("[railInfo.label, railInfo.value, railInfo.note, railInfo.link.text]")
-js("railInfo.link.activate()")
+out["rail"] = js("[railInfo.label, railInfo.value, railInfo.note, typeof railInfo.link]")
+js("showItem('projekty')")
 out["managing"] = js("page.managing")
 key(Qt.Key.Key_Escape)
 out["back"] = js("page.managing")
@@ -1052,8 +1052,8 @@ out["badge"] = [backend.badgeText, backend.badgeTone]
         self.assertTrue(out["visible"])
         self.assertEqual(out["lines"], ["cards/K-30.md: <b>brak</b> frontmattera"])
         self.assertEqual(out["rail"], ["Dane tablicy", "~/DevWorkspace/tide-board", "lokalne repo · zapisano 12:04",
-                                       "Projekty i tagi"])
-        self.assertTrue(out["managing"], "link „Projekty i tagi” otwiera stronę")
+                                       "undefined"])
+        self.assertTrue(out["managing"], "pozycja panelu okna otwiera stronę (showItem projekty), zielonego linku w railInfo nie ma")
         self.assertFalse(out["back"], "Esc wraca do tablicy")
         self.assertEqual(out["badge"], ["● 1", "waiting"])
 
@@ -1112,6 +1112,34 @@ out["save"] = calls()[-1]
         self.assertEqual(out["spec"], ["spec", False], "Tylko specyfikacja: bez wyboru trybu")
         self.assertEqual(out["planning"], ["planning", True, "light"])
         self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
+
+    def test_manage_page_back_is_first_in_top_bar(self):
+        # K-128, PT-507: Projekty i tagi mają Tide.TopBar; „← Tablica” jest pierwszym elementem od lewej, klik i Esc wracają.
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("showItem('projekty')")
+wait(100)
+out["open"] = js("page.managing")
+out["backText"] = js(find("manageBack") + ".text")
+out["backX"] = js(find("manageBack") + ".mapToItem(page.managePage, 0, 0).x")
+out["titleX"] = js(find("manageHeading") + ".mapToItem(page.managePage, 0, 0).x")
+out["titleText"] = js(find("manageHeading") + ".text")
+click(at(find("manageBack")))
+wait(80)
+out["afterClick"] = js("page.managing")
+js("showItem('projekty')")
+wait(60)
+key(Qt.Key.Key_Escape)
+wait(60)
+out["afterEsc"] = js("page.managing")
+""", self.data)
+        self.assertTrue(out["open"])
+        self.assertEqual(out["backText"], "← Tablica")
+        self.assertEqual(out["titleText"], "Projekty i tagi")
+        self.assertLess(out["backX"], out["titleX"], "powrót jest pierwszy od lewej")
+        self.assertLess(out["backX"], 40)
+        self.assertFalse(out["afterClick"], "klik w „← Tablica” wraca do tablicy")
+        self.assertFalse(out["afterEsc"], "Esc wraca do tablicy")
 
     def test_project_review_independence_in_manage_page(self):
         # PT-330: projekt bez ustawienia pokazuje „Dowolny”; Inna rodzina z listą klas trafia do UpsertProject.

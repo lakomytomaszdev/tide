@@ -83,7 +83,7 @@ class PackageTest(unittest.TestCase):
     def test_package_and_palette(self):
         with tempfile.TemporaryDirectory(prefix="tide-nt-pkg-") as tmp:
             files = files_under(stage(os.path.join(tmp, "pkg")))
-        for name in ("tide-new-task.py", "qml/Main.qml", "qml/NewTaskPage.qml", "qml/newtask.js", "qml/PillButton.qml",
+        for name in ("tide-new-task.py", "qml/Main.qml", "qml/NewTaskPage.qml", "qml/newtask.js", "qml/tide/Button.qml",
                      "qml/tide/Tokens.qml", "qml/tide/Theme.qml", "qml/tide/qmldir"):
             self.assertIn(name, files)
         self.assertFalse([f for f in files if f.startswith("tests/") or f.endswith(("__init__.py", "install.sh"))])

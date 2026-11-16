@@ -427,12 +427,11 @@ Rectangle {
                                     font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
-                                PillButton {
+                                Tide.Button {
                                     objectName: "fetchButton"
                                     visible: repoRow.modelData.canFetch
-                                    implicitHeight: 28
+                                    small: true
                                     text: Logic.fetchButtonText(repoRow.busy)
-                                    pixelSize: 12
                                     enabled: !repoRow.busy && page.available
                                     toolTip: "Pobiera zmiany ze wszystkich zdalnych (git fetch). Nie zmienia gałęzi ani plików."
                                     onClicked: page.startFetch(repoRow.modelData.repoPath)
@@ -445,14 +444,13 @@ Rectangle {
                                     font.family: Tide.Theme.uiFamily
                                     font.pixelSize: 11
                                 }
-                                PillButton {
+                                Tide.Button {
                                     id: repoPull
                                     objectName: "repoPullButton"
                                     visible: Logic.canOfferPull(repoRow.main)
-                                    implicitHeight: 28
+                                    small: true
                                     text: Logic.pullButtonText(repoRow.pullBusy, repoRow.main)
                                          + (repoRow.main ? " " + repoRow.main.branch : "")
-                                    pixelSize: 12
                                     enabled: !repoRow.pullBusy && repoRow.pullBlocker === null && page.available
                                     toolTip: repoRow.pullBlocker !== null
                                              ? "Nie można zaciągnąć: " + repoRow.pullBlocker.text
@@ -529,9 +527,8 @@ Rectangle {
                                 font.pixelSize: 12
                             }
                         }
-                        PillButton {
+                        Tide.Button {
                             text: "OK"
-                            implicitHeight: 30
                             onClicked: page.results = null
                         }
                     }
@@ -707,10 +704,9 @@ Rectangle {
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
                             }
-                            PillButton {
-                                implicitHeight: 28
+                            Tide.Button {
+                                small: true
                                 text: "Usuń wpisy (git worktree prune)"
-                                pixelSize: 12
                                 toolTip: "Usuwa tylko wpisy worktrees, których katalogu już nie ma. Pliki i gałęzie zostają."
                                 onClicked: page.pruneRequested(modelData.repoPath)
                             }
@@ -795,21 +791,18 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
                 }
-                PillButton {
+                Tide.Button {
                     text: "Odśwież"
                     enabled: page.available
                     onClicked: page.refreshRequested()
                 }
-                PillButton {
+                Tide.Button {
                     id: removeButton
                     enabled: page.picked.items.length > 0 && !page.removing && page.available
                     text: page.picked.items.length > 0
                           ? "Usuń zaznaczone (" + page.picked.items.length + ") · " + Tide.Theme.formatBytes(page.picked.bytes)
                           : "Usuń zaznaczone"
-                    fill: Tide.Tokens.negative
-                    textColor: Tide.Tokens.backgroundDesktop
-                    strong: true
-                    horizontalPadding: 16
+                    variant: "danger"
                     onClicked: page.askRemove()
                 }
             }
@@ -1034,19 +1027,15 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 10
                     Item { Layout.fillWidth: true }
-                    PillButton {
+                    Tide.Button {
                         text: "Anuluj"
-                        fill: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.08)  // na tle karty
                         onClicked: page.confirming = false
                     }
-                    PillButton {
+                    Tide.Button {
                         objectName: "confirmButton"
                         text: page.forcing ? "Usuń mimo to"
                                            : "Usuń " + Logic.count(page.picked.items.length, "worktree", "worktrees", "worktrees")
-                        fill: Tide.Tokens.negative
-                        textColor: Tide.Tokens.backgroundDesktop
-                        strong: true
-                        horizontalPadding: page.forcing ? 20 : 14
+                        variant: "danger"
                         onClicked: page.confirmRemove()
                     }
                 }

@@ -1,5 +1,7 @@
 // Pasek widoków okna Tide (mock „Tide Tablica”, 200 px): logo „trzy fale” z napisem Tide, pozycje
-// widoków z plakietkami z backendów, na dole railInfo bieżącego widoku (link i ramka, jeśli je podaje).
+// widoków z plakietkami z backendów, nad ramką railInfo pozycja „Projekty i tagi” (K-128, PT-507: zwykła pozycja
+// z ikoną, wybierana jak pozostałe; otwiera stronę Projekty i tagi w widoku Tablica) i na dole railInfo
+// bieżącego widoku (ramka, a gdy widok poda — link).
 // Strzałki góra/dół przechodzą między pozycjami, Enter i spacja otwierają widok.
 import QtQuick
 import QtQuick.Layouts
@@ -12,6 +14,11 @@ Rectangle {
     property string current: ""
     property var shell: null
     property var info: null
+    property bool manageCurrent: false   // otwarta strona Projekty i tagi w widoku Tablica
+    readonly property bool hasBoard: {
+        for (let i = 0; i < views.length; i++) if (views[i].id === "board") return true
+        return false
+    }
 
     signal viewRequested(string id, string item)
 
@@ -68,16 +75,28 @@ Rectangle {
                 Layout.fillWidth: true
                 title: modelData.title
                 icon: modelData.icon
-                current: rail.current === modelData.id
+                current: rail.current === modelData.id && !(modelData.id === "board" && rail.manageCurrent)
                 badgeText: backend && backend.badgeText ? backend.badgeText : ""
                 badgeTone: backend && backend.badgeTone ? backend.badgeTone : "muted"
-                onClicked: rail.viewRequested(modelData.id, "")
-                Keys.onDownPressed: { const next = items.itemAt(index + 1); if (next) next.forceActiveFocus() }
+                onClicked: rail.viewRequested(modelData.id, modelData.id === "board" && rail.manageCurrent ? "tablica" : "")
+                Keys.onDownPressed: { const next = items.itemAt(index + 1) || (manageItem.visible ? manageItem : null); if (next) next.forceActiveFocus() }
                 Keys.onUpPressed: { const prev = items.itemAt(index - 1); if (prev) prev.forceActiveFocus() }
             }
         }
 
         Item { Layout.fillHeight: true }
+
+        RailItem {
+            id: manageItem
+            objectName: "railManage"
+            Layout.fillWidth: true
+            visible: rail.hasBoard
+            title: "Projekty i tagi"
+            icon: "projects"
+            current: rail.manageCurrent
+            onClicked: rail.viewRequested("board", "projekty")
+            Keys.onUpPressed: { const last = items.itemAt(items.count - 1); if (last) last.forceActiveFocus() }
+        }
 
         RailInfo {
             id: footer

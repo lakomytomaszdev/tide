@@ -234,15 +234,13 @@ Rectangle {
         anchors.margins: 18
         spacing: 8
 
-        PillButton {
+        Tide.Button {
             objectName: "copyButton"
             Layout.fillWidth: true
             visible: !panel.legacy
             enabled: panel.copyText !== ""
             text: panel.copied ? "Skopiowano ✓" : "Kopiuj jako tekst"
-            strong: true
-            fill: Tide.Tokens.accent
-            textColor: Tide.Tokens.backgroundDesktop
+            variant: "primary"
             onClicked: panel.copyRequested(panel.copyText)
         }
         RowLayout {

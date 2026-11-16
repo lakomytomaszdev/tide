@@ -91,7 +91,7 @@ Item {
             Label { text: "Sprawy"; font.pixelSize: 28; color: Tide.Tokens.textPrimary }
             Label { text: backend && backend.preview ? "Podgląd · akcje wyłączone" : "Raporty rozmów" }
             Item { Layout.fillWidth: true }
-            Action { text: "Odśwież"; enabled: !!backend && !modelState.busy; onClicked: backend.reload() }
+            Tide.Button { text: "Odśwież"; enabled: !!backend && !modelState.busy; onClicked: backend.reload() }
         }
         Label {
             Layout.fillWidth: true
@@ -213,7 +213,7 @@ Item {
                             text: view.issue ? view.issue.id + " · " + Logic.stateLabel(view.issue.state) + " · wersja " + view.issue.version : ""
                             color: Tide.Tokens.sky
                         }
-                        Action {
+                        Tide.Button {
                             objectName: "issueCardLink"
                             visible: !!view.issue && !!view.issue.card
                             text: view.issue ? "Otwórz kartę " + (view.issue.card || "") + " · przyjęty raport w wersji " + (view.issue.version - 1) : ""
@@ -245,7 +245,7 @@ Item {
                             color: Tide.Tokens.waiting
                         }
                         RowLayout {
-                            Action { text: view.editing ? "Pokaż raport" : "Edytuj szkic"; visible: view.editable; onClicked: view.editing = !view.editing }
+                            Tide.Button { text: view.editing ? "Pokaż raport" : "Edytuj szkic"; visible: view.editable; onClicked: view.editing = !view.editing }
                             Label { text: modelState.dirty ? "Lokalne zmiany · zachowane do zamknięcia okna" : "Zapisana wersja" }
                         }
                         Label {
@@ -342,51 +342,50 @@ Item {
                         Flow {
                             Layout.fillWidth: true
                             spacing: 8
-                            Action {
+                            Tide.Button {
                                 objectName: "issueGo"
                                 text: "Zleć…"
-                                primary: true
+                                variant: "primary"
                                 visible: !!view.issue && view.issue.state === "ready"
                                 enabled: view.canAct && !!modelState.goAvailable && !modelState.dirty && !view.editing
                                 onClicked: backend.beginIssueLaunch(view.issue.version)
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueAccept"
                                 text: "Do Backlogu"
-                                primary: true
                                 visible: !!view.issue && view.issue.state === "ready"
                                 enabled: view.canAct && !modelState.dirty && !view.editing
                                 onClicked: backend.acceptIssue(view.issue.version)
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueSave"
                                 text: "Zapisz zmiany"
-                                primary: true
                                 visible: view.editable
                                 enabled: view.canAct && !!modelState.dirty
                                 onClicked: backend.save()
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueReload"
                                 text: "Wczytaj ponownie"
                                 enabled: !!backend && !backend.preview && !modelState.busy
                                 onClicked: discardDialog.open()
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueSubmit"
                                 text: "Przygotuj do przyjęcia"
                                 visible: !!view.issue && view.issue.state === "draft"
                                 enabled: view.canAct && !modelState.dirty
                                 onClicked: backend.transition("Submit")
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueReject"
                                 text: "Odrzuć"
+                                variant: "danger"
                                 visible: view.editable
                                 enabled: view.canAct && !modelState.dirty
                                 onClicked: rejectDialog.open()
                             }
-                            Action {
+                            Tide.Button {
                                 objectName: "issueReopen"
                                 text: "Otwórz jako szkic"
                                 visible: !!view.issue && view.issue.state === "rejected"
@@ -405,7 +404,7 @@ Item {
                             visible: !!view.currentStart
                             text: view.currentStart ? "Bieżący stan startu: " + view.currentStart.state : ""
                         }
-                        Action {
+                        Tide.Button {
                             objectName: "issueRetryStart"
                             text: "Ponów start"
                             visible: !!view.currentStart && !!view.currentStart.retryable
@@ -437,13 +436,14 @@ Item {
                                     color: Tide.Tokens.textMuted
                                 }
                                 RowLayout {
-                                    Action {
+                                    Tide.Button {
                                         text: ["image/png", "image/jpeg", "image/webp"].indexOf(modelData.type) >= 0 ? "Otwórz obraz" : "Otwórz jako tekst"
                                         enabled: view.canAct
                                         onClicked: backend.openAttachment(modelData.id)
                                     }
-                                    Action {
+                                    Tide.Button {
                                         text: "Odłącz"
+                                        variant: "danger"
                                         visible: view.editable
                                         enabled: view.canAct && !modelState.dirty
                                         onClicked: { view.pendingDetach = modelData.id; detachDialog.open() }
@@ -451,7 +451,7 @@ Item {
                                 }
                             }
                         }
-                        Action {
+                        Tide.Button {
                             objectName: "issueAttach"
                             text: "Dołącz plik…"
                             visible: view.editable
