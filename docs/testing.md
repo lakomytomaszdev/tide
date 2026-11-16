@@ -255,6 +255,24 @@ przebiegiem jest możliwe tylko z takim jawnym rozliczeniem i jawną decyzją u�
 odstępstwa. Do tego czasu krok zgłasza problem domknięcia, zachowując nieudany wynik. Przyjęcie
 odstępstwa nie zmienia wyniku testu na sukces i nie zastępuje osobnej zgody na scalenie do głównej.
 
+#### Wspólny wpis dowodowy dla rozpoznanej usterki
+
+Decyzja właściciela 16.11.2026 (przegląd masterplanu, karta stabilizacji bramek K-147). Skrót dotyczy
+wyłącznie powtarzania identycznej dokumentacji dowodowej, nie kryterium zaliczenia:
+
+> Dla wcześniej rozpoznanej usterki dopuszcza się odwołanie do wspólnego wpisu dowodowego zamiast ponawiania
+> porównań na bazie i masterze dla każdego ticketu. Wpis identyfikuje dokładny test i sygnaturę porażki,
+> przyczynę, SHA porównań, warunki obciążenia, właściciela i kartę naprawy. Autor wykazuje, że zmiana nie obejmuje
+> mechanizmu objętego usterką ani jego zależności, oraz zachowuje wynik pierwszego przebiegu i ponowienia
+> padniętych modułów na tym samym HEAD. Zmiana sygnatury, zależności, środowiska albo brak porównywalnych dowodów
+> wyłącza ten skrót. Porażka pozostaje porażką; wyjątek wymaga dotychczasowego rozliczenia i decyzji właściciela
+> tam, gdzie jest ona wymagana.
+
+Każdy wspólny wpis ma termin ponownej oceny, najpóźniej przed odbiorem v1 (M5); po terminie skrót dla tego wpisu
+wygasa, dopóki wpis nie zostanie oceniony na nowo. Niedopuszczalne pozostają: etykieta „cały moduł niestabilny”,
+`skip`/`xfail` dla wygody i ponawianie do skutku. Pierwsze kwalifikowane porażki nadal liczą się do kryterium 5 v1
+(`docs/agents/masterplan/CURRENT.md` §0), także gdy przyjęto odstępstwo.
+
 ## Bezpośrednie testy usługi i izolacja stanu
 
 Z katalogu głównego repozytorium obsługujemy trzy bezpośrednie wejścia:
