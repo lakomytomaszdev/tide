@@ -105,6 +105,8 @@ QQC2.Popup {
             }
         }
         QQC2.ScrollView {
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+            QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true

@@ -1432,7 +1432,7 @@ Rectangle {
                         implicitHeight: Math.min(10, count) * 32
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
-                        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                         model: {
                             const list = [{ key: "", name: "Wszystkie projekty", count: Logic.counts(page.allCards).total }]
                             for (const p of (page.snapshot && page.snapshot.projects) || [])
@@ -1708,7 +1708,7 @@ Rectangle {
                     contentWidth: width
                     contentHeight: lanesColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                     ColumnLayout {
                         id: lanesColumn
                         width: lanesFlick.width

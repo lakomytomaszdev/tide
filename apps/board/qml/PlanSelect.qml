@@ -62,7 +62,7 @@ QQC2.ComboBox {
             implicitHeight: contentHeight
             model: control.popup.visible ? control.delegateModel : null
             currentIndex: control.highlightedIndex
-            QQC2.ScrollIndicator.vertical: QQC2.ScrollIndicator {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
         }
         background: Rectangle {
             radius: 7

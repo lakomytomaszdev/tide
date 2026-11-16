@@ -41,7 +41,7 @@ ColumnLayout {
         clip: true
         model: section.rows
         boundsBehavior: Flickable.StopAtBounds
-        QQC2.ScrollBar.vertical: QQC2.ScrollBar { policy: list.contentHeight > list.height ? QQC2.ScrollBar.AlwaysOn : QQC2.ScrollBar.AlwaysOff }
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
         delegate: Text {
             required property var modelData

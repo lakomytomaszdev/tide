@@ -172,7 +172,7 @@ Item {
                         }
                         MouseArea { anchors.fill: parent; onClicked: view.showItem(modelData.id) }
                     }
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 }
                 Label { visible: view.rows.length === 0; text: "Brak spraw dla wybranych filtrów." }
                 Repeater {
@@ -186,6 +186,8 @@ Item {
                 }
             }
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true

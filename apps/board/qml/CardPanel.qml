@@ -405,6 +405,8 @@ Rectangle {
             // wysokości decyzje kroków (Zezwól, Ponów) znikały pod krawędzią (K-33). Po zatwierdzeniu planu
             // review jest historią i jest w widoku planu na całym ekranie.
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: planReviewScroll
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.min(planReviewText.implicitHeight, 110)
@@ -449,7 +451,7 @@ Rectangle {
                 contentHeight: planRows.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
-                QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                 ColumnLayout {
                     id: planRows
                     width: parent.width
@@ -620,6 +622,8 @@ Rectangle {
             // Podsumowanie domknięcia bywa długie, a ta sekcja leży nad przewijaną częścią panelu — bez limitu
             // przyciski Diff/Scal i ich wynik znikały pod krawędzią (03.11, K-15).
             QQC2.ScrollView {
+                QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+                QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
                 id: closingSummaryScroll
                 objectName: "cardClosingSummary"
                 Layout.fillWidth: true
@@ -708,7 +712,7 @@ Rectangle {
             contentWidth: width
             contentHeight: formColumn.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: formColumn
@@ -827,7 +831,7 @@ Rectangle {
                         contentWidth: width
                         contentHeight: descriptionEdit.implicitHeight
                         boundsBehavior: Flickable.StopAtBounds
-                        QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
                         TextEdit {
                             id: descriptionEdit
                             objectName: "cardDescription"

@@ -99,7 +99,7 @@ Field {
             currentIndex: picker.current
             boundsBehavior: Flickable.StopAtBounds
             keyNavigationEnabled: false
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
             onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
             Keys.onDownPressed: picker.current = Math.min(picker.options.length - 1, picker.current + 1)
             Keys.onUpPressed: picker.current = Math.max(0, picker.current - 1)

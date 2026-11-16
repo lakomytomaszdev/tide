@@ -375,7 +375,7 @@ Rectangle {
             contentWidth: width
             contentHeight: groups.implicitHeight + 24
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             ColumnLayout {
                 id: groups
@@ -886,7 +886,7 @@ Rectangle {
                     clip: true
                     contentHeight: listColumn.implicitHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+                    QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
                     Column {
                         id: listColumn

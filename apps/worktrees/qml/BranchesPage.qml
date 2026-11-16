@@ -354,7 +354,7 @@ Rectangle {
             contentWidth: width
             contentHeight: tree.implicitHeight + 24
             boundsBehavior: Flickable.StopAtBounds
-            QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
+            QQC2.ScrollBar.vertical: Tide.ScrollBar {}
 
             Column {
                 id: tree

@@ -87,6 +87,8 @@ ColumnLayout {
         onClicked: { debounce.stop(); suggestions.refresh("links") }
     }
     QQC2.ScrollView {
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+        QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(results.implicitHeight, 240)
         visible: suggestions.candidates.length > 0

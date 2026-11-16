@@ -154,6 +154,8 @@ ColumnLayout {
         text: "Skróty celów repozytorium"
     }
     QQC2.ScrollView {
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+        QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(targetShortcuts.implicitHeight, 200)
         visible: picker.active && picker.mergeShortcuts.length > 0
@@ -230,6 +232,8 @@ ColumnLayout {
         text: "Ostatnie bazy repozytorium"
     }
     QQC2.ScrollView {
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+        QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(recents.implicitHeight, 120)
         visible: picker.active && !picker.pinned && picker.recentBases.length > 0
@@ -275,6 +279,8 @@ ColumnLayout {
         }
     }
     QQC2.ScrollView {
+        QQC2.ScrollBar.vertical: Tide.ScrollBar {}
+        QQC2.ScrollBar.horizontal: Tide.ScrollBar {}
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(results.implicitHeight, 160)
         visible: picker.active && picker.searchBranches.length > 0
