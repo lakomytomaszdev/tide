@@ -1,38 +1,38 @@
 ---
 status: accepted
 date: 2026-11-12
-source: decyzja właściciela 12.11.2026 (docs/agents/masterplan/2026-11-12/audyt/DECYZJE.md), RAPORT.md §2 ADR-5
+source: owner's decision of 12.11.2026 (docs/agents/masterplan/2026-11-12/audyt/DECYZJE.md), RAPORT.md §2 ADR-5
 ---
 
-# ADR-5: Autoryzacja wyników kroków i operacje Git
+# ADR-5: Authorization of step results and Git operations
 
-## Kontekst
+## Context
 
-Werdykt review jest już przypięty do commita (`reviewTip` → `expected_tip`), ale nośnikiem werdyktu jest zapisywalny
-`result.json`, a blokada gita jest kluczowana ścieżką, nie repozytorium. Ten ADR to kontrakt z kartami wykonawczymi, punkt po punkcie.
+The review verdict is already pinned to a commit (`reviewTip` → `expected_tip`), but the verdict is carried by a writable
+`result.json`, and the git lock is keyed by path, not by repository. This ADR is the contract with the executing cards, point by point.
 
-## Decyzja
+## Decision
 
-| Punkt | Decyzja | Karta wykonawcza i kamień |
+| Point | Decision | Executing card and milestone |
 |---|---|---|
-| (a) | **Werdykt przypięty do SHA i próby** („próba” w brzmieniu raportu; w słowniku próba to ponowienie kroku) — jest (`reviewTip` → `expected_tip`); formalnie zapisać jako warunek scalenia. | K-109 etap 2, **M2** |
-| (b) | **Pole `source`** (panel / D-Bus / opiekun / reguła) w zdarzeniach `step.decision` i `review.decision`. | K-108, **M2** |
-| (c) | **Chroniony kanał werdyktu i niezmienne wejście review**: wynik review zapisuje usługa z sesji recenzenta do katalogu poza zapisem kroku; hash wejścia review w zdarzeniu. Dziura jest ta sama na hoście i w pudełku. | **K-109 etap 2, M2 — dla hosta**; K-83 (v1.1) tylko dowodzi tego dla `executor: box` |
-| (d) | **Jedna blokada gita po `git-common-dir`** (`lock_for(repository_key(repo))`). K-66a i K-107 #15 jej używają. | K-110 ticket 1, **M3** (K-110 dokłada operacje pod tą blokadą) |
-| (e) | **`merge-tree` przez istniejące `gitops.prepare_merge_tree`**, bez nowej drogi. | K-110, **M3** |
+| (a) | **A verdict pinned to the SHA and the attempt** ("attempt" in the report's wording; in the glossary an attempt is a step retry) — exists (`reviewTip` → `expected_tip`); formally record it as a merge condition. | K-109 stage 2, **M2** |
+| (b) | **The `source` field** (panel / D-Bus / steward / rule) in the `step.decision` and `review.decision` events. | K-108, **M2** |
+| (c) | **A protected verdict channel and an immutable review input**: the review result is written by the service from the reviewer's session to a directory outside the step's write access; the review input hash in the event. The hole is the same on the host and in the box. | **K-109 stage 2, M2 — for the host**; K-83 (v1.1) only proves it for `executor: box` |
+| (d) | **A single git lock by `git-common-dir`** (`lock_for(repository_key(repo))`). K-66a and K-107 #15 use it. | K-110 ticket 1, **M3** (K-110 adds operations under this lock) |
+| (e) | **`merge-tree` through the existing `gitops.prepare_merge_tree`**, with no new path. | K-110, **M3** |
 
-## Konsekwencje
+## Consequences
 
-- Kanał werdyktu nie czeka na pudełko: K-83 nie jest jego kartą wykonawczą, tylko dowodem dla `executor: box`.
-- Karty dokładające operacje gita (K-110, K-66a, K-107 #15) używają tej samej blokady i istniejącego
+- The verdict channel does not wait for the box: K-83 is not its executing card, only the proof for `executor: box`.
+- Cards adding git operations (K-110, K-66a, K-107 #15) use the same lock and the existing
   `prepare_merge_tree`.
 
-**Co temu dziś przeczy** (w kolejności planu):
+**What contradicts this today** (in plan order):
 
-1. zapisywalny `result.json` jako nośnik werdyktu — znika z chronionym kanałem (K-109 etap 2, M2);
-2. blokada gita po ścieżce worktree — znika z K-110 ticket 1 (M3).
+1. a writable `result.json` as the verdict carrier — goes away with the protected channel (K-109 stage 2, M2);
+2. a git lock by worktree path — goes away with K-110 ticket 1 (M3).
 
-## Pytania otwarte
+## Open questions
 
-Brak decyzji otwartej. Postać zapisu chronionego kanału (katalog, format, sesja recenzenta) ustala plan K-109 etap 2
-w ramach punktu (c).
+No open decision. The form of the protected channel write (directory, format, reviewer session) is set by the K-109 stage 2 plan
+within point (c).

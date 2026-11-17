@@ -1,121 +1,121 @@
-# Standard planu pracy agentów (Tide)
+# Agent work plan standard (Tide)
 
-Wersja 1.5, 12.11.2026 (zgodna wstecz z wersjami 1, 1.1, 1.2, 1.3 i 1.4: dodatkowe kolumny są opcjonalne,
-a plany z sześcioma kolumnami działają jak dotąd). **Zmiana 1.5 (K-39, PT-376):** wynik kroku `outside` albo
-`denied` z poleceniem może mieć opcjonalne `"exclusive": true` — polecenie wymagające ciszy (sekcja „Kontrakt
-kroku”); stare wyniki bez pola działają bez zmian. **Zmiana 1.4 (K-69):** zasada testów ticketu i domknięcia (K-62)
-jest opisana ogólnie, dla każdej technologii — polecenia pochodzą z kontraktu testów projektu (`tests.changed`
-z `{base}`, `tests.full`), a `make test-changed BASE=…` i `make test` to przykład plasma-tide
-(sekcje „Testy ticketu i review” i „Domknięcie”, reguły 1–9 w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)).
-Format planu, kolumny i stany się nie zmieniają. Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
-projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
-agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
-uzasadnienie: decyzja 50 w [decisions.md](decisions.md)).
+Version 1.5, 12.11.2026 (backward compatible with versions 1, 1.1, 1.2, 1.3, and 1.4: the additional columns are optional,
+and plans with six columns work as before). **Change 1.5 (K-39, PT-376):** the result of an `outside` or
+`denied` step with a command may have an optional `"exclusive": true` — a command requiring quiet (the "Step
+contract" section); old results without the field work unchanged. **Change 1.4 (K-69):** the rule for ticket tests and close-out (K-62)
+is described generally, for every technology — the commands come from the project test contract (`tests.changed`
+with `{base}`, `tests.full`), and `make test-changed BASE=…` and `make test` are a plasma-tide example
+(the sections "Ticket tests and review" and "Close-out", rules 1–9 in [testing.md](testing.md#general-rule-and-the-project-test-contract)).
+The plan format, columns, and states do not change. This document is the reference to which the `CLAUDE.md` and `AGENTS.md` files of
+projects point. The plan is read by tide-daemon: the board in the **Tide Sesje** (Tide Sessions) window, the coordinator's progress in the agents
+widget, and the "Plany i tickety" (Plans and tickets) section in the morning report (description: [tide-daemon.md](tide-daemon.md#coordination),
+rationale: decision 50 in [decisions.md](decisions.md)).
 
-## Po co
+## Why
 
-Sesja koordynująca (Claude Code albo Codex), która dzieli pracę na tickety i zleca je podagentom,
-zapisuje plan w repozytorium. Dzięki temu stan pracy jest widoczny poza rozmową: co jest do zrobienia,
-co w toku, co czeka na decyzję użytkownika, co po review — także dla kolejnej sesji, która przejmie pracę.
+A coordinating session (Claude Code or Codex) that splits work into tickets and assigns them to subagents
+records the plan in the repository. This makes the state of the work visible outside the conversation: what is to be done,
+what is in progress, what awaits a user decision, what is after review — also for the next session that takes over the work.
 
-## Plik
+## File
 
-- Ścieżka: `docs/agents/plans/RRRR-MM-DD-<slug>.md` (data założenia planu, slug z małych liter,
-  cyfr i myślników), np. `docs/agents/plans/2026-10-26-release-candidate.md`.
-- Plan jest **commitowany** razem z pracą albo osobnym commitem `docs(plan): …`.
-- **Projekt z dokumentami AI „w Tide”** (wersja 1.1): gdy projekt na tablicy Tide ma `ai-docs: tide`,
-  plany i specyfikacje nie trafiają do repozytorium projektu, tylko do repozytorium tablicy:
-  `~/DevWorkspace/tide-board/docs/<projekt>/plans/RRRR-MM-DD-<slug>.md` i `…/specs/` (inna tablica:
-  `$TIDE_BOARD_DIR`). Agent dostaje ten katalog przez `--add-dir`, pisze w nim, ale **niczego tam nie
-  commituje** — repozytorium tablicy commituje tide-daemon. Tide liczy takie plany do repozytorium
-  projektu (`repo` w `projects/<projekt>.md` tablicy): tablica Sesje, raport poranny, kontrola numerów,
-  `check-plans` i `next-id` widzą je razem z planami z `docs/agents/plans/`. Polecenie uruchomienia
-  z karty podaje agentowi właściwy katalog.
-- Jeden plan na jeden ciąg pracy koordynatora. Zakończony plan zostaje w repozytorium ze statusem `done`.
+- Path: `docs/agents/plans/RRRR-MM-DD-<slug>.md` (RRRR = year; the date the plan was created, a slug of lowercase letters,
+  digits, and hyphens), for example `docs/agents/plans/2026-10-26-release-candidate.md`.
+- The plan is **committed** together with the work or in a separate commit `docs(plan): …`.
+- **A project with AI documents "in Tide"** (version 1.1): when a project on the Tide board has `ai-docs: tide`,
+  plans and specifications do not go into the project repository, but into the board repository:
+  `~/DevWorkspace/tide-board/docs/<projekt>/plans/RRRR-MM-DD-<slug>.md` and `…/specs/` (another board:
+  `$TIDE_BOARD_DIR`). The agent gets this directory through `--add-dir`, writes in it, but **commits nothing
+  there** — the board repository is committed by tide-daemon. Tide counts such plans toward the project
+  repository (`repo` in the board's `projects/<projekt>.md`): the Sesje board, the morning report, number checking,
+  `check-plans`, and `next-id` see them together with plans from `docs/agents/plans/`. The launch command
+  from the card gives the agent the right directory.
+- One plan per one coordinator line of work. A finished plan stays in the repository with the status `done`.
 
 ## Frontmatter
 
-Płaskie pary `klucz: wartość` (YAML bez zagnieżdżeń i list), pierwsza linia pliku to `---`.
+Flat `key: value` pairs (YAML without nesting and lists), the first line of the file is `---`.
 
-| Klucz | Wartość | Opis |
+| Key | Value | Description |
 | --- | --- | --- |
-| `tide-plan` | `1` | wersja standardu; plik bez niej nie jest planem Tide |
-| `title` | tekst | tytuł planu, np. `Release candidate TOM-20` |
-| `tracker` | `youtrack` \| `local` \| `none` | skąd są tickety (niżej) |
-| `tracker-url` | adres albo pusty | dla `youtrack`, np. `http://10.20.1.159:8111` |
-| `tracker-project` | klucz albo pusty | projekt w trackerze, np. `LOG`, `LEGAL`, `APP5` |
-| `ticket-prefix` | wielkie litery | prefiks ID ticketów w tym planie, np. `LOG`, `APP5`, `PT` |
-| `coordinator` | `claude` \| `codex` | narzędzie sesji koordynującej |
-| `session` | ID sesji albo pusty | ID sesji koordynatora (Claude Code: nazwa pliku dziennika, Codex: ID wątku), jeśli znane |
-| `status` | `active` \| `paused` \| `done` | stan całego planu |
-| `updated` | czas ISO 8601 | chwila ostatniej zmiany planu, np. `2026-10-26T21:13:00+01:00` |
-| `card` | `K-<numer>` albo brak | **opcjonalny (1.1)**: karta tablicy Tide, której służy plan, np. `K-12`; plan uruchomiony z karty zawsze go ma |
+| `tide-plan` | `1` | the standard version; a file without it is not a Tide plan |
+| `title` | text | the plan title, for example `Release candidate TOM-20` |
+| `tracker` | `youtrack` \| `local` \| `none` | where the tickets come from (below) |
+| `tracker-url` | an address or empty | for `youtrack`, for example `http://10.20.1.159:8111` |
+| `tracker-project` | a key or empty | the project in the tracker, for example `LOG`, `LEGAL`, `APP5` |
+| `ticket-prefix` | uppercase letters | the ticket ID prefix in this plan, for example `LOG`, `APP5`, `PT` |
+| `coordinator` | `claude` \| `codex` | the tool of the coordinating session |
+| `session` | a session ID or empty | the coordinator session ID (Claude Code: the journal file name, Codex: the thread ID), if known |
+| `status` | `active` \| `paused` \| `done` | the state of the whole plan |
+| `updated` | ISO 8601 time | the moment of the last plan change, for example `2026-10-26T21:13:00+01:00` |
+| `card` | `K-<numer>` or absent | **optional (1.1)**: the Tide board card the plan serves, for example `K-12`; a plan launched from a card always has it |
 
 **Tracker:**
 
-- `youtrack` — tickety żyją w YouTracku (`tracker-url`, `tracker-project`); plan wskazuje, które
-  z nich są w tym ciągu pracy, a Tide dociąga z YouTracka tytuły, stany i odnośniki. Gdy projekt YouTracka
-  ma na tablicy Tide klucz z włączoną synchronizacją (PT-7), Tide zapisuje w YouTracku stan ticketu
-  (`w-toku` i `review` → In Progress, `czeka` → To be discussed, `gotowe` → Fixed, `odrzucone` → Won't fix) —
-  tylko przy przejściach, bez nadpisywania zmian ręcznych (docs/tide-daemon.md, „Synchronizacja z YouTrackiem”).
-- `local` — **nie ma zewnętrznego trackera**: ID ticketów nadaje plan (`PT-1`, `PT-2`, …), a plan
-  jest źródłem stanu dla tablicy Tide i raportu porannego. `tracker-url` i `tracker-project` puste.
-- `none` — praca bez śledzenia ticketów (np. jednorazowe zadanie). Tabela może być pusta albo
-  zawierać zwykłe kroki; Tide pokazuje je, ale niczego nie dopasowuje do trackera.
+- `youtrack` — tickets live in YouTrack (`tracker-url`, `tracker-project`); the plan indicates which
+  of them are in this line of work, and Tide pulls titles, states, and links from YouTrack. When the YouTrack project
+  has a key with synchronization enabled on the Tide board (PT-7), Tide writes the ticket state to YouTrack
+  (`w-toku` and `review` → In Progress, `czeka` → To be discussed, `gotowe` → Fixed, `odrzucone` → Won't fix) —
+  only on transitions, without overwriting manual changes (docs/tide-daemon.md, "Synchronizacja z YouTrackiem" (Synchronization with YouTrack)).
+- `local` — **there is no external tracker**: ticket IDs are assigned by the plan (`PT-1`, `PT-2`, …), and the plan
+  is the source of state for the Tide board and the morning report. `tracker-url` and `tracker-project` are empty.
+- `none` — work without ticket tracking (for example a one-off task). The table may be empty or
+  contain ordinary steps; Tide shows them, but does not match anything to a tracker.
 
-**Karta (`card`).** Plan uruchomiony z karty tablicy Tide („Co ma zrobić agent?”) ma `card: K-12`,
-a gałąź koordynatora zawiera ID karty małymi literami (`claude/k-12-okno-dockera`). Po tej parze Tide
-łączy kartę z koordynatorem i jego planem: koordynator na gałęzi `…k-12…` dostaje plan z `card: K-12`
-(w katalogu projektu w tablicy leżą plany wielu kart naraz), a karta — stan z planu. Plan z innym `card`
-nie jest planem tego koordynatora. Klucz bez sensownej wartości (np. `card: 12`) to błąd planu.
-Każda sesja pisząca przekazanie dla konkretnej karty wpisuje `card` przed zapisaniem planu.
-Plan projektu bez `card` może być tylko podpowiedzią w wejściu „Mam plan”; użytkownik musi go wybrać.
-Ścieżkę wybranego planu zapisuje karta w tablicy. Przejęcie kopiuje tabelę do dziennika karty
-bez zmiany oryginalnego planu ani numerów istniejących ticketów.
+**Card (`card`).** A plan launched from a Tide board card ("Co ma zrobić agent?" (What should the agent do?)) has `card: K-12`,
+and the coordinator's branch contains the card ID in lowercase (`claude/k-12-okno-dockera`). By this pair Tide
+links the card with the coordinator and its plan: a coordinator on a branch `…k-12…` gets the plan with `card: K-12`
+(the project directory on the board holds the plans of many cards at once), and the card gets its state from the plan. A plan with a different `card`
+is not the plan of this coordinator. A key without a sensible value (for example `card: 12`) is a plan error.
+Every session writing a handoff for a specific card enters `card` before saving the plan.
+A project plan without `card` can only be a hint in the "Mam plan" (I have a plan) entry; the user must choose it.
+The card records the path of the chosen plan on the board. The takeover copies the table to the card journal
+without changing the original plan or the numbers of existing tickets.
 
-**Specyfikacja karty** (obok planu, w `specs/`): plik `k-12-<opis>.md` z frontmatterem `card: K-12`
-i `status: szkic`, zmienianym na `status: gotowa`, gdy użytkownik ją zaakceptuje. W trybie „tylko
-specyfikacja” to sygnał dla Tide: karta dostaje znacznik „specyfikacja gotowa” i wraca do Backlogu.
-Specyfikację w repozytorium projektu (`docs/agents/specs/`) agent w tym trybie commituje sam — tylko ten
-plik, na bieżącej gałęzi, `docs(spec): K-12 <short English title>`, bez push; w tablicy commituje tide-daemon.
+**Card specification** (next to the plan, in `specs/`): a file `k-12-<opis>.md` with the frontmatter `card: K-12`
+and `status: szkic` (draft), changed to `status: gotowa` (ready) when the user accepts it. In the "specification
+only" mode this is a signal for Tide: the card gets the tag "specyfikacja gotowa" (specification ready) and returns to the Backlog.
+A specification in the project repository (`docs/agents/specs/`) is committed by the agent itself in this mode — only that
+file, on the current branch, `docs(spec): K-12 <short English title>`, without push; on the board it is committed by tide-daemon.
 
-## Numery ticketów: jedno źródło
+## Ticket numbers: a single source
 
-Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dlatego:
+One number is always one task — across the whole repository and in the tracker. Therefore:
 
-1. **Jedno źródło numerów na repozytorium.** Gdy repozytorium ma projekt w YouTracku, plan ma
-   `tracker: youtrack`, a `ticket-prefix` jest równy `tracker-project`: ID w planie to dokładnie klucze
-   z YouTracka. Ticket najpierw zakładasz w YouTracku, dopiero potem wpisujesz go do planu. Nowe plany
-   nie używają aliasów (np. `LA-035` zamiast `LEGAL-35`); stare aliasy działają tylko przez mapę
-   migracji (`docs/agents/youtrack-migration/`) do czasu przejścia.
-2. **Prefiks lokalny jest jeden i wolny.** Przy `tracker: local` prefiks jest jeden dla całego
-   repozytorium (zapisany w CLAUDE.md/AGENTS.md) i nie może być kluczem żadnego projektu w YouTracku
-   (sprawdź listę projektów — tylko odczyt).
-3. **Numeracja lokalna jest ciągła w repozytorium.** Nowy numer = największy numer z tym prefiksem
-   we wszystkich planach repozytorium + 1 — w `docs/agents/plans/` głównego katalogu i **każdego
-   worktree** (`git worktree list`, także niezacommitowane) oraz na wszystkich gałęziach
+1. **One source of numbers per repository.** When the repository has a project in YouTrack, the plan has
+   `tracker: youtrack`, and `ticket-prefix` equals `tracker-project`: the IDs in the plan are exactly the keys
+   from YouTrack. You create a ticket in YouTrack first, and only then enter it into the plan. New plans
+   do not use aliases (for example `LA-035` instead of `LEGAL-35`); old aliases work only through the migration
+   map (`docs/agents/youtrack-migration/`) until the transition.
+2. **The local prefix is single and free.** With `tracker: local` there is one prefix for the whole
+   repository (recorded in CLAUDE.md/AGENTS.md) and it cannot be the key of any project in YouTrack
+   (check the project list — read only).
+3. **Local numbering is continuous in the repository.** A new number = the largest number with this prefix
+   in all the repository's plans + 1 — in `docs/agents/plans/` of the main directory and of **every
+   worktree** (`git worktree list`, also uncommitted ones) and on all branches
    (`git grep -h "^ticket-prefix\\|^| PREFIKS-" $(git for-each-ref --format='%(refname)' refs/heads) -- docs/agents/plans`).
-   Plan w innym worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
-   Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
-   Plany projektu z dokumentami „w Tide” (`tide-board/docs/<projekt>/plans/`) zajmują numery tak samo.
-   **Nowy numer lokalny bierzesz wyłącznie z** `tide next-id <repozytorium>
-   [--count N] [--title "…"]` (`--title` to tytuł wiersza w planie, w języku planu): liczy to samo pod blokadą i zapisuje rezerwację
-   w `~/.local/state/tide/ticket-ids.json`, więc dwie równoległe sesje nie dostaną tego samego numeru.
-   Dla prefiksu z YouTracka odmawia — numer nadaje YouTrack. Ręczne liczenie tylko wtedy, gdy narzędzia nie ma.
-4. **Zanim założysz projekt w trackerze albo zmienisz prefiks**, sprawdź, czy klucz nie jest już
-   używany w planach repozytorium ani w trackerze. Przy kolizji zatrzymaj się i zapytaj użytkownika.
-5. Tide sprawdza to samo i pokazuje ostrzeżenie na tablicy Sesje i w raporcie: ten sam ID z różnymi
-   tytułami w dwóch planach, prefiks lokalny równy kluczowi projektu w YouTracku, prefiks planu
-   `youtrack` różny od `tracker-project` bez mapy migracji, a łagodnie: numer zarezerwowany dla innego
-   tytułu (często ten sam ticket w innym języku) i nowy plan, który zaczyna numerację od nowa. Koordynator przed nadaniem nowego numeru
-   albo założeniem projektu w trackerze uruchamia `tide check-plans`
-   (kod wyjścia 1 to kolizja — zatrzymaj się i zapytaj użytkownika).
-   Lokalizacje standardu i narzędzi podaje `tide info --json`; polecenia korzystają z zasobów instalacji.
-   W checkoutcie odpowiednikami są `make next-id REPO=…` i `make check-plans`.
+   A plan in another worktree is invisible from the main directory, and still occupies its numbers.
+   A new plan does not start from 1, and numbers are not reused, also after `odrzucone`.
+   Plans of a project with documents "in Tide" (`tide-board/docs/<projekt>/plans/`) occupy numbers in the same way.
+   **You take a new local number only from** `tide next-id <repozytorium>
+   [--count N] [--title "…"]` (`--title` is the title of the row in the plan, in the plan's language): it computes the same under a lock and records the reservation
+   in `~/.local/state/tide/ticket-ids.json`, so two parallel sessions will not get the same number.
+   For a YouTrack prefix it refuses — the number is assigned by YouTrack. Count by hand only when the tool is missing.
+4. **Before you create a project in the tracker or change a prefix**, check whether the key is already
+   used in the repository's plans or in the tracker. On a collision stop and ask the user.
+5. Tide checks the same and shows a warning on the Sesje board and in the report: the same ID with different
+   titles in two plans, a local prefix equal to a YouTrack project key, a `youtrack` plan prefix
+   different from `tracker-project` without a migration map, and, more mildly: a number reserved for a different
+   title (often the same ticket in another language) and a new plan that restarts numbering. Before assigning a new number
+   or creating a project in the tracker, the coordinator runs `tide check-plans`
+   (exit code 1 is a collision — stop and ask the user).
+   The locations of the standard and the tools are given by `tide info --json`; the commands use the installation's resources.
+   In a checkout the equivalents are `make next-id REPO=…` and `make check-plans`.
 
-## Tabela
+## The table
 
-Pod frontmatterem jedna tabela Markdown z sześcioma wymaganymi kolumnami:
+Under the frontmatter, one Markdown table with six required columns:
 
 ```markdown
 | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi |
@@ -124,335 +124,335 @@ Pod frontmatterem jedna tabela Markdown z sześcioma wymaganymi kolumnami:
 | TOM-146 | Eksport raportu do CSV z filtrami | todo | | | |
 ```
 
-| Kolumna | Opis |
+| Column | Description |
 | --- | --- |
-| `Ticket` | ID ticketu (`PREFIKS-numer`), ten sam co w trackerze albo nadany przez plan |
-| `Tytuł` | krótki tytuł; przy YouTracku może się różnić od tytułu w trackerze (wygrywa plan) |
-| `Stan` | jeden z: `todo`, `w-toku`, `review`, `czeka`, `gotowe`, `odrzucone` |
-| `Gałąź` | gałąź pracy (może być w `` `…` ``), z ID ticketu małymi literami |
-| `Agent` | kto pracuje: typ podagenta (`implementer`, `code-reviewer`…) albo pusty |
-| `Uwagi` | jedno zdanie: powód czekania, wynik review, decyzja |
+| `Ticket` | the ticket ID (`PREFIKS-numer`), the same as in the tracker or assigned by the plan |
+| `Tytuł` | a short title (Title); with YouTrack it may differ from the title in the tracker (the plan wins) |
+| `Stan` | one of (State): `todo`, `w-toku`, `review`, `czeka`, `gotowe`, `odrzucone` |
+| `Gałąź` | the work branch (Branch; may be in `` `…` ``), with the ticket ID in lowercase |
+| `Agent` | who is working: the subagent type (`implementer`, `code-reviewer`…) or empty |
+| `Uwagi` | one sentence (Notes): the reason for waiting, the review result, a decision |
 
-**Wersja 1.2:** na końcu tabeli mogą dojść, w tej kolejności, kolumny `Klasa`, `Review`, `Blokery`.
-Można użyć pierwszej, pierwszych dwóch albo wszystkich trzech. Parser Sesji i raportu czyta oba warianty;
-plany sześciokolumnowe zachowują dotychczasowe znaczenie.
+**Version 1.2:** at the end of the table, the columns `Klasa`, `Review`, `Blokery` may be added, in this order.
+You can use the first, the first two, or all three. The Sesje and report parser reads both variants;
+six-column plans keep their existing meaning.
 
-| Kolumna 1.2 | Opis |
+| 1.2 column | Description |
 | --- | --- |
-| `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
-| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy (przy polityce projektu `other-family` — wykonawcę innej rodziny); sprawdzenie planu stosuje politykę projektu ticketu (recenzja według ryzyka, niżej) |
-| `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
+| `Klasa` | `lekki`, `standard`, `mocny`, or `lokalny` (light, standard, strong, local); without the column it defaults to `standard` when approving a card |
+| `Review` | the name of the reviewer from the executor catalog; when empty, Tide picks another model of the same provider (with the project policy `other-family` — an executor of another family); checking the plan applies the policy of the ticket's project (risk-based review, below) |
+| `Blokery` | IDs of tickets from this plan, comma-separated; before approval they may take the form `#1`, `#2` |
 
-**Wersja 1.3:** po `Blokery` może dojść opcjonalna kolumna `Projekt` (10 kolumn). Parser czyta plany o 6, 7, 8, 9
-i 10 kolumnach; znaczenie kolumn 1.2 się nie zmienia, a o obecności kolumny decyduje nagłówek, nie pusta ostatnia
-komórka (plan z 9 kolumnami nie staje się planem z kolumną `Projekt`).
+**Version 1.3:** after `Blokery` an optional column `Projekt` may be added (10 columns). The parser reads plans with 6, 7, 8, 9,
+and 10 columns; the meaning of the 1.2 columns does not change, and the presence of the column is decided by the header, not by an empty last
+cell (a plan with 9 columns does not become a plan with a `Projekt` column).
 
-| Kolumna 1.3 | Opis |
+| 1.3 column | Description |
 | --- | --- |
-| `Projekt` | slug projektu Tablicy, do którego należy ticket; pusta komórka albo brak kolumny = projekt karty. Nieznany slug nie psuje odczytu Sesji i raportu, zgłasza go dopiero sprawdzanie propozycji |
+| `Projekt` | the slug of the Board project the ticket belongs to; an empty cell or no column = the card's project. An unknown slug does not break reading by Sesje and the report; it is reported only by the proposal check |
 
-Blokery `#n` w propozycji planu mogą wskazywać dowolny ticket z całego wspólnego planu karty, także z innego
-projektu. W zatwierdzonym planie bloker może być ID z innej karty grupy.
+Blockers `#n` in a plan proposal may point to any ticket of the whole shared card plan, also from another
+project. In an approved plan a blocker may be an ID from another card of the group.
 
-Propozycja planu karty ma numery robocze `#1`, `#2` itd. oraz plik Markdown `tickets/1.md`,
-`tickets/2.md` itd. obok pliku planu. Każda kartka zawiera co najmniej jeden punkt kryteriów
-`- [ ] …`; osobny nagłówek „Kryteria akceptacji” jest opcjonalny, zgodnie z formatem lokalnym
-`to-tickets`. Usługa sprawdza wykonawców, kartki, blokery, cykle i jedną tabelę przed
-pokazaniem planu do zatwierdzenia. Numery `PREFIKS-n` powstają dopiero po „Zatwierdź plan”. Dziennik
-karty zapisuje mapę `#n → ID`, a zatwierdzony plan i kartki z ID trafiają na gałąź karty. Plan w tym
-worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repozytorium.
-Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
-review i scaleniu ticketu.
+A card plan proposal has working numbers `#1`, `#2`, and so on, and a Markdown file `tickets/1.md`,
+`tickets/2.md`, and so on next to the plan file. Each sheet contains at least one criteria item
+`- [ ] …`; a separate "Kryteria akceptacji" (Acceptance criteria) heading is optional, in line with the local
+`to-tickets` format. The service checks the executors, sheets, blockers, cycles, and the single table before
+showing the plan for approval. The `PREFIKS-n` numbers are created only after "Zatwierdź plan" (Approve plan). The card
+journal records the map `#n → ID`, and the approved plan and sheets with IDs go onto the card branch. The plan in that
+worktree is read by Sesje, the report, and the number check together with the repository's other plans.
+The service updates `Stan` and `updated` in the approved plan after delegating, a step result,
+a review, and a ticket merge.
 
-**Szkice zakresu następczego (`followups/`).** Pakiet propozycji obejmuje Markdowny obok planu,
-`tickets/*.md` i `followups/**/*.md`. Podkatalogi szkiców zachowują swoją strukturę. Usługa zamraża
-pełną treść przed przekazaniem propozycji; review otrzymuje kopię pakietu w `in/proposal/`, a poprawka
-dodatkowo zaczyna z kopiami w swoim wyjściu. Późniejsza edycja wyjścia autora nie zmienia migawki.
-Dotyczy to planowania w tle, Konsoli oraz propozycji wskazanej z pliku. Każda propozycja przechowuje
-własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
-Kopia do odczytu zachowuje oryginalne nazwy i treści. W wyjściu poprawki plan ma nazwę `plan.md`,
-a linki ze szkiców wskazują tę nazwę; przy poprawce zatwierdzonego planu kartki i linki do nich
-używają już nadanych ID zamiast numerów roboczych. Szkice zachowują podkatalogi, fragmenty i parametry URL.
-Istniejące kartki w wyjściu poprawki zatwierdzonego planu mają aktualną treść z planu bazowego,
-w tym edycje użytkownika w panelu; pierwotna migawka w `in/proposal/` pozostaje bez zmian.
+**Follow-up scope sketches (`followups/`).** A proposal package includes the Markdown files next to the plan,
+`tickets/*.md`, and `followups/**/*.md`. The sketch subdirectories keep their structure. The service freezes
+the full content before handing over the proposal; the review gets a copy of the package in `in/proposal/`, and a fix
+additionally starts with the copies in its output. A later edit of the author's output does not change the snapshot.
+This applies to background planning, the Console, and a proposal indicated from a file. Each proposal keeps
+its own package, so a correction does not overwrite the material of the previous proposal.
+The read copy keeps the original names and content. In the fix output the plan is named `plan.md`,
+and the links from the sketches point to this name; when fixing an approved plan the sheets and links to them
+use the already assigned IDs instead of working numbers. The sketches keep subdirectories, fragments, and URL parameters.
+The existing sheets in the output of a fix of an approved plan have the current content from the base plan,
+including the user's edits in the panel; the original snapshot in `in/proposal/` stays unchanged.
 
-Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
-Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze
-referencyjne i cele z fragmentem) muszą wskazywać istniejący Markdown w pakiecie; wyjście poza
-katalog artefaktów i brak celu przerywają sprawdzanie przed publikacją niekompletnej propozycji.
-Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia daje wynik błędu kroku.
+Regular UTF-8 files are allowed, at most 512 KiB per file and 16 MiB for the whole package.
+Links to files and directories are rejected. Local Markdown links to sketches (also reference
+links and targets with a fragment) must point to an existing Markdown file in the package; going outside the
+artifact directory or a missing target aborts the check before publishing an incomplete proposal.
+The service does not attach arbitrary files indicated by links. A freeze error gives a step error result.
 
-Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
-`../followups/…` są przeliczane względem docelowego katalogu kartek. Linki ze szkiców do planu
-i kartek są przeliczane według datowanej nazwy planu i nadanych ID ticketów, także w podkatalogach,
-z zachowaniem fragmentów i parametrów URL. Lokalny cel szkicu musi należeć do publikowanego kompletu:
-plan, kartki ticketów planu lub `followups/`; pozostałe cele są odrzucane przed publikacją propozycji.
-Kolejne commity stanu planu
-zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy udany commit zatwierdzonej
-poprawki bierze tekst poza tabelą i szkice z nowej zamrożonej propozycji. Podczas oczekiwania
-na decyzję commity stanu nadal korzystają z pakietu poprzednio zatwierdzonej wersji:
-nie nadpisują szkiców treścią poprawki ani nie dodają jej nowych szkiców. Późniejsze aktualizacje stanu
-zachowują tekst z worktree, w tym ręczne dopiski. Próg pierwszego udanego zapisu dotyczy wersji
-faktycznie zatwierdzonej; odrzucenie niezatwierdzonej poprawki nie unieważnia wcześniejszego zapisu.
-Szkic opisuje zakres do osobnego
-zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
+After approval the sketches go into the card branch commit in `followups/` next to the plan. The links of the sheets
+`../followups/…` are recomputed relative to the target sheet directory. Links from the sketches to the plan
+and the sheets are recomputed according to the dated plan name and the assigned ticket IDs, also in subdirectories,
+keeping fragments and URL parameters. A local sketch target must belong to the published set:
+the plan, the plan's ticket sheets, or `followups/`; other targets are rejected before publishing the proposal.
+Subsequent plan state commits
+keep the sketches, the text outside the table, and the appended ends of the sheets. The first successful commit of an approved
+fix takes the text outside the table and the sketches from the new frozen proposal. While waiting
+for a decision the state commits still use the package of the previously approved version:
+they do not overwrite the sketches with the content of the fix or add its new sketches. Later state updates
+keep the text from the worktree, including manual additions. The threshold of the first successful write concerns the version
+actually approved; rejecting an unapproved fix does not invalidate an earlier write.
+A sketch describes a scope for separate
+planning; saving it does not publish a card and does not confirm the availability of the described feature.
 
-## Przepływ karty prowadzony przez Tide (1.2)
+## The card flow run by Tide (1.2)
 
-Karta na Tablicy uruchamia planowanie albo pojedynczy ticket. Tide prowadzi dziennik karty, zakłada gałąź karty
-i osobne gałęzie ticketów, uruchamia kroki oraz pokazuje decyzje w panelu karty. Planowanie Lekkie tworzy propozycję
-w tle z opisu i specyfikacji karty. Pełne planowanie odbywa się obecnie w Konsoli; włączenie go do tego przepływu
-jest drugim etapem. „Mam plan” przejmuje wskazany plan
-bez zapisywania zmian w jego repozytorium. Plan przekazywany dla konkretnej karty ma `card: K-<numer>`; plan bez
-tego pola może być podpowiedzią, a nie automatycznie wybranym planem karty.
+A card on the Board starts planning or a single ticket. Tide keeps the card journal, creates the card branch
+and separate ticket branches, runs the steps, and shows decisions in the card panel. "Lekkie" (Light) planning creates a proposal
+in the background from the card's description and specification. "Pełne" (Full) planning currently takes place in the Console; including it in this flow
+is the second stage. "Mam plan" (I have a plan) takes over the indicated plan
+without saving changes in its repository. A plan handed over for a specific card has `card: K-<numer>`; a plan without
+this field can be a hint, not an automatically chosen card plan.
 
-Pełne planowanie w Konsoli prowadzi rozmowę `grill-with-docs` (pytania i zapis decyzji), potem `to-spec`
-i `to-tickets`. Planowanie Lekkie w przepływie karty przygotowuje `spec.md`, `plan.md` i kartki bez
-pytań do użytkownika w trakcie kroku; po niezależnym review pokazuje plan do zatwierdzenia.
+Full planning in the Console runs a `grill-with-docs` conversation (questions and recording decisions), then `to-spec`
+and `to-tickets`. Light planning in the card flow prepares `spec.md`, `plan.md`, and sheets without
+questions to the user during the step; after an independent review it shows the plan for approval.
 
-**Role.** Planujący przygotowuje tabelę i kartki. Inny wykonawca sprawdza plan przed pokazaniem go użytkownikowi;
-gdy znajdzie braki, planujący dostaje jedną poprawkę. Autor ticketu wykonuje pionowy wycinek w osobnym worktree,
-a recenzent spełnia zasady recenzji według ryzyka (niżej) i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
-może też zmienić wykonawcę lub kartkę ticketu, który jeszcze nie wystartował. Tickety bez blokerów mogą biec
-równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników do gałęzi karty.
+**Roles.** The planner prepares the table and sheets. Another executor checks the plan before it is shown to the user;
+when it finds gaps, the planner gets one fix. The ticket author performs a vertical slice in a separate worktree,
+and the reviewer meets the rules of risk-based review (below) and records the verdict. The user approves the plan or the difference after sending it back with comments;
+they may also change the executor or the sheet of a ticket that has not started yet. Tickets without blockers can run
+in parallel, with a provider step limit; a blocker starts after the predecessors are merged into the card branch.
 
-**Kontrakt kroku.** Tide przekazuje kartkę z identyfikatorem karty i ticketu, gałęzią, katalogiem roboczym,
-ograniczeniami oraz ścieżką katalogu wyjściowego. Autor zapisuje tam notkę `note.md`, a na końcu `result.json`:
+**The step contract.** Tide hands over a sheet with the card and ticket identifier, the branch, the working directory,
+the constraints, and the path of the output directory. The author writes the note `note.md` there, and at the end `result.json`:
 `{"result":"done","notes":["note.md"]}`, `{"result":"question","question":"…"}`,
-`{"result":"denied","command":"…"}` albo `{"result":"error","reason":"…"}`. Wynik `outside` albo `denied`
-z poleceniem pomiaru wydajności (albo innym, którego wynik zależy od obciążenia maszyny) ma `"exclusive": true`: Tide
-uruchamia je dopiero na spokojnej maszynie i w trakcie nie startuje innych ciężkich poleceń (zły typ pola = `false`).
-Recenzent oprócz tego
-zapisuje `review.md` i wynik, np. `{"result":"done","verdict":"APPROVE","blockers":0,
-"majors":0,"nits":0,"notes":["review.md"]}`; `REQUEST_CHANGES` wymaga dodatniej liczby `blockers`
-lub `majors`. Brak poprawnego wyniku jest błędem
-kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty;
-wznowienie zachowuje worktree i zmiany.
+`{"result":"denied","command":"…"}`, or `{"result":"error","reason":"…"}`. An `outside` or `denied` result
+with a performance measurement command (or another whose result depends on the machine load) has `"exclusive": true`: Tide
+runs it only on a quiet machine and does not start other heavy commands meanwhile (a wrong field type = `false`).
+The reviewer in addition
+writes `review.md` and a result, for example `{"result":"done","verdict":"APPROVE","blockers":0,
+"majors":0,"nits":0,"notes":["review.md"]}`; `REQUEST_CHANGES` requires a positive number of `blockers`
+or `majors`. A missing valid result is a step
+error. A question, a consent, and a retry go through the card journal;
+a resume keeps the worktree and the changes.
 
-**Testy ticketu i review.** Zasada obowiązuje w każdej technologii. Przed oddaniem ticketu i poprawek autor
-uruchamia „testy dobrane do zmian” z kontraktu testów projektu (`tests.changed`, z `{base}` = punkt startu ticketu
-na gałęzi karty) i zapisuje polecenie oraz wynik w notce. Bez zatwierdzonego kontraktu polecenie pochodzi z wykrycia
-w `Makefile`, a potem z zasad projektu (`CLAUDE.md`/`AGENTS.md`); reguły 1–9 (źródła, zatwierdzenie, zgody, `legacy`,
-domknięcie, ponowienie) są w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu). W plasma-tide to
-`make test-changed BASE=<punkt startu ticketu na gałęzi karty>`. Kartka przekazuje przypięty SHA z wyniku utworzenia
-gałęzi ticketu; późniejszy ruch gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawanych zmian
-i nie żąda osobnych pełnych testów projektu (w plasma-tide `make test`). Pełny przebieg nie jest kryterium ticketu ani
-review. Zasada zastępuje
-wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
-planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
+**Ticket tests and review.** The rule applies in every technology. Before handing in a ticket and fixes, the author
+runs the "tests selected for the changes" from the project test contract (`tests.changed`, with `{base}` = the ticket start point
+on the card branch) and records the command and the result in the note. Without an approved contract the command comes from detection
+in the `Makefile`, and then from the project rules (`CLAUDE.md`/`AGENTS.md`); rules 1–9 (sources, approval, consents, `legacy`,
+close-out, rerun) are in [testing.md](testing.md#general-rule-and-the-project-test-contract). In plasma-tide this is
+`make test-changed BASE=<punkt startu ticketu na gałęzi karty>`. The sheet hands over the pinned SHA from the result of creating
+the ticket branch; a later move of the card branch does not change this base. The reviewer checks the successful result for the submitted changes
+and does not demand separate full project tests (in plasma-tide `make test`). A full run is not a criterion of the ticket or of
+the review. The rule replaces
+the requirement of the full `make test` in the sheets of existing plans (including K-37, K-38, and K-55), without rewriting the
+plans. If the `test-changed` map selects the full suite, the author runs it without an additional `make test`.
 
-Wyjątek `legacy` (reguła 7, rozstrzygająca w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)):
-bez zastosowanego kontraktu — cel `test` bez `test-changed`; z zatwierdzonym kontraktem — tylko gdy `changed` to zwykłe
-`make test-changed …`, a gałąź ma `test` bez `test-changed`. W `legacy` pełny `make test` jest testem ticketu,
-a recenzent sprawdza jego wynik w notce. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+The `legacy` exception (rule 7, decisive in [testing.md](testing.md#general-rule-and-the-project-test-contract)):
+without an applied contract — a `test` target without `test-changed`; with an approved contract — only when `changed` is a plain
+`make test-changed …` and the branch has `test` without `test-changed`. In `legacy` the full `make test` is the ticket test,
+and the reviewer checks its result in the note. Details: [older branches](testing.md#older-branches-without-the-test-changed-target).
 
-Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
-[dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
+The rules for settling a failed run and a waiver are described in the
+[testing documentation](testing.md#test-exceptions). A waiver does not change the result to successful.
 
-**Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
-`"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
-`effect` — jedno zdanie o skutku wyboru (do 400 znaków, opcjonalny), `recommended` — najwyżej jedna pozycja.
-Okno decyzji pokazuje opcje jako karty (polecona pierwsza, żadna nie jest wybrana domyślnie), a Tide zawsze
-dokłada na końcu „Inną odpowiedź…” — agent jej nie podaje. Wybór wznawia krok; tytuł i skutek opcji trafiają do
-`resume_context`. Niepoprawne lub brakujące `options` (pusty tytuł, więcej niż 4, kilka poleconych, powtórzony
-tytuł, zły typ) nie są błędem kroku: okno ma wtedy samo pole odpowiedzi. Pytanie bez `options` działa jak dotąd.
-Autor i recenzent nie wykonują push ani scalenia.
+**A question with ready options.** `{"result":"question","question":"…"}` may additionally have
+`"options":[{"title":"…","effect":"…","recommended":true}]`: from 1 to 4 items, `title` non-empty (up to 120 characters),
+`effect` — one sentence about the consequence of the choice (up to 400 characters, optional), `recommended` — at most one item.
+The decision window shows the options as cards (the recommended one first, none selected by default), and Tide always
+adds at the end "Inną odpowiedź…" (Other answer…) — the agent does not provide it. A choice resumes the step; the option's title and effect go into
+`resume_context`. Invalid or missing `options` (an empty title, more than 4, several recommended, a repeated
+title, a wrong type) are not a step error: the window then has just the answer field. A question without `options` works as before.
+The author and the reviewer do not push or merge.
 
-**Pytanie o bazę (PT-208).** Każde przekazanie kroku zawiera bieżący pełny ref i przypięty SHA bazy
-albo jawne `unknown`. Sam brak pliku nie dowodzi błędnej bazy ani nie pozwala tworzyć zamiennika,
-wykonywać checkout, rebase czy reset. Po sprawdzeniu dowodów krok może zapisać:
+**A question about the base (PT-208).** Every step handoff contains the current full ref and the pinned base SHA
+or an explicit `unknown`. A missing file alone does not prove a wrong base or allow creating a replacement,
+running checkout, rebase, or reset. After checking the evidence the step may write:
 
 ```json
 {"result":"question","question":"Czy zachować bazę?","baseProposal":{"ref":"refs/heads/feature/example","evidence":"Sprawdzona historia wskazanego pliku…"}}
 ```
 
-`baseProposal` jest opcjonalne. `ref` musi być pełnym lokalnie znanym refem `refs/heads/…` lub
-`refs/remotes/…` (do 1024 znaków), `evidence` niepustym zwykłym tekstem (do 4000 znaków).
-Usługa sprawdza kandydata w repozytorium projektu karty, bez fetch ani zmiany gita. Nieprawidłowa
-propozycja pozostaje informacją przy zwykłym pytaniu; stare pytania i `options` zachowują działanie.
+`baseProposal` is optional. `ref` must be a full locally known ref `refs/heads/…` or
+`refs/remotes/…` (up to 1024 characters), `evidence` non-empty plain text (up to 4000 characters).
+The service checks the candidate in the card's project repository, without fetch or changing git. An invalid
+proposal stays as information on an ordinary question; old questions and `options` keep working.
 
-Poprawna propozycja wstrzymuje nowe kroki i integrację wyników tej karty. Procesy mogą dokończyć,
-a ich wyniki pozostają zapisane i niescalone. Pytanie i blokada wracają po restarcie; oczekiwanie nie
-trzyma blokady repozytorium i nie blokuje innych kart. `ResolveCardStep` przyjmuje `choice: answer`,
-`step` oraz strukturalne `baseDecision: keep` albo `change`, niezależnie od tekstu odpowiedzi.
-Zachowaj zapisuje zwykłą odpowiedź i odblokowuje kontynuację. Zmień zapisuje oczekiwanie (`waiting: true`,
-`changed: false`), pozostawiając pytanie i możliwość Zachowaj. Nie wykonuje operacji git ani nie
-potwierdza zmiany; podgląd dostarcza PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+A valid proposal pauses new steps and the integration of this card's results. Processes may finish,
+and their results stay recorded and unmerged. The question and the block return after a restart; the waiting does not
+hold the repository lock and does not block other cards. `ResolveCardStep` accepts `choice: answer`,
+`step`, and a structured `baseDecision: keep` or `change`, regardless of the answer text.
+"Zachowaj" (Keep) records an ordinary answer and unblocks continuation. "Zmień" (Change) records waiting (`waiting: true`,
+`changed: false`), leaving the question and the Keep option. It performs no git operation and does not
+confirm the change; the preview is delivered by PT-201, activation by PT-202, consequences and confirmation by PT-213.
 
-**Podgląd korekty (PT-201).** `/Board PreviewCardBaseChange(id, request)` przyjmuje pełny `baseRef`
-i opcjonalny `baseCommit` (dla zdalnego refu wymagany SHA), albo `step` nierozstrzygniętej propozycji;
-puste `{}` wybiera pierwszą oczekującą decyzję o bazie. Walidacja jest taka sama jak przy starcie,
-bez fetch i domyślnego HEAD. Odpowiedź zawiera `oldBase`, `newBase`, `baseVersion`, `branches[]`
-z zapisanymi punktami startu i commitami, `processes[]`, lokalne zmiany oraz ignorowane ścieżki,
-`blockedReasons[]`, `invalidations[]`, `followup` i instrukcję. Dowody są zwykłym tekstem.
+**Correction preview (PT-201).** `/Board PreviewCardBaseChange(id, request)` accepts a full `baseRef`
+and an optional `baseCommit` (for a remote ref the SHA is required), or the `step` of an unresolved proposal;
+an empty `{}` picks the first pending base decision. Validation is the same as at start,
+without fetch and without a default HEAD. The response contains `oldBase`, `newBase`, `baseVersion`, `branches[]`
+with the recorded start points and commits, `processes[]`, local changes and ignored paths,
+`blockedReasons[]`, `invalidations[]`, `followup`, and an instruction. The evidence is plain text.
 
-Jawny wybór użytkownika w pełnej karcie wywołuje `RequestCardBaseChange(id, {baseRef, baseCommit})`.
-Zapisuje wyłącznie decyzję `card.base-requested`, blokuje nowe kroki i integrację, zachowuje istniejące
-pytania oraz zwraca ten sam podgląd co propozycja agenta. `decisionStep` identyfikuje decyzję;
-`ResolveCardStep` z tym identyfikatorem i `baseDecision: keep` odblokowuje kartę, a `change` jedynie
-otwiera podgląd. Zamknięcie/Esc nie zapisuje odpowiedzi ani nie zatrzymuje procesów.
+An explicit user choice in the full card calls `RequestCardBaseChange(id, {baseRef, baseCommit})`.
+It records only the `card.base-requested` decision, blocks new steps and integration, keeps the existing
+questions, and returns the same preview as the agent's proposal. `decisionStep` identifies the decision;
+`ResolveCardStep` with this identifier and `baseDecision: keep` unblocks the card, and `change` only
+opens the preview. Closing/Esc records no answer and does not stop processes.
 
-`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, logicznej zawartości indeksów,
-statusu, metadanych lokalnych danych i procesów. Oba odczyty są lekkie: bez hashowania treści plików.
-Ignorowane katalogi zwijamy przez `ls-files --others --ignored --exclude-standard --directory`;
-odcisk obejmuje ich stat, bez wyliczania wnętrza. Zmiana treści pliku wewnątrz takiego katalogu nie musi
-zmienić identyfikatora. To odcisk kwalifikacji pustej generacji, bez prawa do kopiowania lub kasowania
-lokalnych danych; PT-202 musi zachować stare worktrees wraz z ich zawartością. Limit 4096 odczytów
-metadanych na worktree (także dla nieśledzonych zagnieżdżonych repozytoriów) daje odmowę
-`unknown-local-state` po przekroczeniu. Odpowiedź zawiera najwyżej 20 ignorowanych ścieżek na gałąź,
-`ignoredCount` liczy zwinięte ścieżki/katalogi, a `ignoredTruncated` oznacza skrócenie listy.
-Panel pokazuje najwyżej 10 i liczbę pozostałych. Nie jest to liczba plików w ignorowanych katalogach.
-Dowody, powody odmowy i procesy poprzednich zleceń mają `previousOrder: true`; kontrola pozostaje zachowawcza.
-PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
-wymagać `canChange: true` i równości identyfikatora; każda wykryta różnica wymaga świeżej decyzji. Identyfikator
-sam w sobie nie jest zgodą. `canExecute: true` udostępnia osobne końcowe potwierdzenie pustej korekty;
-panel wysyła `choice: change-base` z dokładnym ref/SHA i `previewId`. Aktywacja unieważnia stare
-zgody, sesje i domknięcie; nowy krok rusza w nowym katalogu i świeżej sesji. Nowa praca podlega
-zwykłym testom i review, a karta wymaga nowego podsumowania. Historyczne dane pozostają do odczytu.
-Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
-commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.
+`previewId` is a fingerprint of the exact SHAs, the base version, the whole journal/map, the logical content of the indexes,
+the status, the metadata of local data, and the processes. Both reads are light: without hashing file contents.
+We collapse ignored directories with `ls-files --others --ignored --exclude-standard --directory`;
+the fingerprint includes their stat, without computing the interior. A change to a file's content inside such a
+directory need not change the identifier. It is a fingerprint of the qualification of an empty generation, with no right to copy or delete
+local data; PT-202 must keep the old worktrees together with their content. A limit of 4096 metadata
+reads per worktree (also for untracked nested repositories) gives a refusal
+`unknown-local-state` when exceeded. The response contains at most 20 ignored paths per branch,
+`ignoredCount` counts the collapsed paths/directories, and `ignoredTruncated` marks that the list was shortened.
+The panel shows at most 10 and the number of the remaining ones. It is not the number of files in ignored directories.
+The evidence, refusal reasons, and processes of previous assignments have `previousOrder: true`; the check stays conservative.
+PT-202 must recompute the preview under a lock before the operation,
+require `canChange: true` and equality of the identifier; every detected difference requires a fresh decision. The identifier
+by itself is not consent. `canExecute: true` makes available a separate final confirmation of the empty correction;
+the panel sends `choice: change-base` with the exact ref/SHA and `previewId`. Activation invalidates old
+consents, sessions, and close-out; a new step starts in a new directory and a fresh session. The new work is subject to
+the usual tests and review, and the card requires a new summary. Historical data remain readable.
+An unknown boundary or process state means a refusal. A finished step and a close-out on the base SHA without a new
+commit are metadata, whereas every documents/code/WIP/merge commit rules out an empty correction.
 
-Korekta v1 jest ograniczona do karty bez commitów wkładu i czynnych procesów, zwykle Od razu przed
-pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP i praca po review (K-49) wymagają odmowy
-korekty i zachowania danych. Cel pkt 4 oraz historie 35–37 pozostają częściowe. Wymagania wskazują
-szkic [K-50-replay-code](agents/plans/followups/replay-code.md), zweryfikowany w PT-201 i dołączony
-do zatwierdzonego planu. Sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
-pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeniesienia.
+The v1 correction is limited to a card without contribution commits and active processes, usually "Od razu" (Immediate) before the
+first work. A plan commit after Light/I have a plan/Full, WIP, and work after review (K-49) require refusing the
+correction and keeping the data. Goal point 4 and stories 35–37 remain partial. The requirements point to the sketch
+[K-50-replay-code](agents/plans/followups/replay-code.md), verified in PT-201 and attached
+to the approved plan. This key alone does not mean a published card or an available replay. "Zachowaj" (Keep)
+lets work continue; the alternative is waiting and separately planning the transfer.
 
-**Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
+**Plan review.** The `plan-review` step writes `plan-review.json` in the output directory:
 `{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
-`severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;
-`tickets` — numery ticketów z planu, których uwaga dotyczy (może być pusta lista). Przy `APPROVE` bez uwag
-`findings` to `[]`. Stary format (jeden napis w `findings`) nadal jest przyjmowany jako jedna uwaga bez wagi.
-Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to błąd formatu. To zmienia tylko wynik
-review; format pliku planu i reguły zatwierdzania zostają bez zmian.
+`severity`: `blocker` — the plan cannot start without a fix, `major` — an important change before start, `nit` — a trifle;
+`tickets` — numbers of the plan's tickets the comment concerns (may be an empty list). With `APPROVE` and no comments
+`findings` is `[]`. The old format (a single string in `findings`) is still accepted as one comment with no severity.
+An unknown severity, a comment without text, or `tickets` that is not a list of strings is a format error. This changes only the review
+result; the plan file format and the approval rules stay unchanged.
 
-**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. Krok `close` przed napisaniem podsumowania
-uruchamia raz „pełne testy przy domknięciu” z kontraktu testów projektu (`tests.full`; bez zatwierdzonego kontraktu
-wykryte `make test`, a potem zasady projektu — reguła 8 w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu);
-w plasma-tide pełny `make test`) na tej gałęzi i zapisuje wynik w podsumowaniu. Ponowienie padniętych modułów nie zmienia
-wyniku pierwszego przebiegu (reguła 9). Nieudane testy obsługuje
-jak inne problemy domknięcia: wynik `error` z opisem niepowodzeń zamiast `done`, bez scalenia do głównej.
-Domknięcie mimo nieudanego pełnego przebiegu wymaga jawnego rozliczenia odstępstwa i decyzji użytkownika
-według [zasad wyjątków od testów](testing.md#wyjątki-od-testów).
-Polecenie wymagające zgody lub wykonania poza piaskownicą korzysta ze zwykłego kontraktu `denied`/`outside`;
-wznowienie wykorzystuje wynik i nie powtarza udanego przebiegu bez nowych zmian.
-`check: manual` dodaje listę „Co przetestować
-ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga
-osobnego polecenia użytkownika**. Statusy i numeracja pochodzą z dziennika oraz zatwierdzonego planu; istniejące
-plany sześciokolumnowe i stare sesje koordynatora zachowują dotychczasowy odczyt. Plik planu w repozytorium projektu
-nie jest poprawiany przy samym wyborze „Mam plan”.
+**Close-out.** Tide merges accepted tickets into the card branch. Before writing the summary, the `close` step
+runs once the "full tests at close-out" from the project test contract (`tests.full`; without an approved contract
+the detected `make test`, and then the project rules — rule 8 in [testing.md](testing.md#general-rule-and-the-project-test-contract);
+in plasma-tide the full `make test`) on this branch and records the result in the summary. Rerunning failed modules does not change
+the result of the first run (rule 9). It handles failed tests
+like other close-out problems: the result `error` with a description of the failures instead of `done`, without merging into the main branch.
+Closing despite a failed full run requires an explicit settlement of the waiver and a user decision
+according to the [test exception rules](testing.md#test-exceptions).
+A command requiring consent or running outside the sandbox uses the ordinary `denied`/`outside` contract;
+a resume uses the result and does not repeat a successful run without new changes.
+`check: manual` adds a list "Co przetestować
+ręcznie i jak" (What to test manually and how); `check: auto` means no such list. In both cases **merging the card branch into the main branch requires
+a separate user command**. Statuses and numbering come from the journal and the approved plan; existing
+six-column plans and old coordinator sessions keep their existing reading. The plan file in the project repository
+is not corrected merely by choosing "Mam plan".
 
-**Stany:**
+**States:**
 
-| Stan | Znaczenie | Kolumna w Tide Sesje |
+| State | Meaning | Column in Tide Sesje |
 | --- | --- | --- |
-| `todo` | w planie, nikt nad nim nie pracuje | Do zrobienia |
-| `w-toku` | implementacja albo poprawki | W toku |
-| `review` | recenzent sprawdza zmiany | Review |
-| `czeka` | potrzebna decyzja albo odpowiedź użytkownika | Czeka |
-| `gotowe` | zrobione (po review albo zaakceptowane) | Gotowe |
-| `odrzucone` | świadomie nie robimy | Gotowe (wyciszone, poza postępem) |
+| `todo` | in the plan, nobody is working on it | Do zrobienia (To do) |
+| `w-toku` | implementation or fixes | W toku (In progress) |
+| `review` | the reviewer is checking the changes | Review |
+| `czeka` | a user decision or answer is needed | Czeka (Waiting) |
+| `gotowe` | done (after review or accepted) | Gotowe (Done) |
+| `odrzucone` | we deliberately do not do it | Gotowe (muted, outside progress) |
 
-Tabelę i `updated` aktualizuj **przy każdym delegowaniu, wyniku podagenta, review i pytaniu do
-użytkownika**. Sekcje pod tabelą (notatki, ryzyka, decyzje) to wolny tekst — Tide ich nie czyta.
+Update the table and `updated` **on every delegation, subagent result, review, and question to the
+user**. The sections under the table (notes, risks, decisions) are free text — Tide does not read them.
 
-## Konwencja delegowania
+## Delegation convention
 
-Tide łączy pracę podagentów z ticketami po ID, więc:
+Tide links subagents' work with tickets by ID, so:
 
-1. **Opis podagenta zaczyna się od ID ticketu**: `TOM-140: implement guard`, `TOM-140: review`,
-   `TOM-140: review fixes`. Podagent Codexa ma ID w nazwie zadania (`task_name`, np. `tom140_guard`),
-   w przydomku i w poleceniu.
-2. **Gałąź zawiera ID małymi literami**: `tom-140-guard`, `feat/tide-7-board`, `codex/la-028-…`.
-3. **Pytanie do użytkownika wymienia ID ticketu** (`TOM-141: przenieść backlog do osobnego projektu?`)
-   — wtedy ticket trafia do kolumny „Czeka” z treścią pytania.
-4. Recenzent ma w opisie albo typie słowo „review” (`code-reviewer`, `Review TOM-140 …`), a jego raport
-   podaje liczby `BLOCKER` / `MAJOR` / `NIT` i werdykt (`APPROVE` albo `REQUEST CHANGES`).
+1. **The subagent description starts with the ticket ID**: `TOM-140: implement guard`, `TOM-140: review`,
+   `TOM-140: review fixes`. A Codex subagent has the ID in the task name (`task_name`, for example `tom140_guard`),
+   in the nickname, and in the command.
+2. **The branch contains the ID in lowercase**: `tom-140-guard`, `feat/tide-7-board`, `codex/la-028-…`.
+3. **A question to the user names the ticket ID** (`TOM-141: przenieść backlog do osobnego projektu?`)
+   — then the ticket goes to the "Czeka" (Waiting) column with the text of the question.
+4. The reviewer has the word "review" in the description or type (`code-reviewer`, `Review TOM-140 …`), and their report
+   gives the numbers `BLOCKER` / `MAJOR` / `NIT` and the verdict (`APPROVE` or `REQUEST CHANGES`).
 
-## Recenzja według ryzyka
+## Risk-based review
 
-Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md); od 10.11.2026
-(decyzja 96 z 10.11, K-88/PT-330) dobór recenzenta jest **polityką projektu, nie regułą Tide**.
-Stały warunek Tide to tylko nowa, osobna sesja recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
+The rules agreed on 6.11.2026 (K-71, PT-259), decision 96 in the [decision log](decisions.md); since 10.11.2026
+(decision 96 of 10.11, K-88/PT-330) the choice of the reviewer is **a project policy, not a Tide rule**.
+The only fixed Tide condition is a new, separate reviewer session; the author does not review their own work in the same session.
 
-Polityka projektu Tablicy `reviewIndependence` (plik projektu: `review-independence`; opis pola
-w [tide-daemon.md](tide-daemon.md#tablica)):
+The Board project policy `reviewIndependence` (project file: `review-independence`; a description of the field
+in [tide-daemon.md](tide-daemon.md#board)):
 
-- `free` — **domyślna** (także projekt bez ustawienia): dowolny recenzent, również ten sam model i ta sama siła
-  myślenia (np. Opus → Opus), zawsze w nowej sesji;
-- `other-model` — inny model albo ten sam model z inną siłą myślenia, np. Codex mocny ↔ standard;
-- `other-family` — recenzent innej rodziny (dostawca/program z katalogu, nie nazwa wykonawcy) niż autor
-  i wykonawcy poprawek; opcjonalnie tylko dla klas z listy (`review-independence-classes`, np. `mocny`).
+- `free` — **the default** (also a project without the setting): any reviewer, also the same model and the same reasoning
+  effort (for example Opus → Opus), always in a new session;
+- `other-model` — another model or the same model with a different reasoning effort, for example Codex strong ↔ standard;
+- `other-family` — a reviewer of another family (a provider/program from the catalog, not an executor name) than the author
+  and the fix executors; optionally only for classes from a list (`review-independence-classes`, for example `mocny`).
 
-Tide egzekwuje wyłącznie ustawioną politykę: przy sprawdzaniu planu, edycji ticketu w oknie, starcie Od razu,
-wyborze celu eskalacji poprawek i w bramce przed startem review. Sama zmiana siły myślenia nie oznacza zmiany
-rodziny modeli. Gdy polityka wymaga recenzenta, którego nie ma (brak dostawcy, limit), karta pokazuje powód
-i pyta właściciela: zmień recenzenta, poczekaj albo poluzuj politykę projektu.
+Tide enforces only the configured policy: when checking the plan, editing a ticket in the window, the "Od razu" (Immediate) start,
+choosing the fix escalation target, and in the gate before the review start. Changing the reasoning effort alone does not mean changing
+the model family. When the policy requires a reviewer that does not exist (no provider, a limit), the card shows the reason
+and asks the owner: change the reviewer, wait, or relax the project policy.
 
-Lista niżej jest **zaleceniem dla projektów z polityką `other-family`**, nie regułą Tide. W takim projekcie
-recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Codex) jest zalecany dla:
+The list below is **a recommendation for projects with the `other-family` policy**, not a Tide rule. In such a project
+a reviewer **of a different model family** than the author (for example Astra / Claude for a Codex author) is recommended for:
 
-- granic uprawnień i bezpieczeństwa;
-- operacji destrukcyjnych;
-- migracji trwałego stanu;
-- historycznych wznowień i ważności zgód;
-- współbieżnych operacji git, blokad i odtwarzania po awarii;
-- zmian doboru testów i bramek akceptacji;
-- integracji zmieniających wspólny kontrakt kart.
+- permission and security boundaries;
+- destructive operations;
+- migrations of durable state;
+- historical resumes and the validity of consents;
+- concurrent git operations, locks, and crash recovery;
+- changes to test selection and acceptance gates;
+- integrations changing the shared card contract.
 
-W projekcie z taką polityką przed scaleniem sprawdza się klasę ryzyka i dobór recenzenta; automatyczny wybór
-wykonawcy nie zwalnia z tego obowiązku. Wymaganie polityki nie spada automatycznie do tego samego modelu z inną
-siłą myślenia ani do braku review — decyduje właściciel. W każdym projekcie review pozostaje obowiązkowe
-i kończy się `APPROVE` bez BLOCKER i MAJOR.
+In a project with such a policy, before merging the risk class and the choice of the reviewer are checked; an automatic choice
+of the executor does not release from this duty. The policy requirement does not automatically fall back to the same model with a different
+reasoning effort or to no review — the owner decides. In every project the review remains mandatory
+and ends with `APPROVE` without BLOCKER and MAJOR.
 
-## Poprawki koordynatora poza kartą
+## Coordinator fixes outside a card
 
-To wyjątkowa ścieżka dla pilnego odblokowania pracy albo usunięcia regresji. Jedna poprawka usuwa
-jedną przyczynę i obejmuje najwyżej **150 zmienionych linii kodu produkcyjnego w 3 plikach**,
-liczonych łącznie dla całej poprawki (dodania i usunięcia), bez dzielenia na commity w celu obejścia limitu.
-Testy i dokumentacja nie zwiększają limitu kodu produkcyjnego, ale wchodzą do zakresu review.
-Funkcje, zmiany kontraktów oraz wszystkie klasy ryzyka z poprzedniej sekcji idą wyłącznie przez kartę
-z review **przed scaleniem**, także gdy poprawka jest pilna lub mała.
+This is an exceptional path for urgently unblocking work or removing a regression. One fix removes
+one cause and covers at most **150 changed lines of production code in 3 files**,
+counted together for the whole fix (additions and deletions), without splitting into commits to get around the limit.
+Tests and documentation do not raise the production code limit, but enter the scope of review.
+Features, contract changes, and all the risk classes from the previous section go only through a card
+with review **before merging**, also when the fix is urgent or small.
 
-Przed dostarczeniem poprawki wymagane są test odtwarzający problem (nieudany na przypiętej bazie,
-udany po poprawce) oraz testy regresji dobrane do zmiany. Wyniki podlegają zasadom wyjątków od testów.
-Koordynator zapisuje wpis w [rejestrze poprawek](agents/coordinator-fixes.md):
+Before delivering the fix, a test reproducing the problem is required (failing on the pinned base,
+passing after the fix) and regression tests selected for the change. The results are subject to the test exception rules.
+The coordinator records an entry in the [fix register](agents/coordinator-fixes.md):
 
-- przyczynę, pilność i zakres oraz czas dostarczenia;
-- SHA bazy i poprawki;
-- dokładne polecenia, wyniki na bazie i po poprawce oraz regresję;
-- dotknięte karty i sposób dostarczenia do każdej ich gałęzi (SHA scalenia lub przeniesienia);
-- sposób wycofania i stan faktycznego wycofania;
-- termin, recenzenta, raport i wynik niezależnego review po fakcie.
+- the cause, urgency, and scope, and the delivery time;
+- the SHA of the base and of the fix;
+- the exact commands, the results on the base and after the fix, and the regression;
+- the affected cards and the way of delivery to each of their branches (the merge or transfer SHA);
+- the way of rollback and the state of the actual rollback;
+- the deadline, the reviewer, the report, and the result of the independent review after the fact.
 
-Niezależne review musi zakończyć się **w ciągu 24 godzin od dostarczenia poprawki**, a wcześniej,
-jeśli ma być scalana karta polegająca na tej poprawce. Zaległe review wstrzymuje kolejne scalenia
-tą ścieżką. BLOCKER lub MAJOR wykryty po fakcie oznacza zatrzymanie zależnego działania i naprawę
-albo wycofanie poprawki; sposób rozliczenia trafia do rejestru. Samo zlecenie review nie jest jego wynikiem.
-Ta ścieżka nie daje zgody na push ani scalenie do głównej bez wyraźnego polecenia użytkownika.
+The independent review must finish **within 24 hours of delivering the fix**, and earlier
+if a card relying on this fix is to be merged. An overdue review suspends further merges
+through this path. A BLOCKER or MAJOR found after the fact means stopping the dependent action and fixing
+or rolling back the fix; the way of settlement goes to the register. Merely ordering a review is not its result.
+This path gives no consent to push or merge into the main branch without an explicit user command.
 
-## Zakończenie pracy (1.1)
+## Finishing the work (1.1)
 
-1. **Review AI jest obowiązkowe**: ticket i cała praca kończą się dopiero po review z werdyktem
-   `APPROVE` (bez BLOCKER i MAJOR).
-2. **Test ręczny tylko na życzenie**: gdy uruchomienie z karty ma „Test ręczny po zakończeniu”
-   (karta `check: manual`), koordynator po review dopisuje w planie, pod tabelą, sekcję
-   „Co przetestować ręcznie i jak” — kroki i oczekiwany wynik każdego — nie scala gałęzi i w ostatniej
-   wiadomości mówi, że praca czeka na test ręczny użytkownika. Bez testu ręcznego (`check: auto`,
-   domyślnie) praca kończy się po review. W przepływie prowadzonym przez Tide gałąź główną scala
-   wyłącznie użytkownik osobnym poleceniem, także przy `check: auto`.
+1. **AI review is mandatory**: a ticket and the whole work end only after a review with the verdict
+   `APPROVE` (without BLOCKER and MAJOR).
+2. **Manual test only on request**: when the launch from the card has "Test ręczny po zakończeniu" (Manual test after completion)
+   (the card `check: manual`), the coordinator after review adds to the plan, under the table, the section
+   "Co przetestować ręcznie i jak" (What to test manually and how) — the steps and the expected result of each — does not merge the branch, and in the last
+   message says that the work awaits the user's manual test. Without a manual test (`check: auto`,
+   the default) the work ends after review. In a flow run by Tide the main branch is merged
+   only by the user with a separate command, also with `check: auto`.
 
-## Jak Tide wyznacza stan
+## How Tide determines the state
 
-Z pracy podagentów (dzienniki koordynatora, tylko odczyt): pytanie o ticket bez odpowiedzi → `czeka`;
-działa recenzent → `review`; działa inny podagent → `w-toku`; ostatnie review bez BLOCKER/MAJOR →
-`gotowe`; review z BLOCKER/MAJOR → `w-toku` („do poprawy”); poprawki skończone po review → `gotowe`.
-Plan wygrywa przy `odrzucone`, przy ticketach, nad którymi nikt nie pracował (`todo` i inne), i wtedy,
-gdy jego `updated` jest nowsze niż ostatnia praca nad ticketem. YouTrack daje tytuły i adresy; jego
-stan liczy się, gdy nie ma ani planu, ani pracy podagentów, albo gdy ticket jest tam zamknięty.
+From the subagents' work (coordinator journals, read only): an unanswered question about a ticket → `czeka`;
+a reviewer is working → `review`; another subagent is working → `w-toku`; the last review without BLOCKER/MAJOR →
+`gotowe`; a review with BLOCKER/MAJOR → `w-toku` ("do poprawy" (to fix)); fixes finished after review → `gotowe`.
+The plan wins for `odrzucone`, for tickets nobody worked on (`todo` and others), and when
+its `updated` is newer than the last work on the ticket. YouTrack gives titles and addresses; its
+state counts when there is neither a plan nor subagent work, or when the ticket is closed there.
 
-## Przykład
+## Example
 
 ```markdown
 ---
@@ -481,8 +481,8 @@ updated: 2026-10-26T21:13:00+01:00
 Kolejność: najpierw TOM-140 (blokuje RC), potem TOM-146.
 ```
 
-## Mapa migracji ID
+## ID migration map
 
-Gdy repozytorium ma `docs/agents/youtrack-migration/*.csv` (kolumny `source_key` albo `source_id`
-i `youtrack_id`, opcjonalnie `kind`), Tide grupuje tickety po nowym kluczu: np. `TOM-10` (Linear) →
-`LOG-128` (YouTrack), `LA-001` → `LEGAL-1`. Wiersze z `kind` innym niż `ticket` są pomijane.
+When the repository has `docs/agents/youtrack-migration/*.csv` (columns `source_key` or `source_id`
+and `youtrack_id`, optionally `kind`), Tide groups tickets by the new key: for example `TOM-10` (Linear) →
+`LOG-128` (YouTrack), `LA-001` → `LEGAL-1`. Rows with a `kind` other than `ticket` are skipped.

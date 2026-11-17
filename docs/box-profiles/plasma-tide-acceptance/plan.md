@@ -11,14 +11,16 @@ status: paused
 updated: 2026-11-06T18:00:00+01:00
 ---
 
-Propozycja do osobnej karty testowej projektu plasma-tide. Nie jest zatwierdzonym planem K-38.
-Przy tworzeniu karty Tide nadaje `card: K-N`, rzeczywisty numer ticketu i świeży czas `updated`.
-Profil karty: [box.yaml](box.yaml), obok `plan.md` zgodnie z kontraktem importera.
-Przed importem wykonać przygotowanie opisane w README: sprawdzić przydział Sonnet / Opus
-i dopiero po jawnej zgodzie użytkownika dopisać `accepted_red` w kopii propozycji.
-Bez zgody importer odrzuci paczkę. Zatwierdzić plan razem z paczką `session-logs` w panelu.
-Przed zgodą sprawdzić podgląd plików, rozmiar i raport skanera; pusty wybór nie zalicza scenariusza 6.
-Wzorzec obejmuje wyłącznie dzienniki projektu, bez plików poświadczeń. Skaner to filtr, nie gwarancja.
+Table headers (`Tytuł` title, `Stan` state, `Gałąź` branch, `Uwagi` notes, `Klasa` class, `Blokery` blockers), the frontmatter `title` and the table row are kept verbatim because the importer parses them.
+
+A proposal for a separate test card of the plasma-tide project. It is not an approved K-38 plan.
+When the card is created, Tide assigns `card: K-N`, the real ticket number and a fresh `updated` time.
+Card profile: [box.yaml](box.yaml), next to `plan.md` per the importer contract.
+Before the import do the preparation described in the README: check the Sonnet / Opus assignment
+and only after the user's explicit consent add `accepted_red` in the copy of the proposal.
+Without consent the importer rejects the package. Approve the plan together with the `session-logs` package in the panel.
+Before consent check the file preview, the size and the scanner report; an empty selection does not pass scenario 6.
+The pattern covers only project logs, no credential files. The scanner is a filter, not a guarantee.
 
 | Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

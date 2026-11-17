@@ -1,115 +1,115 @@
-# Piaskownica, uprawnienia i środowisko testowe kroków
+# Sandbox, permissions and the test environment of steps
 
-Stan na 03.11.2026 i propozycja docelowa. Dokument odpowiada na pytanie użytkownika: „ostatnio uszczelnialiśmy, dziś
-rozszczelniamy — gdzie jest granica?”. Decyzje do podjęcia są na końcu, każda z rekomendacją.
+State as of 03.11.2026 and a target proposal. The document answers the user's question: "we tightened things recently, today we
+are loosening them — where is the boundary?". The decisions to be made are at the end, each with a recommendation.
 
-## 1. Cel
+## 1. Goal
 
-Kroki w tle mają pracować bez pytań o środowisko (instalacje, porty, testy, Docker) i jednocześnie nie móc zrobić
-niczego, czego użytkownik nie przewidział: wypchnąć kodu, wdrożyć, przeczytać sekretów, zmienić systemu. Pytanie do
-użytkownika ma dotyczyć zakresu pracy i decyzji biznesowych, a nie walki ze środowiskiem.
+Background steps should work without questions about the environment (installs, ports, tests, Docker) and at the same time
+be unable to do anything the user did not anticipate: push code, deploy, read secrets, change the system. A question to the
+user should concern the scope of work and business decisions, not a fight with the environment.
 
-## 2. Stan dzisiejszy (03.11.2026) — uczciwie
+## 2. Current state (03.11.2026) — honestly
 
-| Warstwa | Co ją wymusza | Co pozwala | Co blokuje | Siła |
+| Layer | What enforces it | What it allows | What it blocks | Strength |
 |---|---|---|---|---|
-| **Piaskownica kroku** (Claude Code `bwrap`, Codex ze snapa) | jądro (przestrzenie nazw), profil AppArmor dla `bwrap` | zapis: katalog wyniku kroku i worktree; odczyt: worktree, wspólne `.git`, katalogi kroku, czcionki, instalacja Node/.NET tylko do odczytu | odczyt `~` (klucze SSH, `~/.git-credentials`, tokeny), sieć (`allowedDomains: []`), gniazda uniksowe (D-Bus, Docker, agent SSH) | **twarda** |
-| **Środowisko kroku** | `agentcmd._env` | `HOME`, `PATH`, `LANG`, zmienne narzędzi | agent SSH, askpass, tokeny GitHuba, D-Bus | druga warstwa (agent może ją nadpisać) |
-| **Lista poleceń projektu** (dozwolone / zabronione) | Claude Code `--allowedTools`, polityka w poleceniu kroku | polecenia z listy bez pytania | polecenia zabronione (w Tide `make install`) | chroni przed pomyłką, **nie przed złośliwym kodem** |
-| **Automatyczne zgody w piaskownicy** (od 03.11) | `engine._auto_consent` | każde pojedyncze polecenie spoza listy, jeśli nie jest zabronione | łańcuchy, podpowłoki, polecenia zabronione | bezpieczne — i tak działa w piaskownicy |
-| **Polecenie poza piaskownicą** (`outside`, od 03.11) | `systemd-run --user --scope` z prawami użytkownika | **wszystko, co może użytkownik**: sieć, Docker, cały `~`, D-Bus, klucze | tylko filtr polityki: łańcuchy i operatory, lista ryzykownych rodzin (push, publikacja, ssh, curl, rm…), ścieżki spoza worktree, zakazy projektu, jedno polecenie naraz w projekcie | **miękka** |
-| **Automatyczne zgody poza piaskownicą** (od 03.11) | `outside_risky` | testy, budowanie, lint, instalacja paczek | jak wyżej | **miękka** |
+| **Step sandbox** (Claude Code `bwrap`, Codex from a snap) | kernel (namespaces), AppArmor profile for `bwrap` | write: the step result directory and the worktree; read: the worktree, the shared `.git`, step directories, fonts, the Node/.NET installation read-only | reading `~` (SSH keys, `~/.git-credentials`, tokens), network (`allowedDomains: []`), Unix sockets (D-Bus, Docker, SSH agent) | **hard** |
+| **Step environment** | `agentcmd._env` | `HOME`, `PATH`, `LANG`, tool variables | SSH agent, askpass, GitHub tokens, D-Bus | second layer (the agent can override it) |
+| **Project command list** (allowed / forbidden) | Claude Code `--allowedTools`, policy in the step command | commands from the list without a prompt | forbidden commands (in Tide `make install`) | protects against a mistake, **not against malicious code** |
+| **Automatic consents in the sandbox** (since 03.11) | `engine._auto_consent` | every single command outside the list, unless it is forbidden | chains, subshells, forbidden commands | safe — it runs in the sandbox anyway |
+| **Command outside the sandbox** (`outside`, since 03.11) | `systemd-run --user --scope` with user rights | **everything the user can do**: network, Docker, the whole `~`, D-Bus, keys | only the policy filter: chains and operators, a list of risky families (push, publish, ssh, curl, rm…), paths outside the worktree, project prohibitions, one command at a time in a project | **soft** |
+| **Automatic consents outside the sandbox** (since 03.11) | `outside_risky` | tests, builds, lint, package installation | as above | **soft** |
 
-### Gdzie dziś jest dziura
+### Where the hole is today
 
-Polecenie poza piaskownicą, które wygląda niewinnie (`dotnet test`, `npm run e2e`, `make test`), **uruchamia kod
-z repozytorium — w tym kod, który agent sam przed chwilą napisał** — z pełnymi prawami użytkownika. Test może
-przeczytać `~/.ssh`, wypchnąć gałąź z `~/.git-credentials`, użyć tokenu `gh` z portfela albo uruchomić kontener
-z zamontowanym `/` (gniazdo Dockera daje prawa roota). Lista ryzykownych rodzin tego nie zatrzyma, bo ryzyko siedzi
-w kodzie testów, a nie w nazwie polecenia.
+A command outside the sandbox that looks innocent (`dotnet test`, `npm run e2e`, `make test`) **runs code
+from the repository — including code the agent itself just wrote** — with the user's full rights. A test can
+read `~/.ssh`, push a branch with `~/.git-credentials`, use the `gh` token from the wallet or start a container
+with `/` mounted (the Docker socket gives root rights). The list of risky families will not stop this, because the risk sits
+in the test code, not in the command name.
 
-Wniosek: **automatyczne zgody w piaskownicy są bezpieczne; automatyczne zgody poza piaskownicą są dziś wygodą
-kupioną kosztem granicy.** Przy kooperującym agencie i zaufanych repozytoriach to akceptowalne na krótko — tak samo
-pracuje się w terminalu z Claude albo Codexem w trybie automatycznym — ale nie jest to granica, o której mówimy
-„twarda”.
+Conclusion: **automatic consents in the sandbox are safe; automatic consents outside the sandbox are today a convenience
+bought at the cost of the boundary.** With a cooperating agent and trusted repositories this is acceptable for a short time — it is the same
+as working in a terminal with Claude or Codex in automatic mode — but it is not a boundary we would call
+"hard".
 
-## 3. Zasada granicy (propozycja)
+## 3. The boundary principle (proposal)
 
-1. **Kod z repozytorium nigdy nie działa z pełnymi prawami użytkownika** — ani w kroku, ani w poleceniu „poza”.
-2. Kroki dostają **zasoby** (sieć do rejestrów paczek, porty, Docker, cache), a nie **prawa użytkownika**.
-3. Czego krok potrzebuje, da się w większości **przewidzieć przy planowaniu** — użytkownik zatwierdza to raz,
-   razem z planem, jako **pakiet zgód karty**.
-4. Pytanie w trakcie pracy pojawia się tylko, gdy krok wychodzi poza pakiet — i wtedy mówi, czego brakuje i co
-   się stanie po zgodzie.
-5. Wszystko, co wychodzi na zewnątrz (push, merge request, wdrożenie, publikacja), robi **Tide na polecenie
-   użytkownika**, nigdy agent — spójnie z K-36 (repozytoria w Tide).
+1. **Code from the repository never runs with the user's full rights** — neither in a step nor in an "outside" command.
+2. Steps get **resources** (network to package registries, ports, Docker, caches), not **user rights**.
+3. What a step needs can mostly be **predicted at planning time** — the user approves it once,
+   together with the plan, as the **card consent pack**.
+4. A question during work appears only when a step goes beyond the package — and then it says what is missing and what
+   will happen after consent.
+5. Everything that goes outside (push, merge request, deployment, publication) is done by **Tide at the user's
+   command**, never by the agent — consistent with K-36 (repositories in Tide).
 
-## 4. Model docelowy: trzy poziomy wykonania
+## 4. Target model: three execution levels
 
-| Poziom | Dla czego | Sieć | Pliki | Docker | Kto zatwierdza |
+| Level | What for | Network | Files | Docker | Who approves |
 |---|---|---|---|---|---|
-| **P1 — piaskownica kroku** (dziś + rejestry) | pisanie kodu, budowanie, testy jednostkowe, `npm install`, `dotnet restore` | tylko domeny rejestrów z profilu (`registry.npmjs.org`, `api.nuget.org`, `pypi.org`, `fonts.googleapis.com`…) — `allowedDomains` piaskownicy Claude Code | zapis: worktree, wynik kroku, cache paczek projektu | nie | pakiet zgód karty |
-| **P2 — piaskownica testowa** (nowa, zastępuje „poza piaskownicą”) | e2e, testy integracyjne z Testcontainers, serwery deweloperskie, Playwright | profil projektu (np. pełna sieć albo rejestry + localhost) | zapis: worktree i cache narzędzi (`~/.npm`, `~/.nuget/packages`, `~/.cache/ms-playwright`); **odczyt `~` zabroniony** poza instalacjami narzędzi; bez D-Bus, agenta SSH, portfela | **osobny, bezrootowy Docker/Podman Tide** — nie gniazdo Dockera użytkownika | pakiet zgód karty |
-| **P3 — prawa użytkownika** | push, merge request, wdrożenie, publikacja, zmiany systemu | pełna | pełne | pełny | zawsze użytkownik, jednorazowo, w Tide (K-36); agent nie dostaje tego poziomu |
+| **P1 — step sandbox** (today + registries) | writing code, building, unit tests, `npm install`, `dotnet restore` | only the registry domains from the profile (`registry.npmjs.org`, `api.nuget.org`, `pypi.org`, `fonts.googleapis.com`…) — the Claude Code sandbox `allowedDomains` | write: worktree, step result, the project's package cache | no | card consent pack |
+| **P2 — test sandbox** (new, replaces "outside the sandbox") | e2e, integration tests with Testcontainers, development servers, Playwright | project profile (e.g. full network or registries + localhost) | write: worktree and tool caches (`~/.npm`, `~/.nuget/packages`, `~/.cache/ms-playwright`); **reading `~` forbidden** except tool installations; no D-Bus, SSH agent, wallet | **a separate, rootless Tide Docker/Podman** — not the user's Docker socket | card consent pack |
+| **P3 — user rights** | push, merge request, deployment, publication, system changes | full | full | full | always the user, one-off, in Tide (K-36); the agent does not get this level |
 
-Technicznie P2 to `bwrap` (ten sam profil AppArmor co dziś) uruchamiany przez usługę, nie przez agenta: przestrzeń
-nazw montowań z widokiem tylko worktree i cache, własny `/tmp`, sieć według profilu, przydzielony port dla serwera
-deweloperskiego (`E2E_PORT`/`PORT` z puli, koniec konfliktów na 4300), gniazdo bezrootowego Dockera Tide
-(`dockerd-rootless` albo `podman system service` na osobnym użytkowniku). Testcontainers widzą tylko ten Docker.
+Technically P2 is `bwrap` (the same AppArmor profile as today) started by the service, not by the agent: a mount
+namespace with a view of only the worktree and caches, its own `/tmp`, network according to the profile, an allocated port for the development
+server (`E2E_PORT`/`PORT` from a pool, no more conflicts on 4300), the socket of Tide's rootless Docker
+(`dockerd-rootless` or `podman system service` under a separate user). Testcontainers see only this Docker.
 
-## 5. Pakiet zgód karty (zatwierdzany razem z planem)
+## 5. Card consent pack (approved together with the plan)
 
-Planowanie (lekkie i pełne) wykrywa stos i proponuje **profil środowiska karty**:
+Planning (light and full) detects the stack and proposes the **card environment profile**:
 
-- **Wykrywanie:** `package.json` (skrypty, Playwright, Angular/Vite — port serwera), `*.csproj`/`*.sln`
-  (Testcontainers, xUnit, bazy), `pyproject.toml`, `Makefile` (cele `test`, `lint`), `docker-compose.yml`,
-  konfiguracje CI (`.gitlab-ci.yml`, `.github/workflows`) — CI jest najlepszym spisem tego, czego testy potrzebują.
-- **Propozycja** (przykład dla toolssuite):
-  - P1: sieć do `registry.npmjs.org`, `fonts.googleapis.com`; polecenia `npm ci`, `npm install *`, `npm run lint *`,
+- **Detection:** `package.json` (scripts, Playwright, Angular/Vite — server port), `*.csproj`/`*.sln`
+  (Testcontainers, xUnit, databases), `pyproject.toml`, `Makefile` (targets `test`, `lint`), `docker-compose.yml`,
+  CI configurations (`.gitlab-ci.yml`, `.github/workflows`) — CI is the best inventory of what the tests need.
+- **Proposal** (example for toolssuite):
+  - P1: network to `registry.npmjs.org`, `fonts.googleapis.com`; commands `npm ci`, `npm install *`, `npm run lint *`,
     `npm run build *`;
-  - P2: `npm run e2e *`, `npx playwright *` z przydzielonym portem; Docker: nie;
-  - P3: brak.
-- Dla LegalApp: P2 `dotnet test *` z Dockerem Tide (Testcontainers/PostgreSQL), sieć: `api.nuget.org`.
-- **Zatwierdzenie:** w oknie planu obok przydziałów modeli — lista „czego karta potrzebuje” z przełącznikami.
-  Zatwierdzony profil zapisuje się w projekcie i jest domyślny dla kolejnych kart (zmiana = nowa zgoda).
-- **W trakcie pracy:** polecenie mieszczące się w profilu rusza samo; spoza profilu — jedno pytanie z opcjami
-  „raz / dopisz do profilu projektu / nie”, z informacją, na którym poziomie się wykona.
+  - P2: `npm run e2e *`, `npx playwright *` with an allocated port; Docker: no;
+  - P3: none.
+- For LegalApp: P2 `dotnet test *` with Tide's Docker (Testcontainers/PostgreSQL), network: `api.nuget.org`.
+- **Approval:** in the plan window, next to the model assignments — a list of "what the card needs" with toggles.
+  The approved profile is saved in the project and is the default for subsequent cards (a change = a new consent).
+- **During work:** a command that fits the profile starts by itself; one outside the profile — a single question with the options
+  "raz / dopisz do profilu projektu / nie" (once / add to the project profile / no), with information on which level it will run.
 
-## 6. Środowisko testowe, które „po prostu działa”
+## 6. A test environment that "just works"
 
-- **Przygotowanie przed krokiem przez usługę** (już jest dla .NET i Node): restore/`npm ci`, przeglądarki
-  Playwright, obrazy Dockera z profilu (`docker pull` na Dockerze Tide), migracje bazy testowej.
-- **Porty z puli** na krok, przekazywane zmienną; jeden serwer deweloperski na worktree.
-- **Kolejka ciężkich zadań** (jest od 03.11: jedno polecenie P2 naraz w projekcie, dwa łącznie) — docelowo
-  ustawiana w UI (K-36).
-- **Wynik testów jako artefakt kroku:** log i podsumowanie (liczby, czas, kod wyjścia) w katalogu kroku; recenzent
-  czyta artefakt zamiast prosić o ponowny przebieg („brak uruchomienia = brak dowodu” spełnione bez pytań).
-- **Testy niestabilne pod obciążeniem** (dziś: testy Tide z limitami czasu) — limity czasu skalowane obciążeniem
-  albo przebieg w kolejce ciężkich zadań.
+- **Preparation before a step by the service** (already there for .NET and Node): restore/`npm ci`, Playwright
+  browsers, Docker images from the profile (`docker pull` on Tide's Docker), test database migrations.
+- **Ports from a pool** per step, passed in a variable; one development server per worktree.
+- **A queue of heavy tasks** (exists since 03.11: one P2 command at a time in a project, two in total) — eventually
+  configured in the UI (K-36).
+- **Test result as a step artifact:** the log and a summary (counts, time, exit code) in the step directory; the reviewer
+  reads the artifact instead of asking for another run ("no run = no evidence" satisfied without questions).
+- **Tests unstable under load** (today: Tide tests with timeouts) — timeouts scaled by load
+  or a run in the heavy-task queue.
 
-## 7. Decyzje do podjęcia (z rekomendacją)
+## 7. Decisions to make (with a recommendation)
 
-1. **Co do czasu P2 z automatycznymi zgodami poza piaskownicą?** Rekomendacja: zostawić włączone dla rodzin
-   testów i budowania (praca stoi bez nich), ale ograniczyć do repozytoriów, którym ufasz — przełącznik per projekt
-   zamiast globalnego `autoConsent`.
-2. **Docker dla kroków:** osobny bezrootowy Docker Tide (rekomendacja; izolacja od Twoich kontenerów i od roota)
-   czy Twój Docker (prościej, ale gniazdo = root)?
-3. **Osobny użytkownik systemowy dla P2** (najmocniejsza izolacja plików, więcej konfiguracji) czy `bwrap` na Twoim
-   koncie z widokiem tylko worktree i cache (rekomendacja na start)?
-4. **Sieć w P1:** tylko domeny rejestrów z profilu (rekomendacja) czy pełna sieć?
-5. **Pakiet zgód:** przy każdej karcie (czytelniej) czy raz na projekt z dziedziczeniem (rekomendacja: raz na
-   projekt, karta pokazuje go do wglądu i może rozszerzyć).
+1. **What to do with automatic consents outside the sandbox until P2?** Recommendation: leave them enabled for the test
+   and build families (work stalls without them), but restrict to repositories you trust — a per-project toggle
+   instead of a global `autoConsent`.
+2. **Docker for steps:** a separate rootless Tide Docker (recommendation; isolation from your containers and from root)
+   or your Docker (simpler, but the socket = root)?
+3. **A separate system user for P2** (strongest file isolation, more configuration) or `bwrap` on your
+   account with a view of only the worktree and caches (recommendation for a start)?
+4. **Network in P1:** only the registry domains from the profile (recommendation) or full network?
+5. **Consent pack:** for every card (clearer) or once per project with inheritance (recommendation: once per
+   project, the card shows it for review and may extend it).
 
-## 8. Plan wstępny (do rozpisania na karcie)
+## 8. Preliminary plan (to be broken down on the card)
 
-| # | Ticket | Blokery |
+| # | Ticket | Blockers |
 |---|---|---|
-| 1 | Profil środowiska projektu: model, zapis w projekcie, wykrywanie stosu i CI, propozycja przy planowaniu | — |
-| 2 | P1: sieć do domen z profilu (`allowedDomains`), cache paczek projektu w kroku | #1 |
-| 3 | P2: piaskownica testowa (`bwrap` przez usługę: widok worktree i cache, własny `/tmp`, sieć z profilu, porty z puli) zamiast `outside` z prawami użytkownika | #1 |
-| 4 | Docker Tide: bezrootowy Docker/Podman, gniazdo tylko dla P2, przygotowanie obrazów z profilu | #3, decyzja 2 |
-| 5 | Pakiet zgód w oknie planu: lista potrzeb karty z przełącznikami, zapis do profilu, pytanie tylko poza profilem | #1, K-35 |
-| 6 | Artefakty testów kroku (log, podsumowanie) dla recenzenta; recenzent nie prosi o przebieg, gdy artefakt jest świeży | #3 |
-| 7 | Przełącznik automatycznych zgód per projekt w UI, przegląd dziennika automatycznych zgód | K-36 |
+| 1 | Project environment profile: model, storage in the project, stack and CI detection, proposal at planning time | — |
+| 2 | P1: network to the profile's domains (`allowedDomains`), project package cache in the step | #1 |
+| 3 | P2: test sandbox (`bwrap` through the service: worktree and cache view, own `/tmp`, network from the profile, ports from a pool) instead of `outside` with user rights | #1 |
+| 4 | Tide Docker: rootless Docker/Podman, socket only for P2, preparation of images from the profile | #3, decision 2 |
+| 5 | Consent pack in the plan window: a list of the card's needs with toggles, saved to the profile, a question only outside the profile | #1, K-35 |
+| 6 | Step test artifacts (log, summary) for the reviewer; the reviewer does not ask for a run when the artifact is fresh | #3 |
+| 7 | Per-project toggle for automatic consents in the UI, review of the automatic consent log | K-36 |
 
-Kolejność: #1 → #2 i #3 równolegle → #4 → #5, #6, #7. Do czasu #3 obowiązuje stan z sekcji 2.
+Order: #1 → #2 and #3 in parallel → #4 → #5, #6, #7. Until #3 the state from section 2 applies.

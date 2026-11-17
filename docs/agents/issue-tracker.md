@@ -1,23 +1,23 @@
-# Tracker pracy: pliki w repozytorium
+# Work tracker: files in the repository
 
-Specyfikacje, plany i tickety przepływu karty są plikami w tym repozytorium. GitHub Issues w prywatnym
-repozytorium `lakomytomaszdev/plasma-tide` pozostają dostępne dla innych zgłoszeń (CLI `gh`), ale nie są
-źródłem ticketów przepływu karty ani stanów jego planu.
+Specifications, plans, and card flow tickets are files in this repository. GitHub Issues in the private
+repository `lakomytomaszdev/plasma-tide` remain available for other reports (the `gh` CLI), but they are not
+the source of card flow tickets or of the state of its plan.
 
-| Rodzaj | Miejsce |
+| Kind | Location |
 | --- | --- |
-| Specyfikacja | `docs/agents/specs/YYYY-MM-DD-<slug>.md` |
-| Plan i stan ticketów | `docs/agents/plans/YYYY-MM-DD-<slug>.md` |
-| Kartki ticketów | `docs/agents/tickets/<data>-<slug>/<kolejność>-<id>-<slug>.md` |
-| Wynik ticketu | `docs/agents/tickets/<data>-<slug>/results/<id>.md` |
+| Specification | `docs/agents/specs/YYYY-MM-DD-<slug>.md` |
+| Plan and ticket state | `docs/agents/plans/YYYY-MM-DD-<slug>.md` |
+| Ticket sheets | `docs/agents/tickets/<data>-<slug>/<kolejność>-<id>-<slug>.md` |
+| Ticket result | `docs/agents/tickets/<data>-<slug>/results/<id>.md` |
 
-Plan jest źródłem prawdy o stanie. Aktualizuj tabelę i `updated` przy delegowaniu, wyniku, review oraz pytaniu
-użytkownika. Zasady formatu, ról i przepływu karty opisuje [standard planu](../agent-plan-standard.md).
+The plan is the source of truth for state. Update the table and `updated` when delegating, on a result, on a review, and when asking
+the user a question. The rules for format, roles, and card flow are described in the [plan standard](../agent-plan-standard.md).
 
-Numeracja lokalna jest ciągła w całym repozytorium. Przed nowym numerem uruchom `make check-plans`, a numer
-zarezerwuj przez `make next-id REPO=/home/user/DevWorkspace/plasma-tide TITLE="…"`; nie obliczaj go ręcznie.
-Ticket w YouTracku zachowuje klucz nadany przez YouTrack, jeśli projekt na tablicy ma taki tracker.
+Local numbering is continuous across the whole repository. Before a new number, run `make check-plans`, and
+reserve the number with `make next-id REPO=/home/user/DevWorkspace/plasma-tide TITLE="…"`; do not compute it by hand.
+A ticket in YouTrack keeps the key assigned by YouTrack, if the project on the board has such a tracker.
 
-Gdy instrukcja narzędzia mówi „opublikuj w trackerze” dla przepływu karty, oznacza to zapis właściwego pliku,
-aktualizację planu i commit na gałęzi pracy. Gdy mówi „pobierz ticket”, przeczytaj kartkę z katalogu
-`docs/agents/tickets/` oraz powiązany wiersz planu. Nie zakładaj GitHub Issue dla tej samej pracy.
+When a tool's instructions say "publish to the tracker" for a card flow, it means saving the proper file,
+updating the plan, and committing on the working branch. When they say "fetch the ticket", read the sheet from the
+`docs/agents/tickets/` directory and the related plan row. Do not assume a GitHub Issue for the same work.

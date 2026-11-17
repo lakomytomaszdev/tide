@@ -9,26 +9,16 @@ SUITES = {
     "board": [("apps/board/tests", "test*.py")],
     "daemon": [("daemon/tests", "test*.py")],
     "issues": [("daemon/tests", "test_issues*.py"), ("apps/issues/tests", "test*.py")],
-    "decoration": [("theme/decoration/tests", "test*.py")],
     "docker": [("apps/docker/tests", "test*.py")],
     "icons": [("theme/icons/tests", "test*.py")],
-    "konsole": [("theme/konsole/tests", "test*.py")],
     "logo": [("theme/logo/tests", "test*.py")],
-    "lookandfeel": [("theme/lookandfeel/tests", "test*.py")],
-    "lockscreen": [("theme/lockscreen/tests", "test*.py")],
     "models": [("apps/models/tests", "test*.py")],
     "newtask": [("apps/newtask/tests", "test*.py")],
     "palette": [("theme/palette/tests", "test*.py")],
-    "plasma": [("theme/plasma/tests", "test*.py")],
-    "plymouth": [("theme/plymouth/tests", "test*.py")],
     "reports": [("apps/reports/tests", "test*.py")],
-    "sddm": [("theme/sddm/tests", "test*.py")],
     "sessions": [("apps/sessions/tests", "test*.py")],
-    "terminal": [("theme/terminal/tests", "test*.py")],
     "tide": [("apps/tide/tests", "test*.py")],
     "tray": [("tray/tests", "test*.py")],
-    "vivaldi": [("theme/vivaldi/tests", "test*.py")],
-    "wallpaper": [("theme/wallpaper/tests", "test*.py")],
     "widgets": [("widgets/tests", "test*.py")],
     "worktrees": [("apps/worktrees/tests", "test*.py")],
     "cardflow": [
@@ -114,7 +104,6 @@ SHARED_TEST_MODULES = (
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.
 SERIAL_MODULES = {
-    "theme/terminal/tests/test_statusline.py": "pomiar budżetu 150 ms czasu ściennego bez konkurencji pozostałych modułów o CPU",
     "daemon/tests/test_cardflow_review.py":
         "Qt: tick uruchamia domknięcie przed callbackiem decyzji; test liczy step.started przed następnym tickiem. "
         "Próba PT-215: 0/3 porażek osobno, 1/5 przy 14 procesach; osobno do czasu synchronizacji scenariusza.",

@@ -1,9 +1,9 @@
-# PT-191: przerwana trzecia próba
+# PT-191: interrupted third trial
 
-Polecenie: `python3 scripts/box/boundary-trial.py --enable-snapshots --retry-failed-build`.
-Wynik przekazany przez Tide: przekroczony czas, `Terminated`.
+Command: `python3 scripts/box/boundary-trial.py --enable-snapshots --retry-failed-build`.
+Result passed on by Tide: timeout exceeded, `Terminated`.
 
-Ostatnie zdarzenia ze zlecenia:
+Last events of the assignment:
 
 ```text
 PRÓBA snapshots-before: ['incus', 'project', 'get', 'user-1000', 'restricted.snapshots']
@@ -12,6 +12,6 @@ PRÓBA snapshots-enable: ['sudo', '-A', 'incus', 'project', 'set', 'user-1000', 
 Terminated
 ```
 
-Zapisane pliki zawierają tylko odczyt sprzed zmiany: pustą wartość właściwości i brak stderr.
-Nie ma wyniku polecenia zmieniającego politykę ani odczytu po zmianie. Nie potwierdzamy stanu po przerwaniu.
-Budowa, pełne testy, dowody środowiska/argv i czerwona lista nie zostały w tej rundzie wykonane.
+The saved files contain only the read from before the change: an empty property value and no stderr.
+There is no result of the command that changes the policy and no read after the change. We do not confirm the state after the interruption.
+The build, the full tests, the environment/argv evidence and the red list were not carried out in this round.

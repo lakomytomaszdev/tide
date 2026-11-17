@@ -1,53 +1,53 @@
 ---
 status: accepted
 date: 2026-11-12
-source: decyzja właściciela 12.11.2026 (docs/agents/masterplan/2026-11-12/audyt/DECYZJE.md), RAPORT.md §2 ADR-3
+source: owner's decision of 12.11.2026 (docs/agents/masterplan/2026-11-12/audyt/DECYZJE.md), RAPORT.md §2 ADR-3
 ---
 
-# ADR-3: Budżet pracy — jedna bramka przyjęcia ciężkiej pracy
+# ADR-3: Work budget — a single admission gate for heavy work
 
-## Kontekst
+## Context
 
-Pula modułów testów (`MachineSlots`) istnieje, ale polecenia uruchamiane w kroku trafiają do drugiej puli
-(`env -u XDG_RUNTIME_DIR` gubi katalog blokad), pojemność jest stałą rdzenie−2, liczba ciężkich przebiegów nie ma
-limitu, a przebiegi spoza usługi nie są w ewidencji `heavyqueue`.
+The test module pool (`MachineSlots`) exists, but commands launched in a step go to a second pool
+(`env -u XDG_RUNTIME_DIR` loses the lock directory), the capacity is a constant cores−2, the number of heavy runs has no
+limit, and runs from outside the service are not in the `heavyqueue` registry.
 
-## Decyzja
+## Decision
 
-- Jedna bramka przyjęcia ciężkiej pracy **przed wyborem runnera** (`heavyqueue.admit`) z osobnymi budżetami:
-  - miejsca u dostawcy (`providerSlots`),
-  - liczba ciężkich przebiegów (`heavyLimit`),
-  - moduły testów (`MachineSlots`).
-- Trzy zmiany konieczne:
-  1. **jedna pula modułów** — `TIDE_TEST_SLOTS_DIR` ustawiany przez usługę i **przekazywany przez `agentcmd` i do
-     pudełka** (dziś `env -u XDG_RUNTIME_DIR` ją gubi); w pudełku pula musi być po stronie hosta;
-  2. **pojemność puli liczona z `loadavg`** i rezerwy, nie ze stałej rdzenie−2;
-  3. **przebiegi spoza usługi widoczne w ewidencji** (pula hosta już je obejmuje; `heavyqueue` nie — do K-52).
-- `OUTSIDE_PER_PROJECT` / `OUTSIDE_TOTAL` zostają limitem lekkich.
+- A single admission gate for heavy work **before runner selection** (`heavyqueue.admit`) with separate budgets:
+  - provider slots (`providerSlots`),
+  - the number of heavy runs (`heavyLimit`),
+  - test modules (`MachineSlots`).
+- Three necessary changes:
+  1. **a single module pool** — `TIDE_TEST_SLOTS_DIR` set by the service and **passed through `agentcmd` and into
+     the box** (today `env -u XDG_RUNTIME_DIR` loses it); in the box the pool must be on the host side;
+  2. **pool capacity computed from `loadavg`** and a reserve, not from the constant cores−2;
+  3. **runs from outside the service visible in the registry** (the host pool already covers them; `heavyqueue` does not — until K-52).
+- `OUTSIDE_PER_PROJECT` / `OUTSIDE_TOTAL` remain the limit for light work.
 
-## Konsekwencje
+## Consequences
 
-- Rezerwacja budżetu jest krokiem 2 protokołu jednego wykonania ([ADR-1](0001-wykonanie-i-jedno-wykonanie.md)),
-  w tym samym zapisie co zamiar.
-- Klasyfikacja ciężkie/lekkie idzie przez `policy.classify` ([ADR-2](0002-uprawnienia.md)).
+- The budget reservation is step 2 of the single-execution protocol ([ADR-1](0001-wykonanie-i-jedno-wykonanie.md)),
+  in the same write as the intent.
+- The heavy/light classification goes through `policy.classify` ([ADR-2](0002-uprawnienia.md)).
 
-**Co temu dziś przeczy** (w kolejności planu):
+**What contradicts this today** (in plan order):
 
-1. brak limitu liczby ciężkich przebiegów — znika z K-39 (`heavyLimit`, M0);
-2. dwie pule modułów — znikają z przekazaniem `TIDE_TEST_SLOTS_DIR` przez `agentcmd` (K-109 etap 1 albo K-100 —
-   patrz pytania) i z rozstrzygnięciem puli w pudełku (K-109);
-3. stała pojemność i przebiegi spoza usługi poza ewidencją `heavyqueue` — zmiany 2 i 3 (K-109 / K-52).
+1. no limit on the number of heavy runs — goes away with K-39 (`heavyLimit`, M0);
+2. two module pools — go away with passing `TIDE_TEST_SLOTS_DIR` through `agentcmd` (K-109 stage 1 or K-100 —
+   see the questions) and with resolving the pool in the box (K-109);
+3. constant capacity and runs from outside the service outside the `heavyqueue` registry — changes 2 and 3 (K-109 / K-52).
 
-## Karta wykonawcza i kamień
+## Executing card and milestone
 
-K-39 + K-109, kamienie **M0–M2**; ewidencja przebiegów spoza usługi w `heavyqueue` → K-52 (v1.1).
+K-39 + K-109, milestones **M0–M2**; registering runs from outside the service in `heavyqueue` → K-52 (v1.1).
 
-## Pytania otwarte
+## Open questions
 
-- **Dla K-109: pula modułów w pudełku** — montaż katalogu blokad albo rezerwacja miejsc przed `incus exec`; plan
-  K-109 wybiera wariant i dowodzi go testem. `[NIESPRAWDZONE wykonalność montażu]`.
-- **Dla K-109 / K-52:** raport przypisuje lukę „pojemność bez reszty obciążenia” (zmiana 2) łącznie do K-109/K-52,
-  bez wskazania jednej karty — rozstrzyga plan K-109.
-- **Dla K-109 / K-100:** raport w tabeli etapów dopuszcza przekazanie `TIDE_TEST_SLOTS_DIR` przez `agentcmd` jako
-  ticket w K-100 albo w K-109 etap 1, a w werdykcie kart przypisuje je K-109 — rozbieżność do rozstrzygnięcia przy
-  planie tej karty, która zacznie pierwsza.
+- **For K-109: the module pool in the box** — mounting the lock directory or reserving slots before `incus exec`; the
+  K-109 plan picks a variant and proves it with a test. `[NIESPRAWDZONE wykonalność montażu]`.
+- **For K-109 / K-52:** the report assigns the gap "capacity without the rest of the load" (change 2) jointly to K-109/K-52,
+  without naming a single card — the K-109 plan decides.
+- **For K-109 / K-100:** in its stage table the report allows passing `TIDE_TEST_SLOTS_DIR` through `agentcmd` as a
+  ticket in K-100 or in K-109 stage 1, while in the card verdict it assigns it to K-109 — a discrepancy to resolve when
+  planning whichever of these cards starts first.

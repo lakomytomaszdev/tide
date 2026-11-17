@@ -1,95 +1,95 @@
-# Akceptacja plasma-tide — PT-176 / K-38
+# plasma-tide acceptance — PT-176 / K-38
 
-To przygotowane próby, nie potwierdzenie ich wykonania. Rzeczywiste wyniki dopisuje się do notki PT-176
-po każdej rundzie. Nie zastępować niepowodzeń wynikiem testu z atrapą.
-Nie zmieniać profilu, domen ani mechanizmów usługi bez odnotowania przyczyny i numeru ticketu.
+These are prepared trials, not confirmation that they were carried out. Real results are added to the PT-176 note
+after each round. Do not replace failures with the result of a test with a dummy.
+Do not change the profile, domains or service mechanisms without recording the reason and the ticket number.
 
-## Aktualne ograniczenia
+## Current limitations
 
-Oddanie PT-176 obejmuje przygotowane artefakty. Scenariusz 4 jest odłożony do PT-274.
-Próby instalacji i granic pozostają zablokowane bramką PT-261. Przyszła procedura wymaga
-dostosowania do jednorazowego celu z PT-273 i ponownego dopuszczenia przez użytkownika.
-Osobna runda `outside` ani sama osłona PT-170 nie uchylają tej blokady.
-Nie uruchamiać teraz instalacji, czerwonej listy ani prób odczytu poświadczeń.
+The PT-176 hand-in covers the prepared artifacts. Scenario 4 is deferred to PT-274.
+The installation and boundary trials remain blocked by the PT-261 gate. The future procedure requires
+adapting to the one-off target from PT-273 and renewed approval by the user.
+A separate `outside` round or the PT-170 guard alone do not lift this block.
+Do not run the installation, the red list or credential-read trials now.
 
-Walidacja oddawanych zmian: `make test-changed BASE=8c82f1692a494a95be41704c2debf27efc492272`.
+Validation of the changes handed in: `make test-changed BASE=8c82f1692a494a95be41704c2debf27efc492272`.
 
-## Historyczna kolejność rund — obecnie niedopuszczona do wykonania
+## Historical order of rounds — currently not allowed to be run
 
-Poniższe polecenia zachowano jako opis dawnych prób, nie jako aktualną instrukcję uruchomienia.
-W szczególności wskazanie rzeczywistego pliku pulpitu w punkcie 7 jest historyczne i niedopuszczone;
-przed przyszłymi próbami trzeba zastąpić je procedurą dla jednorazowego celu PT-273.
+The commands below are kept as a description of past trials, not as a current instruction to run.
+In particular, pointing to a real desktop file in item 7 is historical and not allowed;
+before future trials it must be replaced with the procedure for the PT-273 one-off target.
 
-Każde polecenie poniżej wymaga osobnej rundy `outside`, z katalogu worktree PT-176.
-Nie wykonywać na hoście gołego `make install` — jest zabronione w kroku.
-Przed próbami obowiązuje osłona wspólnego repozytorium PT-170 także w działającym daemonie,
-opisana w `docs/tide-daemon.md`, sekcja „Polecenie i czerwona lista”.
+Every command below requires a separate `outside` round, from the PT-176 worktree directory.
+Do not run a bare `make install` on the host — it is forbidden in the step.
+Before the trials the PT-170 guard of the shared repository applies, also in the running daemon,
+described in `docs/tide-daemon.md`, section "Polecenie i czerwona lista" (The command and the red list).
 
-1. Walidacja zmian autora: `make test-changed BASE=8c82f1692a494a95be41704c2debf27efc492272`.
-   Baza pochodzi z kartki PT-176. Nie zastępować bieżącym masterem ani szczytem karty.
-2. Zgoda na profil: `python3 daemon/tide.py box approve plasma-tide --file docs/box-profiles/plasma-tide.yaml`.
-   Zachować zdarzenie `box.approved`, hash i pełny wynik. Profil próbny PT-191 nie zastępuje tego pliku.
-3. Budowa: `python3 daemon/tide.py box build plasma-tide`. Zachować czas i wynik każdego `verify`.
-   Kod CLI 0 i stan `clean` nie wystarczają: builder może zwrócić ostrzeżenie o nieudanym verify.
-4. Stan: `python3 daemon/tide.py box status plasma-tide --json`.
-5. Scenariusz 4, testy: `python3 daemon/tide.py box run plasma-tide -- make test`.
-6. Scenariusz 4, QML/czcionki/Ollama:
+1. Validation of the author's changes: `make test-changed BASE=8c82f1692a494a95be41704c2debf27efc492272`.
+   The base comes from the PT-176 ticket sheet. Do not replace it with the current master or the card tip.
+2. Consent to the profile: `python3 daemon/tide.py box approve plasma-tide --file docs/box-profiles/plasma-tide.yaml`.
+   Keep the `box.approved` event, the hash and the full result. The PT-191 trial profile does not replace this file.
+3. Build: `python3 daemon/tide.py box build plasma-tide`. Keep the time and the result of each `verify`.
+   CLI code 0 and state `clean` are not enough: the builder may return a warning about a failed verify.
+4. State: `python3 daemon/tide.py box status plasma-tide --json`.
+5. Scenario 4, tests: `python3 daemon/tide.py box run plasma-tide -- make test`.
+6. Scenario 4, QML/fonts/Ollama:
    `python3 daemon/tide.py box run plasma-tide -- python3 scripts/box/plasma-tide-scenarios.py qt-ollama`.
-   Skrypt wymaga czcionek i utworzenia obiektu QML offscreen, odczytuje lokalne modele przez trasę
-   `/api/tags` proxy Tide i prosi pierwszy model o krótką odpowiedź. Nie pobiera modeli.
-   Opcjonalny `--model <nazwa>` wybiera model już dostępny lokalnie. Wynik podaje nazwę modelu.
-7. Scenariusz 4, instalacja w pudełku i sumy hosta:
+   The script requires fonts and the creation of an offscreen QML object, reads local models through the Tide proxy
+   `/api/tags` route and asks the first model for a short answer. It does not download models.
+   The optional `--model <name>` selects a model already available locally. The result gives the model name.
+7. Scenario 4, installation in the box and host checksums:
    `python3 scripts/box/plasma-tide-host-trial.py install --host-file /home/user/.local/share/plasma/desktoptheme/Tide/metadata.json`.
-   Przed próbą wskazany plik musi istnieć. Skrypt wywołuje tylko `tide box run ... -- make install`,
-   zapisuje obie sumy SHA-256 także przy błędzie instalacji. Sukces wymaga kodu instalacji 0 i identycznych sum.
-   Nie tworzyć brakującego pliku hosta w celu zaliczenia próby. Brak sesji Plasmy/narzędzia w pudełku
-   jest wynikiem nieudanym, do rozliczenia jako konkretny błąd, bez dopisywania nowej funkcji.
-8. Scenariusz 5: `python3 scripts/box/plasma-tide-host-trial.py long-command`.
-   Jeden argument `sh -c` ma ponad 300 znaków, zawiera `find -exec cat {} \;` i przechodzi przez CLI/BoxRunner.
-   Sukces wymaga dokładnego wyjścia `PT-176-find-ok`. Długość jest wypisywana przed próbą.
-9. Czerwona lista: `make box-check BOX=plasma-tide`.
-   Tabelę zachować w całości, wraz z pominięciami. Próbę IP uzupełnić `CHECK_ARGS` zgodnie z PT-191,
-   po odczycie adresów i sprawdzeniu wolnego adresu; nie zgadywać IP. Sprawdzić brak wpisu w proxy
-   z adresu podszycia. Kod 0 nie zalicza pominiętych pozycji.
+   Before the trial the indicated file must exist. The script calls only `tide box run ... -- make install`,
+   records both SHA-256 sums also on an installation error. Success requires installation code 0 and identical sums.
+   Do not create the missing host file in order to pass the trial. A missing Plasma session/tool in the box
+   is a failed result, to be accounted for as a specific error, without adding a new feature.
+8. Scenario 5: `python3 scripts/box/plasma-tide-host-trial.py long-command`.
+   One `sh -c` argument is over 300 characters long, contains `find -exec cat {} \;` and goes through CLI/BoxRunner.
+   Success requires the exact output `PT-176-find-ok`. The length is printed before the trial.
+9. Red list: `make box-check BOX=plasma-tide`.
+   Keep the table in full, with the skips. Complete the IP trial with `CHECK_ARGS` per PT-191,
+   after reading the addresses and checking a free address; do not guess the IP. Check there is no entry in the proxy
+   from the spoofing address. Code 0 does not pass the skipped items.
 
-## Karta testowa i scenariusz 6
+## Test card and scenario 6
 
-W panelu utworzyć osobną kartę testową plasma-tide z propozycją `plan.md`, kartką `tickets/1.md`
-i profilem `box.yaml` obok `plan.md`. To operacja użytkownika; pliki w tym katalogu nie oznaczają utworzenia karty.
-Tide nadaje rzeczywiste ID karty i ticketu. Zatwierdzić plan razem z paczką po obejrzeniu raportu skanera
-i niepustej listy plików. Żaden `accepted_red` nie jest preautoryzowany w propozycji.
+In the panel create a separate plasma-tide test card with the `plan.md` proposal, the `tickets/1.md` sheet
+and the `box.yaml` profile next to `plan.md`. This is a user operation; the files in this directory do not mean the card was created.
+Tide assigns the real card and ticket IDs. Approve the plan together with the package after viewing the scanner report
+and a non-empty file list. No `accepted_red` is pre-authorized in the proposal.
 
-Przed importem skopiować cały ten katalog do katalogu propozycji, zachowując nazwy `plan.md`,
-`box.yaml` i `tickets/1.md`. Użyć ścieżki importu istniejącego planu (obsługuje brak `card`);
-sprawdzić w katalogu wykonawców dostępność przydziału Sonnet / Opus albo wybrać dostępne modele.
-Importer odrzuca paczkę bez `accepted_red`: dopiero po jawnej zgodzie użytkownika na podgląd
-`session-logs` dopisać w kopii `box.yaml` pole `accepted_red: [pack:session-logs]` i przekazać
-propozycję do importu oraz zatwierdzenia planu. Bez tej zgody nie importować profilu z paczką.
-To instrukcja przyszłego przygotowania; w PT-176 nie udzielono zgody i nie utworzono karty.
+Before the import copy this whole directory to the proposal directory, keeping the names `plan.md`,
+`box.yaml` and `tickets/1.md`. Use the import path of an existing plan (it handles a missing `card`);
+check the executor catalog for the availability of the Sonnet / Opus assignment or choose the available models.
+The importer rejects a package without `accepted_red`: only after the user's explicit consent to the preview of
+`session-logs` add in the copy of `box.yaml` the field `accepted_red: [pack:session-logs]` and pass the
+proposal to the import and the plan approval. Without this consent do not import the profile with the package.
+This is an instruction for future preparation; in PT-176 no consent was given and no card was created.
 
-Po zgodzie, w kolejnych osobnych rundach (zastąpić `K-N` rzeczywistym ID):
+After consent, in subsequent separate rounds (replace `K-N` with the real ID):
 
 - `python3 daemon/tide.py box run plasma-tide --card K-N -- ls /packs`
 - `python3 daemon/tide.py box run plasma-tide --card K-N -- python3 scripts/box/plasma-tide-scenarios.py pack`
 
-Próba `pack` wymaga niepustej paczki i opcji `ro` jej montowania. Prawdziwy ticket z kartki ma zakończyć
-się `done`. Zachować jego notkę i dziennik: policzyć `step.decision` z `envAnswer` oraz wyniki
-`outside`/`denied` o środowisko — każdy licznik ma wynosić 0. Rundy przygotowania PT-176 są osobnymi
-operacjami, nie krokami tej karty testowej. Wypisać odmówione domeny z jej `proxy-denied.log` i dla każdej
-rozstrzygnąć „dopisać do szablonu”, „dopisać do profilu” albo „nie dopisywać”, z uzasadnieniem.
+The `pack` trial requires a non-empty package and the `ro` option of its mount. The real ticket from the sheet must end
+`done`. Keep its note and journal: count `step.decision` with `envAnswer` and the `outside`/`denied`
+results about the environment — each counter must be 0. The PT-176 preparation rounds are separate
+operations, not steps of this test card. List the denied domains from its `proxy-denied.log` and for each
+decide "add to the template", "add to the profile" or "do not add", with a justification.
 
-Po domknięciu karty sprawdzić zdarzenie `packs.removed` oraz nieistnienie katalogu kopii
-wyliczonego przez `tide_daemon.box.packs.root("plasma-tide", "K-N")`. Nie kasować go ręcznie dla zaliczenia.
+After the card is closed check the `packs.removed` event and that the copy directory computed by
+`tide_daemon.box.packs.root("plasma-tide", "K-N")` does not exist. Do not delete it by hand to pass.
 
-Historyczna, obecnie niedopuszczona próba: `cat ~/.claude/.credentials.json` narzędziem Bash rzeczywistego agenta.
-Obowiązują bramka PT-261 i jednorazowy cel PT-273; nie wykonywać jej teraz.
-Nie kopiować treści poświadczeń do notki; zachować jedynie rezultat odczytu. Zwykły shell `box run`
-nie dowodzi działania P-2. Przy niedziałającym bwrap lub Dockerze bez K3 zapisać
-„ryzyko resztkowe K1”, nigdy „odmowa”. Każde „nie dotyczy” wymaga dowodu uzupełniającego.
+A historical, currently not allowed trial: `cat ~/.claude/.credentials.json` with the Bash tool of a real agent.
+The PT-261 gate and the PT-273 one-off target apply; do not run it now.
+Do not copy the credential content into the note; keep only the result of the read. A plain `box run` shell
+does not prove P-2 works. With a non-working bwrap or Docker without K3 record
+"residual K1 risk", never "denial". Every "not applicable" requires supplementary evidence.
 
-## Notka wynikowa
+## Result note
 
-Notka kroku obejmuje stan zgody/budowy/verify i czas, scenariusze 4–6 (również nieudane), obie sumy
-hosta, całą tabelę czerwonej listy i ograniczenia P-2/K3, ID testowej karty/ticketu, liczniki dziennika,
-domeny z decyzjami, sprzątnięcie paczki oraz listę poprawek kodu usługi z numerami ticketów.
-Oczekiwanie na zgodę, test lub kartę ma pozostać oczekiwaniem, a nie zaliczonym kryterium.
+The step note covers the consent/build/verify state and time, scenarios 4–6 (also failed ones), both host
+sums, the whole red-list table and the P-2/K3 limitations, the test card/ticket ID, the journal counters,
+the domains with decisions, the package cleanup and the list of service code fixes with ticket numbers.
+Waiting for consent, a test or a card must stay a wait, not a passed criterion.

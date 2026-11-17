@@ -1,103 +1,103 @@
-# Konserwacja testowych kopii dzienników (PT-252 → PT-255)
+# Maintenance of test journal copies (PT-252 → PT-255)
 
-Narzędzie `tools/cardflow_cleanup.py` nie odczytuje ustawień ani domyślnych katalogów
-użytkownika. Wymaga `--source`: katalogu **kopii** `cardflow`, zawierającego katalogi
-12-znakowych skrótów tablic, a w nich pliki `K-<numer>.jsonl`. Nie wskazuj repozytorium
-Tablicy, `flow`, całego katalogu stanu ani worktrees.
+The tool `tools/cardflow_cleanup.py` does not read the user's settings or default directories.
+It requires `--source`: a directory of **copies** of `cardflow`, containing directories of
+12-character board hashes, and in them `K-<numer>.jsonl` files. Do not point to the Board repository,
+`flow`, the whole state directory, or worktrees.
 
-PT-252 dostarcza narzędzie sprawdzone na danych syntetycznych. Rzeczywiste wykonanie
-należy do PT-255 (#12), po review i scaleniu PT-251, PT-252 oraz PT-254 do gałęzi karty.
-Dostarczenie poniższych poleceń nie oznacza wykonania sprzątania K-60.
+PT-252 delivers a tool verified on synthetic data. The real execution
+belongs to PT-255 (#12), after the review and merge of PT-251, PT-252, and PT-254 into the card branch.
+Delivering the commands below does not mean that the K-60 cleanup was performed.
 
-## Kwalifikacja
+## Qualification
 
-Każdy plik kwalifikowany jest osobno. Akceptowane są zwykłe pliki bez dowiązań
-twardych i symbolicznych, w rozpoznanym układzie ścieżek. Każda linia musi zawierać
-poprawny obiekt JSON ze schematem `v: 1`, kolejnym `seq` od 1, zgodnym `card`,
-niepustym `type` oraz datą `ts` ze strefą czasową. Nieznany schemat, urwana lub pusta
-linia, powtórzony klucz i nieprawidłowa liczba JSON wykluczają usunięcie całego pliku.
+Each file is qualified separately. Accepted are regular files without hard
+or symbolic links, in a recognized path layout. Every line must contain
+a valid JSON object with schema `v: 1`, consecutive `seq` from 1, a matching `card`,
+a non-empty `type`, and a `ts` date with a time zone. An unknown schema, a truncated or empty
+line, a repeated key, and an invalid JSON number rule out deleting the whole file.
 
-Wymagany jest co najmniej jeden `step.started`. **Wszystkie** starty muszą mieć brak
-`repo` lub dokładnie pusty napis oraz bezwzględny `worktree`, którego `realpath`
-jest potomkiem `/tmp/`. Sam `/tmp`, ścieżka względna, `null`, białe znaki w `repo`,
-wyjście przez `..` lub dowiązanie poza `/tmp` oznaczają pominięcie. Nie jest sprawdzana
-liczba historycznych kopii. Jeden start testowy nie kwalifikuje innych plików ani
-całego skrótu tablicy. Nowe pliki po podglądzie nie są automatycznie dodawane.
+At least one `step.started` is required. **All** starts must have no
+`repo` or exactly an empty string, and an absolute `worktree` whose `realpath`
+is a descendant of `/tmp/`. `/tmp` itself, a relative path, `null`, whitespace in `repo`,
+an escape through `..`, or a link outside `/tmp` mean skipping. The number
+of historical copies is not checked. One test start does not qualify other files or
+the whole board hash. New files after the preview are not automatically added.
 
-Brak historycznego katalogu worktree jest dozwolony. Rozwiązywanie ścieżki toleruje
-wyłącznie brak pliku (`realpath` z `strict=os.path.ALLOW_MISSING`, wymagane także
-w interpreterze uruchamiającym narzędzie). Pętla dowiązań, odmowa dostępu i składnik
-niebędący katalogiem oznaczają `unknown-worktree` i zachowanie kopii. Dowiązanie do
-nieistniejącego celu nadal jest rozwiązywane, więc cel poza `/tmp` wyklucza usunięcie.
+A missing historical worktree directory is allowed. Path resolution tolerates
+only a missing file (`realpath` with `strict=os.path.ALLOW_MISSING`, required also
+in the interpreter running the tool). A symlink loop, denied access, and a component
+that is not a directory mean `unknown-worktree` and keeping the copy. A link to
+a nonexistent target is still resolved, so a target outside `/tmp` rules out deletion.
 
-## Okno bez zapisu
+## A window without writes
 
-Podgląd niczego nie zmienia, chyba że jawnie podano `--plan`: wtedy tworzy wyłącznie
-nowy plik metadanych poza źródłem. Zastosowanie ponownie sprawdza kwalifikację,
-SHA-256 i tożsamość pliku (urządzenie, inode, tryb, liczba dowiązań, rozmiar, mtime,
-ctime). Zmienione lub brakujące kandydaty są pomijane.
-Jeżeli zwykłego pliku zachowywanego w źródle nie można odczytać i wyliczyć jego
-sumy, zastosowanie odmawia przed usuwaniem: nie dałoby się wykazać niezmienności.
+The preview changes nothing unless `--plan` is explicitly given: then it creates only
+a new metadata file outside the source. The apply step rechecks the qualification,
+the SHA-256, and the file identity (device, inode, mode, link count, size, mtime,
+ctime). Changed or missing candidates are skipped.
+If a regular file kept in the source cannot be read and its checksum computed,
+the apply step refuses before deleting: immutability could not be demonstrated.
 
-Sam znacznik `--writers-stopped` **nie zatrzymuje procesów**. Jest potwierdzeniem
-obowiązku operatora: przez całe zastosowanie, kontrolę i powtórny przebieg nikt nie
-może dopisywać ani podmieniać kopii. Blokada `Journal.lock` jest wewnątrz procesu
-usługi i nie synchronizuje tego narzędzia. Dodatkowe odczyty i kontrole nie zastępują
-zatrzymania piszących procesów; narzędzie nie gwarantuje ochrony przed procesem,
-który celowo modyfikuje dane między ostatnim sprawdzeniem a `unlink`.
+The `--writers-stopped` flag alone **does not stop processes**. It is a confirmation of the
+operator's duty: throughout the apply, the check, and the repeated run no one
+may append to or replace the copies. The `Journal.lock` lock is inside the service
+process and does not synchronize this tool. Additional reads and checks do not replace
+stopping the writing processes; the tool does not guarantee protection against a process
+that deliberately modifies data between the last check and `unlink`.
 
-W PT-255 użyj `tools/cardflow_cleanup_host.py`. Wymaga początkowo aktywnej usługi
-`tide-daemon.service`, zatrzymuje ją, sprawdza `ActiveState=inactive`, wykonuje
-zastosowanie, kontrolę niezmienności, nowy podgląd oraz ponowne zastosowanie bez
-kandydatów. W `finally` wznawia usługę i sprawdza `ActiveState=active`, również po
-błędzie backupu, kontroli i ponownego przebiegu. Wynik niezerowy oznacza konieczność
-sprawdzenia raportów; nie jest potwierdzeniem zakończenia sprzątania.
+In PT-255 use `tools/cardflow_cleanup_host.py`. It requires the service `tide-daemon.service`
+to be initially active, stops it, checks `ActiveState=inactive`, performs the
+apply, the immutability check, a new preview, and a repeated apply with no
+candidates. In `finally` it resumes the service and checks `ActiveState=active`, also after
+a backup, check, or repeated run error. A non-zero result means the reports must be
+checked; it is not a confirmation that the cleanup finished.
 
-Przed tym poleceniem zakończ stare niezabezpieczone testy, zamknij klientów Tide
-i wyklucz automatyczne wznowienie usługi oraz inne procesy piszące kopie. Potwierdza
-to `--other-writers-stopped`. Nie uruchamiaj w tym oknie klientów ani starych testów.
-Procedura nie zatrzymuje dowolnych procesów użytkownika ani nie zmienia konfiguracji
-systemd. Nie używaj jej, jeżeli tych warunków nie można zapewnić. `finally` nie
-zadziała po SIGKILL, utracie zasilania ani awarii interpretera; wtedy operator musi
-wznowić usługę. Zwykłe błędy poleceń mają ścieżkę wznowienia.
+Before this command, finish old unprotected tests, close the Tide clients,
+and rule out automatic resumption of the service and other processes writing the copies. This is confirmed
+by `--other-writers-stopped`. Do not run clients or old tests in this window.
+The procedure does not stop arbitrary user processes or change the systemd
+configuration. Do not use it if these conditions cannot be ensured. `finally` does not
+work after SIGKILL, a power loss, or an interpreter crash; then the operator must
+resume the service. Ordinary command errors have a resume path.
 
-## Pojedyncze polecenia dla PT-255
+## Single commands for PT-255
 
-To konkretne przykłady dla domyślnego stanu użytkownika `tomek`. PT-255 ma najpierw
-potwierdzić **metadanymi konfiguracji** rzeczywisty katalog stanu (w szczególności
-`XDG_STATE_HOME`) i ścieżkę zaakceptowanego narzędzia w swoim worktree. Jeśli są inne,
-wstaw odpowiednie bezwzględne ścieżki. Model nie odczytuje treści rzeczywistych
-dzienników. Narzędzie uruchamiane jest poza piaskownicą, osobnym wynikiem `outside`.
+These are concrete examples for the default state of the user `tomek`. PT-255 must first
+confirm, using **configuration metadata**, the real state directory (in particular
+`XDG_STATE_HOME`) and the path of the accepted tool in its worktree. If they differ,
+insert the appropriate absolute paths. The model does not read the contents of the real
+journals. The tool is run outside the sandbox, as a separate `outside` result.
 
-Katalog `/home/user/DevWorkspace/tide-maintenance-k60` jest jawnym katalogiem
-artefaktów, **poza** `/home/user/.local/state/tide/cardflow`. Musi już istnieć,
-być prywatny dla użytkownika i nie zawierać podanych niżej nazw plików ani backupu.
-Utworzenie go jest osobnym poleceniem hosta:
+The directory `/home/user/DevWorkspace/tide-maintenance-k60` is an explicit artifact
+directory, **outside** `/home/user/.local/state/tide/cardflow`. It must already exist,
+be private to the user, and not contain the file names given below or a backup.
+Creating it is a separate host command:
 
 ```sh
 /usr/bin/mkdir -m 700 /home/user/DevWorkspace/tide-maintenance-k60
 ```
 
-1. Domyślny podgląd z jawnym zapisem sprawdzonego zestawu (pierwszy `outside`):
+1. The default preview with an explicit save of the verified set (the first `outside`):
 
 ```sh
 /usr/bin/python3 tools/cardflow_cleanup.py --source /home/user/.local/state/tide/cardflow --plan /home/user/DevWorkspace/tide-maintenance-k60/preview.json
 ```
 
-Po wznowieniu PT-255 sprawdza kod wyjścia i liczniki. Dopiero wtedy przekazuje
-drugie polecenie `outside`, osobno od podglądu:
+After resuming, PT-255 checks the exit code and the counters. Only then does it hand over
+the second `outside` command, separately from the preview:
 
 ```sh
 /usr/bin/python3 tools/cardflow_cleanup_host.py --source /home/user/.local/state/tide/cardflow --plan /home/user/DevWorkspace/tide-maintenance-k60/preview.json --backup-dir /home/user/DevWorkspace/tide-maintenance-k60/backup --report /home/user/DevWorkspace/tide-maintenance-k60/apply.json --repeat-plan /home/user/DevWorkspace/tide-maintenance-k60/repeat-preview.json --repeat-backup-dir /home/user/DevWorkspace/tide-maintenance-k60/repeat-backup --repeat-report /home/user/DevWorkspace/tide-maintenance-k60/repeat-apply.json --other-writers-stopped
 ```
 
-To polecenie zawiera kontrolę i powtórny przebieg w jednym zatrzymanym oknie. Jeżeli
-nowy podgląd znajdzie kandydatów (np. zmienionych od pierwszego podglądu), procedura
-odmawia dalszego usuwania i wznawia usługę; potrzebny jest nowy podgląd i ocena.
-Nie usuwa nowych danych tylko po to, aby otrzymać zero.
+This command includes the check and the repeated run in one stopped window. If
+the new preview finds candidates (for example changed since the first preview), the procedure
+refuses further deletion and resumes the service; a new preview and evaluation are needed.
+It does not delete new data just to get zero.
 
-Dla operatora samodzielnie utrzymującego zatrzymane okno te same czynności są
-dostępne osobno. Każdy poniższy wiersz jest jednym poleceniem:
+For an operator maintaining the stopped window on their own, the same actions are
+available separately. Each line below is one command:
 
 ```sh
 /usr/bin/python3 tools/cardflow_cleanup.py --source /home/user/.local/state/tide/cardflow --apply --plan /home/user/DevWorkspace/tide-maintenance-k60/preview.json --backup-dir /home/user/DevWorkspace/tide-maintenance-k60/backup --report /home/user/DevWorkspace/tide-maintenance-k60/apply.json --writers-stopped
@@ -106,36 +106,36 @@ dostępne osobno. Każdy poniższy wiersz jest jednym poleceniem:
 /usr/bin/python3 tools/cardflow_cleanup.py --source /home/user/.local/state/tide/cardflow --apply --plan /home/user/DevWorkspace/tide-maintenance-k60/repeat-preview.json --backup-dir /home/user/DevWorkspace/tide-maintenance-k60/repeat-backup --report /home/user/DevWorkspace/tide-maintenance-k60/repeat-apply.json --writers-stopped
 ```
 
-`--verify` po wznowieniu legalnej usługi może wykazać jej normalne zmiany. Dowód
-niezmienności pochodzi z kontroli **przed** wznowieniem w procedurze hosta, a nie
-z późniejszego porównania. Kod 0 oznacza sukces, 1 błąd lub odmowę, 2 błąd argumentów.
-Przy zerze kandydatów powstaje raport, lecz nie fikcyjny backup.
+`--verify` after resuming the legitimate service may show its normal changes. The proof
+of immutability comes from the check **before** resuming in the host procedure, not
+from a later comparison. Code 0 means success, 1 an error or refusal, 2 an argument error.
+With zero candidates a report is created, but no fictitious backup.
 
-## Backup, raport i odzyskanie
+## Backup, report, and recovery
 
-Backup powstaje pod nową nazwą, z prywatnymi uprawnieniami. W `files/` zachowuje
-relatywne ścieżki kopii. `manifest.json` zawiera ich ścieżki, tożsamości i SHA-256.
-Pliki i katalogi są synchronizowane na dysk; cały manifest i wszystkie sumy są
-odczytywane ponownie przed pierwszym usunięciem. Awaria tworzenia albo sprawdzania
-kopii zostawia wszystkie oryginały i częściowy backup do diagnozy. Nie wznawiaj
-operacji przez nadpisanie takiego backupu — użyj nowych nazw po ocenie błędu.
+The backup is created under a new name, with private permissions. In `files/` it keeps
+the relative paths of the copies. `manifest.json` contains their paths, identities, and SHA-256.
+Files and directories are synced to disk; the whole manifest and all checksums are
+read again before the first deletion. A failure while creating or verifying
+the copy leaves all originals and the partial backup for diagnosis. Do not resume
+the operation by overwriting such a backup — use new names after assessing the error.
 
-Raport zapisuje liczbę zakwalifikowanych, listę i liczbę usuniętych/pominiętych,
-powody pominięcia, bezwzględny backup, wynik jego weryfikacji oraz kontrolę zbioru
-ścieżek i sum zachowanych kopii. Jest otwierany przed backupem i aktualizowany po
-usunięciach. Zawiera tylko metadane; treść dzienników jest wyłącznie w prywatnym
-backupie. Nie publikuj backupu ani treści dzienników. stdout podglądu zawiera tylko
-liczniki; błędy JSON nie wypisują fragmentów wejściowych danych.
+The report records the number of qualified files, the list and number of deleted/skipped,
+the skip reasons, the absolute backup path, the result of its verification, and the check of the set of
+paths and checksums of the kept copies. It is opened before the backup and updated after
+the deletions. It contains only metadata; the journal content is only in the private
+backup. Do not publish the backup or the journal content. The preview's stdout contains only
+counters; JSON errors do not print fragments of the input data.
 
-Usuwany jest tylko konkretny kandydat, potem jego katalog skrótu, jeśli jest pusty.
-Nie ma rekurencyjnego usuwania. Backup nie leży w aktywnym drzewie i nie jest źródłem
-przyszłych statystyk. Repozytorium Tablicy, worktrees i inne katalogi są poza operacją.
+Only a specific candidate is deleted, then its hash directory if it is empty.
+There is no recursive deletion. The backup does not lie in the active tree and is not a source
+of future statistics. The Board repository, worktrees, and other directories are outside the operation.
 
-Odzyskiwanie wykonuje operator w zatrzymanym oknie: najpierw sprawdza manifest
-i sumę wybranego pliku w `backup/files/<skrót>/K-<numer>.jsonl`, potem odtwarza
-**wyłącznie brakujący** plik w tej samej relatywnej ścieżce aktywnych kopii. Tworzy
-brakujący katalog skrótu z trybem 0700 i plik z trybem 0600, bez nadpisywania istniejącej
-kopii i bez podążania za dowiązaniami. Porównuje SHA-256 odtworzonego pliku z manifestem,
-a następnie wznawia usługę także po błędzie. Syntetyczny test odtwarza usunięty plik
-i wykazuje identyczność zawartości; samo odzyskiwanie danych użytkownika wymaga osobnej
-kontrolowanej operacji hosta. Nie kopiuj backupu do repozytorium Tablicy.
+Recovery is performed by the operator in the stopped window: first checking the manifest
+and the checksum of the chosen file in `backup/files/<skrót>/K-<numer>.jsonl`, then restoring
+**only the missing** file at the same relative path of the active copies. It creates
+the missing hash directory with mode 0700 and the file with mode 0600, without overwriting an existing
+copy and without following links. It compares the SHA-256 of the restored file with the manifest,
+and then resumes the service also after an error. A synthetic test restores a deleted file
+and shows identical content; recovering the user's data itself requires a separate
+controlled host operation. Do not copy the backup into the Board repository.

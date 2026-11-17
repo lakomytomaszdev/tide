@@ -1,36 +1,36 @@
-# Tide na nowej maszynie — minimalna instalacja
+# Tide on a new machine — minimal installation
 
-Instrukcja dla osoby, która nie zna Tide, a chce na nowym komputerze pracować z kartami na Tablicy.
-Instalujemy tylko to, czego potrzebuje przepływ kart:
+Instructions for a person who does not know Tide and wants to work with cards on the Board on a new computer.
+We install only what the card flow needs:
 
-- usługę `tide-daemon` (usługa użytkownika systemd, mówi przez D-Bus),
-- okno **Tide** z Tablicą (menu aplikacji → Tide),
-- polecenie `tide` (CLI) i zasoby przepływu kart (standard planu, narzędzia numeracji ticketów).
+- the `tide-daemon` service (a systemd user service, talks over D-Bus),
+- the **Tide** window with the Board (application menu → Tide),
+- the `tide` command (CLI) and the card flow resources (the plan standard, ticket numbering tools).
 
-Motywu Tide (ekran logowania, ekran startowy, panele, dock, tapety, kolory, Konsola, Vivaldi) **nie** instalujemy.
-Tide działa na zwykłym KDE z domyślną Bryzą. Okno Tide ma zawsze własne, ciemne kolory (paleta Mist wpisana
-w okno przy instalacji), niezależne od motywu systemu — tak ma być.
+We do **not** install the Tide theme (login screen, boot screen, panels, dock, wallpapers, colors, Konsole, Vivaldi).
+Tide works on a plain KDE with the default Breeze. The Tide window always has its own dark colors (the Mist palette written
+into the window at installation), independent of the system theme — this is intended.
 
-Wszystko robi skrypt `scripts/bootstrap-machine.sh`. Można go uruchamiać wiele razy; tryb `--check` tylko
-sprawdza i niczego nie zmienia.
+Everything is done by the script `scripts/bootstrap-machine.sh`. It can be run many times; the `--check` mode only
+checks and changes nothing.
 
-## 1. Przygotowanie systemu
+## 1. Preparing the system
 
-1. System: **Kubuntu 26.04 LTS** (albo nowszy) lub **Fedora KDE Plasma Desktop 40+** (sprawdzone na 44).
-   Potrzebna jest **Plasma 6** — Kubuntu 24.04 ma jeszcze Plasmę 5; skrypt odmawia instalacji na Plasmie 5,
-   Kubuntu starszym niż 26.04 i Fedorze starszej niż 40, niczego nie zmieniając.
-2. Zwykłe konto użytkownika z prawem `sudo` (przy instalacji systemu: „administrator”). Skryptu nie uruchamiamy
-   jako root.
-3. Sieć (pakiety, logowanie do Claude i Codexa, klonowanie repozytoriów).
-4. Pełna aktualizacja i restart, **zanim** uruchomisz skrypt — wtedy instalacja pakietów Tide niczego w Qt
-   ani KDE nie podnosi (skrypt i tak to sprawdza i w razie czego odmawia):
-   - Kubuntu: `sudo apt update && sudo apt full-upgrade`, potem restart,
-   - Fedora: `sudo dnf upgrade --refresh`, potem restart.
-5. Zaloguj się do sesji **Plasma (Wayland)**. Usługa Tide startuje razem z sesją graficzną.
-6. Narzędzia do pobrania repozytoriów: `sudo apt install git curl` albo `sudo dnf install git curl`.
-   Dostęp do repozytoriów: klucz SSH albo token do serwera Git, na którym są Tide i Twoje projekty.
+1. The system: **Kubuntu 26.04 LTS** (or newer) or **Fedora KDE Plasma Desktop 40+** (verified on 44).
+   **Plasma 6** is required — Kubuntu 24.04 still has Plasma 5; the script refuses to install on Plasma 5,
+   on Kubuntu older than 26.04 and on Fedora older than 40, changing nothing.
+2. A regular user account with `sudo` rights (during system installation: "administrator"). We do not run the script
+   as root.
+3. A network (packages, logging in to Claude and Codex, cloning repositories).
+4. A full update and a restart **before** you run the script — then installing the Tide packages does not upgrade anything in Qt
+   or KDE (the script checks this anyway and refuses if necessary):
+   - Kubuntu: `sudo apt update && sudo apt full-upgrade`, then restart,
+   - Fedora: `sudo dnf upgrade --refresh`, then restart.
+5. Log in to a **Plasma (Wayland)** session. The Tide service starts together with the graphical session.
+6. Tools for fetching repositories: `sudo apt install git curl` or `sudo dnf install git curl`.
+   Access to repositories: an SSH key or a token for the Git server that hosts Tide and your projects.
 
-## 2. Repozytorium Tide
+## 2. The Tide repository
 
 ```bash
 mkdir -p ~/DevWorkspace
@@ -38,182 +38,181 @@ git clone git@github.com:lakomytomaszdev/plasma-tide.git ~/DevWorkspace/plasma-t
 cd ~/DevWorkspace/plasma-tide
 ```
 
-Repozytorium jest prywatne — potrzebny jest dostęp do niego (albo kopia z innego źródła).
+The repository is private — you need access to it (or a copy from another source).
 
-Projekty muszą leżeć w `~/DevWorkspace` (Tide szuka tam repozytoriów). Tablica tej maszyny powstanie
-w `~/DevWorkspace/tide-board` — **nie kopiuj** Tablicy z innego komputera, ta maszyna ma własną, pustą.
+Projects must lie in `~/DevWorkspace` (Tide looks for repositories there). This machine's Board will be created
+in `~/DevWorkspace/tide-board` — **do not copy** the Board from another computer, this machine has its own, empty one.
 
-## 3. Claude Code i Codex — przed skryptem
+## 3. Claude Code and Codex — before the script
 
-Zainstaluj oba programy **przed** skryptem: instalacja CLI Tide dokłada skille Tide do Codexa tylko wtedy,
-gdy widzi program `codex`. (Gdy zainstalujesz go później — uruchom skrypt jeszcze raz.)
+Install both programs **before** the script: the Tide CLI installation adds the Tide skills to Codex only if
+it sees the `codex` program. (If you install it later — run the script again.)
 
-Claude Code (instaluje się do `~/.local/bin/claude`):
+Claude Code (installs to `~/.local/bin/claude`):
 
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-Codex (przez npm do `~/.local`, bez sudo przy samym Codexie):
+Codex (through npm into `~/.local`, without sudo for Codex itself):
 
 ```bash
 sudo apt install nodejs npm        # Fedora: sudo dnf install nodejs npm
 npm install -g --prefix ~/.local @openai/codex
 ```
 
-Zamknij i otwórz terminal (żeby `~/.local/bin` było w `PATH`), potem zaloguj się na swoje konta
-(albo konta wskazane przez osobę, która opiekuje się tą maszyną):
+Close and open the terminal (so that `~/.local/bin` is in `PATH`), then log in to your accounts
+(or the accounts indicated by the person who looks after this machine):
 
 ```bash
-claude          # w programie: /login → Twoje konto Claude; potem /exit
-codex login     # otworzy przeglądarkę → Twoje konto ChatGPT
+claude          # in the program: /login → your Claude account; then /exit
+codex login     # opens a browser → your ChatGPT account
 ```
 
-Ustaw tożsamość gita (commity w projektach):
+Set the git identity (commits in projects):
 
 ```bash
 git config --global user.name "Imię Nazwisko"
 git config --global user.email "adres@example.com"
 ```
 
-## 4. Skrypt instalacji
+## 4. The installation script
 
-Najpierw sama diagnoza (nic nie zmienia, nie pyta o hasło):
+First the diagnosis alone (it changes nothing, does not ask for a password):
 
 ```bash
 cd ~/DevWorkspace/plasma-tide
 bash scripts/bootstrap-machine.sh --check
 ```
 
-Potem instalacja:
+Then the installation:
 
 ```bash
 bash scripts/bootstrap-machine.sh
 ```
 
-Co robi, po kolei (przed każdym poleceniem z `sudo` pokazuje je i pyta „[t/N]”):
+What it does, in order (before each command with `sudo` it shows it and asks "[t/N]"):
 
-1. Sprawdza system: wersja (Kubuntu ≥ 26.04, Fedora ≥ 40), Plasma 6, systemd użytkownika, ilość pamięci.
-   Na nieobsługiwanym systemie kończy się kodem 2, niczego nie zmieniając.
-2. Pakiety (tabela niżej). Na Kubuntu: `sudo apt-get update`, potem **symulacja** `apt-get -s install …`;
-   jeśli symulacja podnosi, obniża albo usuwa pakiety Qt 6 lub KDE Frameworks 6, skrypt przerywa i nic nie
-   instaluje (wtedy: pełna aktualizacja systemu z punktu 1.4 i jeszcze raz). Na Fedorze to samo przez
-   `dnf install --assumeno …`. Dopiero potem `sudo apt-get install …` / `sudo dnf install …`.
-3. Sprawdza `claude` i `codex`, logowanie i tożsamość gita.
-4. Piaskownica kroków (bwrap) — niżej, punkt 5.
-5. `make pre-install-backup install-daemon install-tide-window install-cli` — kopia zapasowa wyglądu Plasmy
-   (na wszelki wypadek; nic w wyglądzie się nie zmienia), usługa, okno, CLI i zasoby.
-6. Sprawdza, że usługa działa i odpowiada na D-Bus (`tide info --json`). Na słabszej maszynie wyłącza
-   wyszukiwanie po znaczeniu (punkt 6).
-7. Zakłada **pustą Tablicę** `~/DevWorkspace/tide-board` (lokalne repozytorium git, bez zdalnego).
-8. Ładuje okno bez ekranu (wszystkie widoki, na słabszej maszynie tylko Tablicę) — sprawdza, że QML i PyQt6
-   są kompletne.
+1. Checks the system: the version (Kubuntu ≥ 26.04, Fedora ≥ 40), Plasma 6, systemd user instance, the amount of memory.
+   On an unsupported system it ends with exit code 2, changing nothing.
+2. Packages (the table below). On Kubuntu: `sudo apt-get update`, then a **simulation** `apt-get -s install …`;
+   if the simulation upgrades, downgrades or removes Qt 6 or KDE Frameworks 6 packages, the script aborts and installs
+   nothing (then: the full system update from step 1.4 and again). On Fedora the same through
+   `dnf install --assumeno …`. Only then `sudo apt-get install …` / `sudo dnf install …`.
+3. Checks `claude` and `codex`, the login and the git identity.
+4. The step sandbox (bwrap) — below, section 5.
+5. `make pre-install-backup install-daemon install-tide-window install-cli` — a backup of the Plasma look
+   (just in case; nothing in the look changes), the service, the window, the CLI and resources.
+6. Checks that the service is running and answers on D-Bus (`tide info --json`). On a weaker machine it turns off
+   semantic search (section 6).
+7. Creates an **empty Board** `~/DevWorkspace/tide-board` (a local git repository, without a remote).
+8. Loads the window off screen (all views, on a weaker machine only the Board) — checks that QML and PyQt6
+   are complete.
 
-Na końcu wypisuje „Uwagi” (nie blokują) i „Brakuje” (do zrobienia). Kod wyjścia: 0 — gotowe, 2 — czegoś
-brakuje, 1 — błąd. Po pierwszej udanej instalacji **wyloguj się i zaloguj ponownie**.
+At the end it prints "Uwagi" (Notes; they do not block) and "Brakuje" (Missing; to do). Exit code: 0 — done, 2 — something
+is missing, 1 — an error. After the first successful installation, **log out and log in again**.
 
-Opcje: `--yes` (bez pytań), `--no-packages` (pakiety tylko sprawdza), `--no-board` (nie zakłada Tablicy),
-`--low-power` (słabsza maszyna — punkt 6; przy mniej niż 20 GB RAM włącza się sama).
+Options: `--yes` (no questions), `--no-packages` (only checks packages), `--no-board` (does not create the Board),
+`--low-power` (a weaker machine — section 6; with less than 20 GB of RAM it turns on by itself).
 
-## 5. Piaskownica (bwrap) na Kubuntu
+## 5. The sandbox (bwrap) on Kubuntu
 
-Kroki kart w tle działają w piaskownicy: Claude Code używa `bwrap`, a Tide uruchamia w niej również git
-na worktree kroku. Ubuntu ogranicza przestrzenie użytkownika przez AppArmor, więc `bwrap` potrzebuje profilu.
-Skrypt pokazuje stan (`python3 scripts/sandbox/check.py`). Możliwe są trzy sytuacje:
+Background card steps run in a sandbox: Claude Code uses `bwrap`, and Tide also runs git in it
+on the step's worktree. Ubuntu restricts user namespaces through AppArmor, so `bwrap` needs a profile.
+The script shows the state (`python3 scripts/sandbox/check.py`). There are three possible situations:
 
-- **„Piaskownica może działać.”** — nic nie rób.
-- **Profil: brak** — skrypt zaproponuje `sudo bash scripts/sandbox/install.sh` (profil tylko dla `/usr/bin/bwrap`,
-  reszta systemu zostaje pod ograniczeniem). Odpowiedz „t”.
-- **Profil: obcy** i „Zagnieżdżona przestrzeń … nie działa” — Kubuntu 25.04 i nowsze dostarczają własny
-  profil `bwrap-userns-restrict`, pod którym piaskownica Claude Code nie startuje (krok karty kończy się
-  błędem piaskownicy). Zamiana na profil Tide, z kopią oryginału:
+- **"Piaskownica może działać."** (The sandbox can work.) — do nothing.
+- **Profile: missing** — the script will suggest `sudo bash scripts/sandbox/install.sh` (a profile for `/usr/bin/bwrap` only,
+  the rest of the system stays restricted). Answer "t" (yes).
+- **Profile: foreign** and "Zagnieżdżona przestrzeń … nie działa" (The nested namespace … does not work) — Kubuntu 25.04 and newer ship their own
+  profile `bwrap-userns-restrict`, under which the Claude Code sandbox does not start (the card step ends with a
+  sandbox error). Swapping for the Tide profile, with a copy of the original:
 
   ```bash
   sudo mv /etc/apparmor.d/bwrap-userns-restrict /root/bwrap-userns-restrict.dist
   sudo bash scripts/sandbox/install.sh
-  python3 scripts/sandbox/check.py        # ma być „Piaskownica może działać.”
+  python3 scripts/sandbox/check.py        # should say "Piaskownica może działać."
   ```
 
-  Cofnięcie: `sudo bash scripts/sandbox/uninstall.sh && sudo mv /root/bwrap-userns-restrict.dist
+  Undoing: `sudo bash scripts/sandbox/uninstall.sh && sudo mv /root/bwrap-userns-restrict.dist
   /etc/apparmor.d/bwrap-userns-restrict && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict`.
-  Przy aktualizacji pakietu `apparmor` system może zapytać o ten plik — wybierz zachowanie obecnej wersji.
-  **Tego wariantu nie dało się sprawdzić na prawdziwym Kubuntu 26.04** (testy były w kontenerach, które
-  dziedziczą AppArmor komputera-gospodarza) — jeśli po zamianie `check.py` dalej mówi „nie działa”, zgłoś
-  wynik (punkt 10) i do tego czasu używaj wykonawców Codex.
+  When the `apparmor` package is updated, the system may ask about this file — choose to keep the current version.
+  **This variant could not be verified on a real Kubuntu 26.04** (the tests ran in containers that
+  inherit the host computer's AppArmor) — if after the swap `check.py` still says "nie działa" (does not work), report the
+  result (section 10) and until then use Codex executors.
 
-Na Fedorze nic nie trzeba (brak ograniczenia AppArmor; `check.py` pisze „nie dotyczy”).
+On Fedora nothing is needed (no AppArmor restriction; `check.py` says "nie dotyczy" (not applicable)).
 
-## 6. Słabsza maszyna
+## 6. A weaker machine
 
-Komputer z 8–16 GB RAM albo słabym procesorem i kartą graficzną udźwignie Tide, jeśli nie uruchamia na nim
-rzeczy, które Tide potrafi, ale które nie są potrzebne do pracy z kartami:
+A computer with 8–16 GB of RAM or a weak processor and graphics card can handle Tide if it does not run
+things that Tide can do but that are not needed for working with cards:
 
-- **Wyszukiwanie po znaczeniu wyłączone.** Indeks sesji agentów dla KRunnera co 5 minut przegląda sesje
-  z 30 dni i liczy wektory modelem lokalnym. Skrypt przy mniej niż 20 GB RAM (albo z `--low-power`) wyłącza
-  go sam; ręcznie: `busctl --user call org.tide.Daemon /Models org.tide.Daemon.Models SetSemanticSearch s off`
-  albo okno Tide → Modele → Wyszukiwanie. KRunner dalej szuka po słowach.
-- **Bez Ollamy i modeli lokalnych.** Minimalna instalacja ich nie zakłada. W oknie Tide → Modele serwer
-  „nie odpowiada” — to normalne. Nie przełączaj opisu raportu porannego na model lokalny.
-- **Pudełek (Incus) nie włączaj**, jeśli Twoja wersja Tide je ma — ustawienie `box.enabled` przepływu kart
-  zostaje domyślne. To funkcja dla stacji z zapasem pamięci i procesora.
-- **Jedno okno Tide.** Kolejne uruchomienie tylko pokazuje działające okno; nie zostawiaj otwartych widoków,
-  których nie używasz (Docker, Sesje). Duża Tablica (setki kart) odświeża się wolniej — przy zacięciach zgłoś
-  to razem z `tide info --json`.
-- **Testy repozytorium** (jeśli rozwijasz Tide na tej maszynie): domyślnie biegną w liczbie procesów równej
-  liczbie rdzeni minus dwa, a każdy proces ładuje Qt. Przy ≤ 16 GB RAM: `make test-changed BASE=<baza> JOBS=2`,
-  przy 8 GB: `JOBS=1`. Pełny `make test` tylko wtedy, gdy jest naprawdę potrzebny.
+- **Semantic search turned off.** The agent session index for KRunner scans sessions from 30 days every 5 minutes
+  and computes vectors with a local model. With less than 20 GB of RAM (or with `--low-power`) the script turns
+  it off itself; by hand: `busctl --user call org.tide.Daemon /Models org.tide.Daemon.Models SetSemanticSearch s off`
+  or the Tide window → Modele (Models) → Wyszukiwanie (Search). KRunner still searches by words.
+- **No Ollama and local models.** The minimal installation does not set them up. In the Tide window → Modele the server
+  "nie odpowiada" (not responding) — that is normal. Do not switch the morning report description to a local model.
+- **Do not turn on boxes (Incus)**, if your version of Tide has them — the card flow setting `box.enabled`
+  stays at the default. It is a feature for workstations with spare memory and processor.
+- **One Tide window.** A later launch only shows the running window; do not leave open views
+  you do not use (Docker, Sesje (Sessions)). A large Board (hundreds of cards) refreshes more slowly — if it stutters, report
+  it together with `tide info --json`.
+- **Repository tests** (if you develop Tide on this machine): by default they run in as many processes as
+  cores minus two, and each process loads Qt. With ≤ 16 GB of RAM: `make test-changed BASE=<base> JOBS=2`,
+  with 8 GB: `JOBS=1`. The full `make test` only when it is really needed.
 
-## 7. Pierwszy projekt na Tablicy
+## 7. The first project on the Board
 
-1. Sklonuj repozytorium projektu do `~/DevWorkspace`, np.:
-   `git clone git@<twój-serwer-git>:<grupa>/<projekt>.git ~/DevWorkspace/<projekt>`.
-2. Otwórz okno: menu aplikacji → **Tide** (widok **Tablica**).
-3. Lewy dolny róg: **Projekty i tagi**. Sklonowane repozytorium jest w sekcji „REPOZYTORIA BEZ PROJEKTU” →
-   **＋ Dodaj jako projekt** (albo **Dodaj projekt** i wskaż katalog). Nadaj nazwę, dodaj tag (np. startowy
-   **własne** albo własny), **Zapisz projekt**.
+1. Clone the project repository into `~/DevWorkspace`, e.g.:
+   `git clone git@<your-git-server>:<group>/<project>.git ~/DevWorkspace/<project>`.
+2. Open the window: application menu → **Tide** (the **Tablica** (Board) view).
+3. The bottom left corner: **Projekty i tagi** (Projects and tags). The cloned repository is in the section "REPOZYTORIA BEZ PROJEKTU" (REPOSITORIES WITHOUT A PROJECT) →
+   **＋ Dodaj jako projekt** (＋ Add as a project) (or **Dodaj projekt** (Add project) and point to the directory). Give it a name, add a tag (e.g. the starter
+   **własne** (own) or your own), **Zapisz projekt** (Save project).
 
-To samo bez okna (np. przez SSH):
-
+The same without the window (e.g. over SSH):
 ```bash
 busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board UpsertProject s \
   '{"slug": "projekt", "name": "Projekt", "repo": "/home/<użytkownik>/DevWorkspace/projekt", "tags": ["własne"]}'
 ```
 
-## 8. Pierwsza karta
+## 8. The first card
 
-1. Tablica → **＋ Karta**: tytuł („co zrobić”), projekt, krótki opis. Nowa karta ląduje w Backlogu.
-2. Przeciągnij kartę do **Do zrobienia** (otworzy się okno „Co ma zrobić agent?”) albo kliknij na niej
-   **Uruchom agenta…**.
-3. Wejście:
-   - **Od razu** — jeden ticket w tle, bez planowania; wybierasz wykonawcę (np. Sonnet) i recenzenta,
-   - **Planowanie → Lekki** — lekki plan w tle, który zatwierdzasz w panelu karty, potem tickety w tle,
-   - **Planowanie → Pełny** i **Tylko specyfikacja** — rozmowa w Konsoli (pytania do Ciebie); korzystają
-     ze skilli `grilling` i `tdd` w `~/.claude/skills`. Skille metodologii nie są częścią Tide — zainstaluj
-     je osobno, zanim użyjesz tych wejść (zob. [przenośność zasobów](tide-resources.md)),
-   - **Mam plan** — przejęcie istniejącego planu z repozytorium projektu.
-4. **Uruchom agenta (Ctrl+Enter)**. Karta przechodzi do „W toku”; pytania i zgody agenta pojawiają się
-   w panelu karty, wynik ląduje na gałęzi karty `card/k-…` w repozytorium projektu.
-5. Scalenia gałęzi karty do gałęzi głównej i `push` **nie rób** bez decyzji osoby odpowiedzialnej za projekt.
+1. Board → **＋ Karta** (＋ Card): a title ("what to do"), a project, a short description. A new card lands in Backlog.
+2. Drag the card to **Do zrobienia** (To do; the "Co ma zrobić agent?" (What should the agent do?) window opens) or click
+   **Uruchom agenta…** (Run agent…) on it.
+3. The entry:
+   - **Od razu** (Immediate) — one ticket in the background, without planning; you choose the executor (e.g. Sonnet) and the reviewer,
+   - **Planowanie → Lekki** (Planning → Light) — a light plan in the background, which you approve in the card panel, then tickets in the background,
+   - **Planowanie → Pełny** (Planning → Full) and **Tylko specyfikacja** (Specification only) — a conversation in Konsole (questions to you); they use
+     the `grilling` and `tdd` skills in `~/.claude/skills`. The methodology skills are not part of Tide — install
+     them separately before you use these entries (see [resource portability](tide-resources.md)),
+   - **Mam plan** (I have a plan) — taking over an existing plan from the project repository.
+4. **Uruchom agenta (Ctrl+Enter)** (Run agent). The card moves to "W toku" (In progress); the agent's questions and approvals appear
+   in the card panel, and the result lands on the card branch `card/k-…` in the project repository.
+5. **Do not** merge the card branch into the main branch or `push` without a decision from the person responsible for the project.
 
-Pierwszą kartę daj prostą (np. poprawka w README), żeby sprawdzić cały obieg: krok → review → gałąź karty
-→ „Do sprawdzenia”.
+Make the first card simple (e.g. a fix in the README), to check the whole cycle: step → review → card branch
+→ "Do sprawdzenia" (To check).
 
-## 9. Co sprawdzić
+## 9. What to check
 
 ```bash
-bash scripts/bootstrap-machine.sh --check   # wszystko „ok”, kod 0
+bash scripts/bootstrap-machine.sh --check   # everything "ok", code 0
 systemctl --user status tide-daemon         # active (running)
-tide info --json                            # "ok": true, zasoby "available": true
-python3 scripts/sandbox/check.py            # „Piaskownica może działać.”
+tide info --json                            # "ok": true, resources "available": true
+python3 scripts/sandbox/check.py            # "Piaskownica może działać."
 ```
 
-W oknie Tide: Tablica pokazuje projekt; karta po „Od razu” przechodzi przez W toku do Do sprawdzenia.
-Krok kończący się „login” znaczy, że program agenta nie jest zalogowany (`claude` → `/login`, `codex login`).
+In the Tide window: the Board shows the project; a card after "Od razu" goes through In progress to To check.
+A step ending in "login" means the agent program is not logged in (`claude` → `/login`, `codex login`).
 
-## 10. Co zgłosić przy błędzie
+## 10. What to report on an error
 
-Zbierz pliki i zgłoś problem w Issues repozytorium Tide (albo osobie, która opiekuje się instalacją).
-Pliki zawierają nazwy projektów i fragmenty pracy — nie publikuj ich, dołącz tylko tam, gdzie to bezpieczne:
+Collect the files and report the problem in the Tide repository Issues (or to the person who looks after the installation).
+The files contain project names and fragments of work — do not publish them, attach only where it is safe:
 
 ```bash
 cd ~/DevWorkspace/plasma-tide
@@ -223,125 +222,125 @@ tide info --json > ~/tide-info.json
 python3 scripts/sandbox/check.py > ~/tide-sandbox.txt 2>&1
 ```
 
-Przy problemie z konkretną kartą dołącz jej dziennik: `~/DevWorkspace/tide-board/flow/K-<numer>/journal.jsonl`
-i napisz, co kliknięto i co się pokazało w panelu karty.
+For a problem with a specific card, attach its journal: `~/DevWorkspace/tide-board/flow/K-<number>/journal.jsonl`
+and write what was clicked and what appeared in the card panel.
 
-Przycisk „Opisz problem i ponów” w panelu karty zapisuje zgłoszenie w projekcie `plasma-tide` na Tablicy.
-Działa tylko wtedy, gdy taki projekt istnieje — dodaj `~/DevWorkspace/plasma-tide` jako projekt
-(punkt 7), jeśli chcesz z niego korzystać.
+The "Opisz problem i ponów" (Describe the problem and retry) button in the card panel saves a report in the `plasma-tide` project on the Board.
+It works only when such a project exists — add `~/DevWorkspace/plasma-tide` as a project
+(section 7) if you want to use it.
 
-## Zależności
+## Dependencies
 
-Z kodu: importy Pythona usługi, okna i CLI (PyQt6: QtCore, QtDBus, QtGui, QtNetwork, QtQml, QtQuick), importy
-QML okna (QtQuick, Controls, Layouts, Shapes, Window, Templates, Dialogs) i programy wywoływane przez usługę.
-Źródło listy: `scripts/bootstrap_packages.py` (`python3 scripts/bootstrap_packages.py table`).
+From the code: Python imports of the service, the window and the CLI (PyQt6: QtCore, QtDBus, QtGui, QtNetwork, QtQml, QtQuick), the QML
+imports of the window (QtQuick, Controls, Layouts, Shapes, Window, Templates, Dialogs) and programs called by the service.
+The source of the list: `scripts/bootstrap_packages.py` (`python3 scripts/bootstrap_packages.py table`).
 
-| Kubuntu (apt) | Fedora (dnf) | Po co | Obowiązkowy |
+| Kubuntu (apt) | Fedora (dnf) | What for | Required |
 | --- | --- | --- | --- |
-| `python3` | `python3` | usługa, okno i CLI uruchamiają /usr/bin/python3 (min. 3.10) | tak |
-| `python3-pyqt6` | `python3-pyqt6` | PyQt6: QtCore, QtDBus (usługa i CLI na D-Bus), QtGui, QtNetwork; w Fedorze także QtQml i QtQuick | tak |
-| `python3-pyqt6.qtqml` | (w pakiecie wyżej) | PyQt6.QtQml — silnik QML okna Tide | tak |
-| `python3-pyqt6.qtquick` | (w pakiecie wyżej) | PyQt6.QtQuick — okno Tide, zrzuty raportu spraw | tak |
-| `qml6-module-qtquick` | `qt6-qtdeclarative` | QML: import QtQuick | tak |
-| `qml6-module-qtquick-controls` | (w pakiecie wyżej) | QML: QtQuick.Controls | tak |
-| `qml6-module-qtquick-layouts` | (w pakiecie wyżej) | QML: QtQuick.Layouts | tak |
-| `qml6-module-qtquick-shapes` | (w pakiecie wyżej) | QML: QtQuick.Shapes (ikony i logo rysowane ścieżkami) | tak |
-| `qml6-module-qtquick-window` | (w pakiecie wyżej) | QML: QtQuick.Window | tak |
-| `qml6-module-qtquick-templates` | (w pakiecie wyżej) | QML: QtQuick.Templates | tak |
-| `qml6-module-qtquick-dialogs` | (w pakiecie wyżej) | QML: QtQuick.Dialogs (widok Sprawy) | tak |
-| `qml6-module-qtqml-workerscript` | (w pakiecie wyżej) | QML: zależność QtQuick.Controls | tak |
-| `git` | `git` | Tablica to repozytorium git; worktree i gałęzie kart | tak |
-| `make` | `make` | instalacja przez make install-* | tak |
-| `bubblewrap` | `bubblewrap` | piaskownica kroków (Claude Code) i git usługi w piaskownicy (/usr/bin/bwrap) | tak |
-| `socat` | `socat` | pośrednik sieci w piaskownicy Claude Code | tak |
-| `zstd` | `zstd` | kopia zapasowa wyglądu przed instalacją (make pre-install-backup) | tak |
-| `python3-dbus` | `python3-dbus` | wtyczka KRunnera w usłudze (bez niej usługa działa, KRunner nie) | nie |
-| `python3-gi` | `python3-gobject` | pętla GLib wtyczki KRunnera | nie |
-| `ripgrep` | `ripgrep` | rg na liście poleceń tylko do odczytu kroku opiekuna (zapasowo grep) | nie |
-| `python3-pil` | `python3-pillow` | ikony wpisów menu „Tide Sesje” i „Tide Worktrees” (bez niej — bez ikon) | nie |
-| `librsvg2-bin` | `librsvg2-tools` | rsvg-convert do tych samych ikon | nie |
-| `desktop-file-utils` | `desktop-file-utils` | odświeżenie bazy plików .desktop po instalacji okna | nie |
+| `python3` | `python3` | the service, window and CLI run /usr/bin/python3 (min. 3.10) | yes |
+| `python3-pyqt6` | `python3-pyqt6` | PyQt6: QtCore, QtDBus (the service and CLI over D-Bus), QtGui, QtNetwork; in Fedora also QtQml and QtQuick | yes |
+| `python3-pyqt6.qtqml` | (in the package above) | PyQt6.QtQml — the QML engine of the Tide window | yes |
+| `python3-pyqt6.qtquick` | (in the package above) | PyQt6.QtQuick — the Tide window, issue report screenshots | yes |
+| `qml6-module-qtquick` | `qt6-qtdeclarative` | QML: the QtQuick import | yes |
+| `qml6-module-qtquick-controls` | (in the package above) | QML: QtQuick.Controls | yes |
+| `qml6-module-qtquick-layouts` | (in the package above) | QML: QtQuick.Layouts | yes |
+| `qml6-module-qtquick-shapes` | (in the package above) | QML: QtQuick.Shapes (icons and logo drawn with paths) | yes |
+| `qml6-module-qtquick-window` | (in the package above) | QML: QtQuick.Window | yes |
+| `qml6-module-qtquick-templates` | (in the package above) | QML: QtQuick.Templates | yes |
+| `qml6-module-qtquick-dialogs` | (in the package above) | QML: QtQuick.Dialogs (the Sprawy (Issues) view) | yes |
+| `qml6-module-qtqml-workerscript` | (in the package above) | QML: a QtQuick.Controls dependency | yes |
+| `git` | `git` | the Board is a git repository; worktrees and card branches | yes |
+| `make` | `make` | installation through make install-* | yes |
+| `bubblewrap` | `bubblewrap` | the step sandbox (Claude Code) and the service's git in the sandbox (/usr/bin/bwrap) | yes |
+| `socat` | `socat` | the network intermediary in the Claude Code sandbox | yes |
+| `zstd` | `zstd` | a backup of the look before installation (make pre-install-backup) | yes |
+| `python3-dbus` | `python3-dbus` | the KRunner plugin in the service (without it the service works, KRunner does not) | no |
+| `python3-gi` | `python3-gobject` | the GLib loop of the KRunner plugin | no |
+| `ripgrep` | `ripgrep` | rg on the read-only command list of the steward step (grep as a fallback) | no |
+| `python3-pil` | `python3-pillow` | icons of the menu entries "Tide Sesje" and "Tide Worktrees" (without it — no icons) | no |
+| `librsvg2-bin` | `librsvg2-tools` | rsvg-convert for the same icons | no |
+| `desktop-file-utils` | `desktop-file-utils` | refreshing the .desktop file database after installing the window | no |
 
-Poza pakietami, obecne w każdej instalacji KDE Plasma 6: systemd (`systemctl`, `systemd-run` — każdy krok
-karty to osobna jednostka `--user --scope`, `busctl`), Konsole (rozmowy Pełne/Tylko specyfikacja,
-„wejście” do kroku), `xdg-open`, Spectacle (zrzuty ekranu w oknie uruchomienia), serwer powiadomień Plasmy.
-Opcjonalnie, tylko dla swoich widoków: Docker (widok Docker), Ollama (modele lokalne), Incus (pudełka kart),
-`gh`/`glab` (podpowiedzi baz z PR/MR).
+Besides packages, present in every KDE Plasma 6 installation: systemd (`systemctl`, `systemd-run` — every card
+step is a separate `--user --scope` unit, `busctl`), Konsole (the Full/Specification-only conversations,
+"entering" a step), `xdg-open`, Spectacle (screenshots in the launch window), the Plasma notification server.
+Optionally, only for their own views: Docker (the Docker view), Ollama (local models), Incus (card boxes),
+`gh`/`glab` (base hints from PRs/MRs).
 
-Wymagania wersji: Python ≥ 3.10 (sprawdzone: 3.12 neon, 3.14 Ubuntu 26.04 i Fedora 44), Qt 6 (sprawdzone:
-6.10 Ubuntu 26.04, 6.11 Fedora 44 i neon), Plasma 6. KDE neon ma moduły QML w `qt6-declarative` zamiast
-`qml6-module-*` — skrypt rozpoznaje moduł po pliku `qmldir`, nie po nazwie pakietu.
+Version requirements: Python ≥ 3.10 (verified: 3.12 neon, 3.14 Ubuntu 26.04 and Fedora 44), Qt 6 (verified:
+6.10 Ubuntu 26.04, 6.11 Fedora 44 and neon), Plasma 6. KDE neon has the QML modules in `qt6-declarative` instead of
+`qml6-module-*` — the script recognizes a module by its `qmldir` file, not by the package name.
 
-## Fedora — znane różnice
+## Fedora — known differences
 
-- **Pakiety**: `python3-pyqt6` zawiera QtQml i QtQuick (w Ubuntu osobne `python3-pyqt6.qtqml` i `.qtquick`);
-  wszystkie moduły QML są w `qt6-qtdeclarative`; `python3-gobject` zamiast `python3-gi`, `python3-pillow`
-  zamiast `python3-pil`, `librsvg2-tools` zamiast `librsvg2-bin`. Moduły QML w `/usr/lib64/qt6/qml`.
-- **Python**: Fedora 44 ma Pythona 3.14 jako `/usr/bin/python3` — usługa, okno i CLI na nim działają.
-  Minimalny obraz Fedory może nie mieć `python3`; skrypt wtedy proponuje `sudo dnf install python3`.
-- **Symulacja**: zamiast `apt-get -s` — `dnf install --assumeno` (działa bez roota, kod 1 przy poprawnej
-  transakcji). Ten sam strażnik Qt 6 / KDE Frameworks 6.
-- **Piaskownica**: brak AppArmor i jego ograniczenia przestrzeni użytkownika — `bwrap` działa bez profilu,
-  `scripts/sandbox/install.sh` jest niepotrzebny (odmówi: „ograniczenia nie ma”). SELinux nie był testowany
-  na prawdziwej Fedorze (kontener dziedziczy jądro gospodarza).
-- **Codex**: Fedora nie ma snapa — Codex przez npm do `~/.local` (punkt 3).
-- **PATH**: `~/.local/bin` dodaje `~/.bashrc`, nie sesja systemd. Usługa Tide sama szuka `claude` i `codex`
-  w `~/.local/bin`, gdy nie ma ich w swoim `PATH`.
-- **systemd użytkownika, D-Bus, `systemd-run --user --scope`, `busctl`**: bez różnic.
-- **Motyw**: ekranu startowego (`make install-plymouth`) **nie** instaluj na Fedorze — używa `update-initramfs`
-  (Debian/Ubuntu), Fedora ma `dracut`.
+- **Packages**: `python3-pyqt6` contains QtQml and QtQuick (in Ubuntu the separate `python3-pyqt6.qtqml` and `.qtquick`);
+  all QML modules are in `qt6-qtdeclarative`; `python3-gobject` instead of `python3-gi`, `python3-pillow`
+  instead of `python3-pil`, `librsvg2-tools` instead of `librsvg2-bin`. QML modules in `/usr/lib64/qt6/qml`.
+- **Python**: Fedora 44 has Python 3.14 as `/usr/bin/python3` — the service, window and CLI work on it.
+  A minimal Fedora image may lack `python3`; the script then suggests `sudo dnf install python3`.
+- **Simulation**: instead of `apt-get -s` — `dnf install --assumeno` (works without root, code 1 for a correct
+  transaction). The same Qt 6 / KDE Frameworks 6 guard.
+- **Sandbox**: no AppArmor and its user namespace restriction — `bwrap` works without a profile,
+  `scripts/sandbox/install.sh` is unnecessary (it will refuse: "ograniczenia nie ma" (there is no restriction)). SELinux was not tested
+  on a real Fedora (a container inherits the host kernel).
+- **Codex**: Fedora has no snap — Codex through npm into `~/.local` (section 3).
+- **PATH**: `~/.local/bin` is added by `~/.bashrc`, not by the systemd session. The Tide service itself looks for `claude` and `codex`
+  in `~/.local/bin` when they are not in its `PATH`.
+- **The systemd user instance, D-Bus, `systemd-run --user --scope`, `busctl`**: no differences.
+- **Theme**: do **not** install the boot screen (`make install-plymouth`) on Fedora — it uses `update-initramfs`
+  (Debian/Ubuntu), Fedora has `dracut`.
 
-## Opcjonalnie: motyw Tide
+## Optional: the Tide theme
 
-Niepotrzebny do pracy z kartami; zmienia wygląd pulpitu. Najpierw kopia, potem całość:
+Not needed for working with cards; it changes the desktop look. First a backup, then the whole thing:
 
 ```bash
 make backup NAME=przed-tide
-make install            # wygląd, panele, dock, widżety, Konsola, KRunner… (najpierw sam robi kopię)
-make restore NAME=przed-tide   # powrót do poprzedniego wyglądu
+make install            # look, panels, dock, widgets, Konsole, KRunner… (it makes a backup first by itself)
+make restore NAME=przed-tide   # return to the previous look
 ```
 
-Ekran logowania i ekran startowy są osobno i wymagają sudo: `make install-sddm`, `make install-plymouth`
-(tylko Kubuntu). Motyw był rozwijany na KDE neon (Plasma 6.8, dwa monitory); na Kubuntu i Fedorze
-nie był testowany. Opis składników: `README.md`.
+The login screen and the boot screen are separate and need sudo: `make install-sddm`, `make install-plymouth`
+(Kubuntu only). The theme was developed on KDE neon (Plasma 6.8, two monitors); on Kubuntu and Fedora
+it was not tested. A description of the components: `README.md`.
 
-## Dla agenta AI pomagającego w instalacji
+## For an AI agent helping with the installation
 
-Ta sekcja jest dla agenta (Claude Code, Codex), który na nowej maszynie pomaga użytkownikowi zainstalować
-Tide albo zdiagnozować problem.
+This section is for an agent (Claude Code, Codex) that on a new machine helps the user install
+Tide or diagnose a problem.
 
-**Kolejność sprawdzeń** (wszystko tylko odczyt):
+**The order of checks** (all read-only):
 
-1. `bash scripts/bootstrap-machine.sh --check` — kod 0: gotowe, 2: czegoś brakuje (lista „Brakuje” na końcu),
-   1: błąd skryptu. Zacznij od listy „Brakuje”, potem „Uwagi”.
-2. `systemctl --user status tide-daemon` i `journalctl --user -u tide-daemon -n 100` — czy usługa działa
-   i co zgłasza przy starcie.
-3. `tide info --json` (albo `busctl --user call org.tide.Daemon /Issues org.tide.Daemon.Issues Info`) —
-   odpowiedź usługi i dostępność zasobów.
-4. `python3 scripts/sandbox/check.py` — stan piaskownicy bwrap.
-5. Przy problemie z kartą: dziennik `~/DevWorkspace/tide-board/flow/K-<numer>/journal.jsonl` (ostatnie
-   wpisy `step.finished`: `result`, `reason`, `fault`) i
-   `busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board Snapshot` (tylko odczyt).
+1. `bash scripts/bootstrap-machine.sh --check` — code 0: done, 2: something is missing (the "Brakuje" list at the end),
+   1: a script error. Start with the "Brakuje" list, then "Uwagi".
+2. `systemctl --user status tide-daemon` and `journalctl --user -u tide-daemon -n 100` — whether the service is running
+   and what it reports at startup.
+3. `tide info --json` (or `busctl --user call org.tide.Daemon /Issues org.tide.Daemon.Issues Info`) —
+   the service's answer and the availability of resources.
+4. `python3 scripts/sandbox/check.py` — the state of the bwrap sandbox.
+5. For a card problem: the journal `~/DevWorkspace/tide-board/flow/K-<number>/journal.jsonl` (the last
+   `step.finished` entries: `result`, `reason`, `fault`) and
+   `busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board Snapshot` (read-only).
 
-**Typowe przyczyny:**
+**Typical causes:**
 
-- Krok kończy się `reason: login` — program agenta nie jest zalogowany: `claude` → `/login`, `codex login`.
-- „nie znaleziono programu claude/codex” — brak programu w `PATH` i w `~/.local/bin` (punkt 3); po instalacji
-  uruchom skrypt ponownie, żeby `install-cli` dołożył skille Tide dla Codexa.
-- Piaskownica: na Kubuntu 25.04+ profil AppArmor „obcy” bez zagnieżdżonej przestrzeni (punkt 5) — zamiana
-  profilu wymaga sudo i decyzji użytkownika; na starszym Ubuntu brak profilu (`scripts/sandbox/install.sh`).
-- „KDE Plasma 5…” albo „Tide wymaga Kubuntu 26.04” — system się nie nadaje; nie obchodź tej kontroli.
-- Strażnik pakietów odmawia (Qt 6 / KDE Frameworks 6 w symulacji) — zaproponuj pełną aktualizację systemu
-  i restart, a nie instalację z pominięciem strażnika.
-- Tablica ze zdalnym repozytorium (`remote`) — prawdopodobnie kopia Tablicy z innej maszyny.
-- Słaba maszyna (zacięcia, swap) — punkt 6; testy z `JOBS=2` albo `JOBS=1`.
+- A step ends with `reason: login` — the agent program is not logged in: `claude` → `/login`, `codex login`.
+- "nie znaleziono programu claude/codex" (program claude/codex not found) — the program is missing from `PATH` and from `~/.local/bin` (section 3); after installing,
+  run the script again so that `install-cli` adds the Tide skills for Codex.
+- Sandbox: on Kubuntu 25.04+ a "foreign" AppArmor profile without a nested namespace (section 5) — swapping the
+  profile needs sudo and the user's decision; on older Ubuntu a missing profile (`scripts/sandbox/install.sh`).
+- "KDE Plasma 5…" or "Tide wymaga Kubuntu 26.04" (Tide requires Kubuntu 26.04) — the system is not suitable; do not bypass this check.
+- The package guard refuses (Qt 6 / KDE Frameworks 6 in the simulation) — suggest a full system update
+  and a restart, not an installation that bypasses the guard.
+- A Board with a remote repository (`remote`) — probably a copy of the Board from another machine.
+- A weak machine (stutters, swap) — section 6; tests with `JOBS=2` or `JOBS=1`.
 
-**Czego nie robić bez wyraźnej zgody użytkownika:**
+**What not to do without the user's explicit consent:**
 
-- `sudo` w jakiejkolwiek formie (pakiety, profil AppArmor, `apt`/`dnf`) — pokaż polecenie i poczekaj na decyzję,
-- `make install` ani innych celów motywu (wygląd, panele, SDDM, Plymouth) — minimalny zestaw ich nie potrzebuje,
-- ręczne edycje `~/.config` i `~/.local/share` (instalacja idzie wyłącznie przez skrypt i `make install-*`),
-- usuwanie, nadpisywanie albo kopiowanie Tablicy (`~/DevWorkspace/tide-board`) i zmiana jej repozytorium,
-- scalanie gałęzi kart do gałęzi głównej i `git push`.
+- `sudo` in any form (packages, an AppArmor profile, `apt`/`dnf`) — show the command and wait for the decision,
+- `make install` or other theme targets (look, panels, SDDM, Plymouth) — the minimal set does not need them,
+- manual edits of `~/.config` and `~/.local/share` (installation goes only through the script and `make install-*`),
+- deleting, overwriting or copying the Board (`~/DevWorkspace/tide-board`) and changing its repository,
+- merging card branches into the main branch and `git push`.
 
-Do zgłoszenia problemu zbierz pliki z punktu 10 i powiedz użytkownikowi, co zawierają.
+To report a problem, collect the files from section 10 and tell the user what they contain.

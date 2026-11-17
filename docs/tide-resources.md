@@ -1,14 +1,14 @@
-# Zasoby zainstalowanego Tide
+# Resources of the installed Tide
 
-`make install` wykonuje kopię zapasową, po czym instaluje usługę, CLI i zasoby Tide.
-`tide info --json` przez publiczny D-Bus zwraca `resources`: dla standardu planu,
-narzędzia rezerwacji numerów i kontroli planów są to `path`, `version`, `available`
-oraz SHA-256 dostępnej treści. Odpowiedź nie zawiera instrukcji skilli, ustawień ani sekretów.
-Dotychczasowe `apiVersion` i możliwości API spraw pozostają dostępne także przy niepełnych zasobach.
+`make install` makes a backup and then installs the service, the CLI, and the Tide resources.
+`tide info --json` returns `resources` over the public D-Bus: for the plan standard,
+the number reservation tool, and the plan checks these are `path`, `version`, `available`,
+and the SHA-256 of the available content. The response contains no skill instructions, settings, or secrets.
+The existing `apiVersion` and the issue API capabilities remain available even when resources are incomplete.
 
-Pliki Tide leżą w `$XDG_DATA_HOME/tide/resources` (domyślnie `~/.local/share/tide/resources`):
+Tide files live in `$XDG_DATA_HOME/tide/resources` (by default `~/.local/share/tide/resources`):
 `docs/agent-plan-standard.md`, `tools/next_id.py`, `tools/check_plans.py`.
-CLI uruchamia narzędzia z lokalizacji zwróconej przez usługę, przekazując argumenty bez powłoki:
+The CLI runs the tools from the location returned by the service, passing arguments without a shell:
 
 ```sh
 tide info --json
@@ -16,46 +16,46 @@ tide next-id "/ścieżka ze spacjami/projekt" --title "Opis ticketu" --dry-run
 tide check-plans "/katalog projektów" --no-youtrack --json
 ```
 
-Wpisy narzędzi w `info` zawierają też `pythonPath`: katalog modułów działającej usługi.
-Klient przekazuje go jako `PYTHONPATH` procesu narzędzia, niezależnie od lokalizacji zasobów.
-Narzędzia wymagają zainstalowanych modułów usługi; sam klient nadal wymaga publicznego D-Bus
-i `python3-pyqt6.qtdbus`. Nie trzeba mieć checkoutu autora. W checkoutcie resolver korzysta
-z jego własnych `docs/` i `tools/`; uruchomienie samodzielnej kopii usługi wybiera sąsiedni katalog
-`resources`. Własny pakiet można wskazać przez `TIDE_RESOURCES_DIR` w środowisku usługi
-(katalog zawierający `docs/` i `tools/`). Jawne ustawienie nie ma cichego fallbacku.
-Brak standardu lub narzędzia w kroku daje komunikat z nazwą zasobu i sposobem konfiguracji;
-`info` pokazuje `available: false`, aby umożliwić diagnozę.
+The tool entries in `info` also contain `pythonPath`: the module directory of the running service.
+The client passes it as `PYTHONPATH` of the tool process, regardless of the resources location.
+The tools require the service modules to be installed; the client itself still requires the public D-Bus
+and `python3-pyqt6.qtdbus`. You do not need the author's checkout. In a checkout the resolver uses
+its own `docs/` and `tools/`; running a standalone copy of the service picks the neighboring `resources`
+directory. You can point to your own bundle with `TIDE_RESOURCES_DIR` in the service environment
+(a directory containing `docs/` and `tools/`). An explicit setting has no silent fallback.
+A missing standard or tool in a step gives a message with the resource name and how to configure it;
+`info` shows `available: false` to allow diagnosis.
 
-## Metodologie i szablony
+## Methodologies and templates
 
-Tide dystrybuuje własny standard i narzędzia. Zewnętrznych metodologii nie kopiuje.
-Mechanizm K-59 dostarcza Claude plugin z odsyłaczami do oryginalnych SKILL.md,
-a Codexowi katalog i instrukcję bezpośredniego odczytu. Oba programy czytają zasoby
-względem oryginalnego katalogu skilla. Instrukcje muszą być zainstalowane osobno,
-zgodnie z ich prawami dystrybucji, w `~/.claude/skills` lub `~/.agents/skills`
-(Codex obsługuje też starsze `~/.codex/skills`). Brak wymaganej instrukcji agent
-zgłasza jawnym błędem kroku. Nie jest to odmowa przed modelem. Prywatne ustawienia,
-hooki i konfiguracja MCP nie są częścią pakietu Tide ani informacji o zasobach.
+Tide distributes its own standard and tools. It does not copy external methodologies.
+The K-59 mechanism delivers Claude a plugin with references to the original SKILL.md files,
+and Codex a catalog and an instruction for direct reading. Both programs read resources
+relative to the original skill directory. The instructions must be installed separately,
+in accordance with their distribution rights, in `~/.claude/skills` or `~/.agents/skills`
+(Codex also supports the older `~/.codex/skills`). The agent reports a missing required instruction
+as an explicit step error. It is not a refusal before the model. Private settings,
+hooks, and MCP configuration are not part of the Tide package or of the resource information.
 
-Zaczyny `flows/` używają pola `{tide_standard}`, rozwiązywanego przy renderowaniu,
-oraz poleceń CLI. Migracja rozpoznaje SHA-256 dawnych niezmienionych zaczynów;
-pojedyncza zmiana użytkownika wyklucza automatyczne nadpisanie. Nadpisania projektu
-pozostają własnością użytkownika. Własny szablon zawierający niedostępne odwołanie
-do checkoutu autora pozostaje bajtowo bez zmian i dostaje ostrzeżenie w błędach Tablicy.
-Można poprawić go ręcznie, używając `{tide_standard}`, `tide next-id` i `tide check-plans`.
+The `flows/` seeds use the `{tide_standard}` field, resolved at render time,
+and CLI commands. Migration recognizes the SHA-256 of the old unmodified seeds;
+a single user change rules out automatic overwriting. Project overrides
+remain the user's property. A custom template containing an unavailable reference
+to the author's checkout stays byte-for-byte unchanged and gets a warning in the Board errors.
+You can fix it by hand, using `{tide_standard}`, `tide next-id`, and `tide check-plans`.
 
-## Odinstalowanie
+## Uninstalling
 
-`make uninstall` usuwa klienta, usługę i cały katalog zasobów Tide.
-`uninstall-cli` usuwa tylko klienta: zasoby pozostają dla działającej usługi.
-Od PT-224 komponent CLI zarządza także [własną paczką adapterów Sprawy](issue-skills.md)
-w `tide/agents` i natywnym skillem `tide-issue`. Usuwa wyłącznie pliki tej paczki objęte
-manifestem; lokalne zmiany i obce pliki nie są nadpisywane ani usuwane. Kopie zapasowe
-paczki pozostają. Zasoby `tide/resources` nadal pozostają dla działającej usługi.
-`uninstall-daemon` usuwa także `tide/resources`. Własny katalog wskazany przez
-`TIDE_RESOURCES_DIR`, skille użytkownika, projekty i zmodyfikowane szablony Tablicy
-nie są usuwane. Instalacja ani odinstalowanie nie powinny być wykonywane ręcznymi
-edycjami plików w katalogach konfiguracji użytkownika.
+`make uninstall` removes the client, the service, and the entire Tide resources directory.
+`uninstall-cli` removes only the client: the resources remain for the running service.
+Since PT-224 the CLI component also manages the [own package of issue adapters](issue-skills.md)
+in `tide/agents` and the native skill `tide-issue`. It removes only the files of that package covered
+by the manifest; local changes and foreign files are neither overwritten nor removed. Package backups
+remain. The `tide/resources` resources still remain for the running service.
+`uninstall-daemon` also removes `tide/resources`. A custom directory pointed to by
+`TIDE_RESOURCES_DIR`, user skills, projects, and modified Board templates
+are not removed. Installing or uninstalling should not be done by manual
+edits of files in the user configuration directories.
 
-Testy instalacyjne używają własnych HOME/XDG, innej nazwy użytkownika, ścieżek ze spacjami
-i atrap systemd/modelu. Nie uruchamiają instalacji na prawdziwym pulpicie.
+The installation tests use their own HOME/XDG, a different user name, paths with spaces,
+and mocks of systemd and the model. They do not run the installation on a real desktop.
