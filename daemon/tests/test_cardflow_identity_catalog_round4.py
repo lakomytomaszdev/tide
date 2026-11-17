@@ -184,3 +184,26 @@ KINDS = ('outside.started', 'outside.finished')
                 'cardflow/first_probe.py': ast.parse('from .second_probe import START'),
                 'cardflow/second_probe.py': ast.parse('from .first_probe import START')}):
             self.assertEqual(cat._literals(ast.Name(id='START'), 'cardflow/first_probe.py'), set())
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: the internal agent work archive (docs/agents/) is not published', [
+    'CatalogRound4.test_named_kind_cannot_hide_new_reader',
+])
+# --- end of public copy block ---

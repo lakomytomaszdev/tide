@@ -1172,3 +1172,28 @@ class ContextFlowTest(FlowInProcess):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: documentation is translated to English; the test checks Polish wording of the private source', [
+    'ContextFlowTest.test_codex_receives_context_in_stdin_without_command_tools',
+    'ContextFlowTest.test_context_files_brief_paths_and_masking',
+    'TideDocsTest.test_default_docs_dir_is_the_tide_repository_when_running_from_source',
+])
+# --- end of public copy block ---

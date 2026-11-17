@@ -458,3 +458,26 @@ class RealGreeterSyncTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: stream brand graphics and game icons are not published (third-party rights)', [
+    'RealGreeterSyncTest.test_real_stream_variant_loads_after_the_switch',
+])
+# --- end of public copy block ---

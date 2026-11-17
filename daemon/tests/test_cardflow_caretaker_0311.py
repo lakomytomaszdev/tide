@@ -440,3 +440,29 @@ class ManualFixturesTest(TestCase):
                 for secret in (faults.TOKEN, faults.ENV_SECRET):
                     self.assertNotIn(secret, text)
                 self.assertNotRegex(text, r"ghp_[A-Za-z0-9]{20,}|/home/[^/\s]+/")
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: documentation is translated to English; the test checks Polish wording of the private source', [
+    'Scenario0311Test.test_bad_action_2',
+    'Scenario0311Test.test_bad_result_2',
+    'Scenario0311Test.test_failed_action_limit_2',
+    'Scenario0311Test.test_good_2',
+])
+# --- end of public copy block ---

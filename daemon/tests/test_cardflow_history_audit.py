@@ -401,3 +401,43 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: history rewritten during anonymization; the test reads commits of the private repository', [
+    'HistoryAuditTest.test_candidate_fold_difference_is_unexplained',
+    'HistoryAuditTest.test_card_dir_without_journal_and_unknown_entry',
+    'HistoryAuditTest.test_card_removed_from_one_copy',
+    'HistoryAuditTest.test_change_during_read_invalidates_run',
+    'HistoryAuditTest.test_consent_value_changed',
+    'HistoryAuditTest.test_duplicate_seq_and_unknown_format',
+    'HistoryAuditTest.test_event_removed_from_one_copy',
+    'HistoryAuditTest.test_existing_strict_read_hides_board_divergence',
+    'HistoryAuditTest.test_field_removed_from_one_copy',
+    'HistoryAuditTest.test_full_consistent_copy_passes_with_classified_new_fields',
+    'HistoryAuditTest.test_listing_error_blocks_and_keeps_denominator',
+    'HistoryAuditTest.test_new_field_value_against_rule_fails',
+    'HistoryAuditTest.test_read_only_sources_still_pass_and_stay_unchanged',
+    'HistoryAuditTest.test_rejected_history_in_candidate_is_reported',
+    'HistoryAuditTest.test_runner_changed',
+    'HistoryAuditTest.test_truncated_line_in_board_and_in_authoritative_mirror',
+    'HistoryAuditTest.test_unclassified_new_field_fails',
+    'HistoryAuditTest.test_write_attempts_by_candidate_code_are_blocked',
+])
+# --- end of public copy block ---

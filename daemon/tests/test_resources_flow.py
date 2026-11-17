@@ -85,3 +85,26 @@ class InstalledResourceFlowTest(FlowCase):
         self.assertTrue(second["read"])
         self.assertTrue(second["resumed"])
         self.assertEqual(second["standard"], proof["standard"])
+
+
+# --- Tide public copy: skipped tests (fix-tests.py) ---
+import unittest as _pub_unittest
+
+
+def _pub_skip(reason, targets):
+    g = globals()
+    for name in targets:
+        cls, _, meth = name.partition('.')
+        klass = g.get(cls)
+        if klass is None:
+            continue
+        if not meth:
+            g[cls] = _pub_unittest.skip(reason)(klass)
+        elif hasattr(klass, meth):
+            setattr(klass, meth, _pub_unittest.skip(reason)(getattr(klass, meth)))
+
+
+_pub_skip('public copy: documentation is translated to English; the test checks Polish wording of the private source', [
+    'InstalledResourceFlowTest.test_public_start_and_resume_read_installed_standard_and_skill_resources',
+])
+# --- end of public copy block ---
